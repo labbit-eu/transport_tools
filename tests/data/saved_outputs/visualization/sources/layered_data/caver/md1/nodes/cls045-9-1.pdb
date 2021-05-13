@@ -1,0 +1,16 @@
+HETATM    0  UNK L9  T   0      -0.878 -11.226   6.807
+TER
+HETATM    1  UNK L9  T   1      -0.795 -11.350   7.284
+TER
+HETATM    2  UNK L9  T   2      -0.475 -11.395   7.623
+TER
+HETATM    3  UNK L9  T   3      -0.066 -11.408   7.910
+TER
+HETATM    4  UNK L9  T   4       0.371 -11.440   8.081
+TER
+HETATM    5  UNK L9  T   5       0.781 -11.328   8.038
+TER
+HETATM    6  UNK L9  T   6       1.256 -11.383   8.114
+TER
+HETATM    7  UNK A9  T   7       0.028 -11.361   7.694
+END

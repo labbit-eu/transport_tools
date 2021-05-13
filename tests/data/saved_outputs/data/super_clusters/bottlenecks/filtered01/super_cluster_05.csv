@@ -1,0 +1,2 @@
+MD_traj, Snapshot, Tunnel cluster, Tunnel, Throughput, Cost, Bottleneck X, Bottleneck Y, Bottleneck Z,  Bottleneck R, Bottleneck residues
+md1, stripped_system.903.pdb, 6, 3, 0.4015297888829553, 0.9124735543675945, -0.5552958629891833, 10.517396398558336, 9.286616742131606, 1.0069156070563297, 78,218,215,82,214,104

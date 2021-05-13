@@ -1,0 +1,14 @@
+HETATM    0  UNK L12 T   0       1.370   1.944  18.094
+TER
+HETATM    1  UNK L12 T   1       1.863   1.512  18.507
+TER
+HETATM    2  UNK L12 T   2       1.467   2.057  18.482
+TER
+HETATM    3  UNK L12 T   3       2.169   1.785  18.403
+TER
+HETATM    4  UNK L12 T   4       0.905   2.705  18.754
+TER
+HETATM    5  UNK L12 T   5       0.145   1.640  18.848
+TER
+HETATM    6  UNK A12 T   6       1.320   1.940  18.515
+END

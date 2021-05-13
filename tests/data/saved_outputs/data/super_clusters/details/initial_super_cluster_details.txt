@@ -1,0 +1,218 @@
+Tunnel clusters and transport events assignment to superclusters (ordered by their priority):
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 1
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 1, 5, 13, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 2
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 2, 8, 30, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 3
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 2
+Tunnel clusters:
+from md1: 3, 20, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 4
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 4, 32, 37, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 5
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 6, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 6
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 2
+Tunnel clusters:
+from md1: 7, 11, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 9
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 2
+Tunnel clusters:
+from md1: 9, 41, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 7
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 10, 12, 17, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 8
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 14, 15, 25, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 10
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 16, 33, 47, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 12
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 2
+Tunnel clusters:
+from md1: 18, 43, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 11
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 19, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 13
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 22, 45, 49, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 14
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 21, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 15
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 23, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 16
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 24, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 17
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 2
+Tunnel clusters:
+from md1: 28, 36, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 18
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 26, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 19
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 29, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 20
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 31, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 21
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 34, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 22
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 35, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 23
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 39, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 24
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 40, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 25
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 42, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 26
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 44, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 27
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 50, 
+------------------------------------------------------------------------------------------------------------------------

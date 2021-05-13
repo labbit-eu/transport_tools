@@ -1,0 +1,22 @@
+Bottleneck residues frequency for: md1
+Total simulations = 1
+No snapshots per simulation = 1000
+
+Parameters used for pre-selection of input tunnels for clustering:
+length >= 5.00 A
+radius >= 0.75 A
+curvature <= 5.00
+
+Active tunnel filters:
+length = (5.00, 999.00) A
+radius = (0.00, 999.00) A
+curvature = (1.00, 999.00)
+occurred in at least 1 simulations
+occurred in at least 1 snapshots
+occurred in at least 0.000 snapshots on average per simulation
+has at least 1 transport events
+has at least 0 entry events
+has at least 0 release events
+
+SC_ID, Total_No_Frames, Bottleneck residues: frequencies
+    2,             762, 243:0.980, 129:0.957, 132:0.953, 130:0.900, 138:0.891, 206:0.862, 207:0.760, 128:0.753, 269:0.407, 103:0.392, 131:0.348, 104:0.163, 242:0.063, 244:0.062, 252:0.035, 127:0.026, 223:0.025, 146:0.025, 248:0.020, 256:0.014, 133:0.012, 226:0.009, 139:0.009, 227:0.008, 208:0.007, 142:0.007, 137:0.007, 245:0.004, 235:0.004, 251:0.003, 219:0.003, 126:0.003, 255:0.001, 249:0.001, 143:0.001, 125:0.001, 110:0.001, 

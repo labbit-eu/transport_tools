@@ -1,0 +1,18 @@
+HETATM    0  UNK L5  T   0       5.495  -0.587   6.277
+TER
+HETATM    1  UNK L5  T   1       5.584   0.050   5.690
+TER
+HETATM    2  UNK L5  T   2       5.954   0.335   5.542
+TER
+HETATM    3  UNK L5  T   3       6.297   0.670   5.435
+TER
+HETATM    4  UNK L5  T   4       5.645   0.760   5.952
+TER
+HETATM    5  UNK L5  T   5       6.089   0.653   5.748
+TER
+HETATM    6  UNK L5  T   6       6.284   0.357   5.960
+TER
+HETATM    7  UNK L5  T   7       6.340  -0.100   6.114
+TER
+HETATM    8  UNK A5  T   8       5.961   0.267   5.840
+END

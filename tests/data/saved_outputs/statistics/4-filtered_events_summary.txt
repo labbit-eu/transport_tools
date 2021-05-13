@@ -1,0 +1,23 @@
+Statistics for: overall
+Total simulations = 1
+No snapshots per simulation = 1000
+
+Parameters used for pre-selection of input tunnels for clustering:
+length >= 5.00 A
+radius >= 0.75 A
+curvature <= 5.00
+
+Active tunnel filters:
+length = (5.00, 999.00) A
+radius = (0.00, 999.00) A
+curvature = (1.00, 999.00)
+occurred in at least 1 simulations
+occurred in at least 1 snapshots
+occurred in at least 0.000 snapshots on average per simulation
+has at least 1 transport events
+has at least 0 entry events
+has at least 0 release events
+
+SC_ID, No_Sims, Total_No_Frames, Avg_No_Frames, Avg_BR, StDev, Max_BR, Avg_Len, StDev, Avg_Cur, StDev, Avg_throug,   StDev, Priority, Num_Events, Num_entries, Num_releases
+    2,       1,             762,         762.0,  0.996, 0.160,  1.565,  15.790, 4.743,   1.257, 0.213,    0.45215, 0.12555,  0.34454,          2,           1,            1
+Total number of unassigned events:                                                                                                             3,           2,            1

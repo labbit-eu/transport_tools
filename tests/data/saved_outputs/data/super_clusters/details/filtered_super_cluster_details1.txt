@@ -1,0 +1,50 @@
+Tunnel clusters and transport events assignment to superclusters (ordered by their priority):
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 1
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 1, 5, 13, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 2
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 2, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 3
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 3, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 4
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 4, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 5
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 6, 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 7
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 10, 
+------------------------------------------------------------------------------------------------------------------------

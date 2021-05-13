@@ -1,0 +1,94 @@
+HETATM    0  UNK L1  T   0       0.362  -0.522   0.800
+TER
+HETATM    1  UNK L1  T   1       0.665  -0.838   0.559
+TER
+HETATM    2  UNK L1  T   2       0.964  -1.160   0.319
+TER
+HETATM    3  UNK L1  T   3       1.160  -1.560   0.135
+TER
+HETATM    4  UNK L1  T   4       1.090  -1.908  -0.180
+TER
+HETATM    5  UNK L1  T   5       0.972  -2.217  -0.555
+TER
+HETATM    6  UNK L1  T   6       1.103  -2.597  -0.777
+TER
+HETATM    7  UNK L1  T   7       0.296  -1.068  -0.145
+TER
+HETATM    8  UNK L1  T   8       0.405  -1.445  -0.455
+TER
+HETATM    9  UNK L1  T   9       0.515  -1.822  -0.764
+TER
+HETATM   10  UNK L1  T  10       0.722  -2.190  -0.944
+TER
+HETATM   11  UNK L1  T  11       1.048  -2.564  -0.913
+TER
+HETATM   12  UNK L1  T  12       0.254  -1.008  -0.512
+TER
+HETATM   13  UNK L1  T  13       0.542  -1.395  -0.645
+TER
+HETATM   14  UNK L1  T  14       0.829  -1.782  -0.778
+TER
+HETATM   15  UNK L1  T  15       1.093  -2.145  -0.945
+TER
+HETATM   16  UNK L1  T  16       0.438  -1.433  -0.122
+TER
+HETATM   17  UNK L1  T  17       0.704  -1.825  -0.281
+TER
+HETATM   18  UNK L1  T  18       0.970  -2.218  -0.441
+TER
+HETATM   19  UNK L1  T  19       1.073  -2.647  -0.561
+TER
+HETATM   20  UNK L1  T  20       0.299  -1.079  -0.714
+TER
+HETATM   21  UNK L1  T  21       0.632  -1.287  -0.994
+TER
+HETATM   22  UNK L1  T  22       1.061  -1.802  -1.048
+TER
+HETATM   23  UNK L1  T  23       1.108  -2.149  -1.299
+TER
+HETATM   24  UNK L1  T  24       0.009  -0.677  -0.937
+TER
+HETATM   25  UNK L1  T  25       0.187  -0.918  -1.147
+TER
+HETATM   26  UNK L1  T  26       0.495  -1.286  -1.065
+TER
+HETATM   27  UNK L1  T  27       0.738  -1.689  -1.080
+TER
+HETATM   28  UNK L1  T  28       0.897  -2.162  -1.047
+TER
+HETATM   29  UNK L1  T  29       0.319  -1.199  -0.259
+TER
+HETATM   30  UNK L1  T  30       0.539  -1.609  -0.443
+TER
+HETATM   31  UNK L1  T  31       0.594  -1.843  -0.846
+TER
+HETATM   32  UNK L1  T  32       0.577  -2.153  -1.208
+TER
+HETATM   33  UNK L1  T  33       1.157  -2.007   0.460
+TER
+HETATM   34  UNK L1  T  34       1.306  -2.283   0.101
+TER
+HETATM   35  UNK L1  T  35       1.139  -2.406  -0.271
+TER
+HETATM   36  UNK L1  T  36       0.236  -1.017   0.099
+TER
+HETATM   37  UNK L1  T  37       0.408  -1.201  -0.282
+TER
+HETATM   38  UNK L1  T  38       0.441  -1.160  -0.769
+TER
+HETATM   39  UNK L1  T  39       0.566  -1.294  -1.194
+TER
+HETATM   40  UNK L1  T  40       0.455  -0.767  -0.652
+TER
+HETATM   41  UNK L1  T  41       0.683  -1.198  -0.542
+TER
+HETATM   42  UNK L1  T  42       0.911  -1.629  -0.431
+TER
+HETATM   43  UNK L1  T  43       1.102  -2.048  -0.539
+TER
+HETATM   44  UNK L1  T  44       1.364  -2.323  -0.704
+TER
+HETATM   45  UNK L1  T  45       0.068  -0.812  -1.666
+TER
+HETATM   46  UNK A1  T  46       0.706  -1.616  -0.558
+END

@@ -1,0 +1,68 @@
+HETATM    0  UNK L4  T   0       1.896   0.428   5.787
+TER
+HETATM    1  UNK L4  T   1       2.175   0.690   6.087
+TER
+HETATM    2  UNK L4  T   2       2.521   0.863   6.399
+TER
+HETATM    3  UNK L4  T   3       2.276   0.079   5.894
+TER
+HETATM    4  UNK L4  T   4       2.566   0.279   6.249
+TER
+HETATM    5  UNK L4  T   5       1.865  -0.128   5.739
+TER
+HETATM    6  UNK L4  T   6       2.151   0.191   5.989
+TER
+HETATM    7  UNK L4  T   7       2.415   0.420   6.247
+TER
+HETATM    8  UNK L4  T   8       2.272   0.528   5.867
+TER
+HETATM    9  UNK L4  T   9       2.581   0.790   6.160
+TER
+HETATM   10  UNK L4  T  10       1.912   0.012   5.767
+TER
+HETATM   11  UNK L4  T  11       2.192   0.254   6.076
+TER
+HETATM   12  UNK L4  T  12       2.369   0.593   6.303
+TER
+HETATM   13  UNK L4  T  13       2.709   0.857   6.316
+TER
+HETATM   14  UNK L4  T  14       1.637   0.003   5.848
+TER
+HETATM   15  UNK L4  T  15       1.939   0.289   6.104
+TER
+HETATM   16  UNK L4  T  16       2.259   0.500   6.425
+TER
+HETATM   17  UNK L4  T  17       2.121   0.604   5.886
+TER
+HETATM   18  UNK L4  T  18       2.510   0.840   6.094
+TER
+HETATM   19  UNK L4  T  19       2.042  -0.203   5.856
+TER
+HETATM   20  UNK L4  T  20       2.417   0.009   6.106
+TER
+HETATM   21  UNK L4  T  21       2.780   0.296   6.271
+TER
+HETATM   22  UNK L4  T  22       2.099   0.040   5.865
+TER
+HETATM   23  UNK L4  T  23       2.375   0.298   6.187
+TER
+HETATM   24  UNK L4  T  24       1.818   0.216   5.834
+TER
+HETATM   25  UNK L4  T  25       2.098   0.587   5.956
+TER
+HETATM   26  UNK L4  T  26       2.506   0.779   6.172
+TER
+HETATM   27  UNK L4  T  27       2.711   1.028   6.367
+TER
+HETATM   28  UNK L4  T  28       2.238   0.257   5.828
+TER
+HETATM   29  UNK L4  T  29       2.545   0.454   6.166
+TER
+HETATM   30  UNK L4  T  30       1.718   0.087   5.823
+TER
+HETATM   31  UNK L4  T  31       2.101   0.279   6.077
+TER
+HETATM   32  UNK L4  T  32       2.467   0.472   6.344
+TER
+HETATM   33  UNK A4  T  33       2.251   0.385   6.063
+END

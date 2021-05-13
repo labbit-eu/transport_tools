@@ -1,0 +1,66 @@
+HETATM    0  UNK L5  T   0       2.551   0.663   6.493
+TER
+HETATM    1  UNK L5  T   1       2.882   0.763   6.842
+TER
+HETATM    2  UNK L5  T   2       3.312   0.729   7.072
+TER
+HETATM    3  UNK L5  T   3       3.791   0.695   6.932
+TER
+HETATM    4  UNK L5  T   4       4.265   0.571   6.913
+TER
+HETATM    5  UNK L5  T   5       2.239   0.958   6.660
+TER
+HETATM    6  UNK L5  T   6       2.536   0.939   6.972
+TER
+HETATM    7  UNK L5  T   7       2.842   0.677   7.267
+TER
+HETATM    8  UNK L5  T   8       3.198   0.431   7.518
+TER
+HETATM    9  UNK L5  T   9       3.645   0.306   7.539
+TER
+HETATM   10  UNK L5  T  10       4.051   0.036   7.557
+TER
+HETATM   11  UNK L5  T  11       4.359  -0.348   7.643
+TER
+HETATM   12  UNK L5  T  12       3.157   0.486   6.397
+TER
+HETATM   13  UNK L5  T  13       3.456   0.665   6.700
+TER
+HETATM   14  UNK L5  T  14       3.566   1.056   6.979
+TER
+HETATM   15  UNK L5  T  15       3.680   1.387   7.336
+TER
+HETATM   16  UNK L5  T  16       3.693   1.766   7.640
+TER
+HETATM   17  UNK L5  T  17       3.634   2.199   7.882
+TER
+HETATM   18  UNK L5  T  18       2.754   0.421   6.424
+TER
+HETATM   19  UNK L5  T  19       3.185   0.631   6.468
+TER
+HETATM   20  UNK L5  T  20       3.680   0.665   6.504
+TER
+HETATM   21  UNK L5  T  21       4.176   0.653   6.455
+TER
+HETATM   22  UNK L5  T  22       2.794   0.755   6.521
+TER
+HETATM   23  UNK L5  T  23       3.044   0.874   6.870
+TER
+HETATM   24  UNK L5  T  24       3.143   1.234   7.197
+TER
+HETATM   25  UNK L5  T  25       3.389   1.595   7.426
+TER
+HETATM   26  UNK L5  T  26       3.631   1.992   7.584
+TER
+HETATM   27  UNK L5  T  27       3.792   2.447   7.716
+TER
+HETATM   28  UNK L5  T  28       3.211   0.995   6.547
+TER
+HETATM   29  UNK L5  T  29       3.568   1.120   6.791
+TER
+HETATM   30  UNK L5  T  30       3.767   1.450   7.102
+TER
+HETATM   31  UNK L5  T  31       4.014   1.740   7.425
+TER
+HETATM   32  UNK A5  T  32       3.406   0.955   7.043
+END

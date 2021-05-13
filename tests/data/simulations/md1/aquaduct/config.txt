@@ -1,0 +1,97 @@
+[global]
+top = ../structure.parm7
+trj = ../trajectory.nc
+
+[traceable_residues]
+execute = runonce
+dump = 1_traceable_residues_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+object = (resname WAT) and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+
+[raw_paths]
+execute = runonce
+dump = 2_raw_paths_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+object = (resname WAT) and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+clear_in_object_info = False
+
+[separate_paths]
+execute = runonce
+dump = 3_separate_paths_data.dump
+auto_barber = False
+allow_passing_paths = False
+auto_barber_tovdw = True
+auto_barber_maxcut = 2.8
+auto_barber_mincut = None
+auto_barber_maxcut_level = True
+auto_barber_mincut_level = True
+discard_empty_paths = True
+sort_by_id = True
+apply_smoothing = False
+apply_soft_smoothing = False
+discard_short_paths = 1
+discard_short_object = 2.0
+discard_short_logic = or
+
+[inlets_clustering]
+execute = runonce
+dump = 4_inlets_clusterization_data.dump
+max_level = 2
+recluster_outliers = True
+detect_outliers = Auto
+singletons_outliers = 2
+create_master_paths = False
+exclude_passing_in_clusterization = True
+add_passing_to_clusters = None
+
+[analysis]
+execute = runonce
+save = 5_analysis_results.txt
+calculate_scope_object_size = False
+scope_chull = backbone
+object_chull = resname WAT and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+dump_config = True
+
+[visualize]
+execute = runonce
+save = 6_visualize_results.py
+all_paths_raw = False
+all_paths_smooth = False
+all_paths_split = False
+all_paths_raw_io = False
+all_paths_smooth_io = False
+paths_raw = True
+paths_smooth = False
+paths_states = True
+paths_raw_io = False
+paths_smooth_io = False
+ctypes_raw = False
+ctypes_smooth = False
+inlets_clusters = False
+show_molecule = protein
+show_molecule_frames = 0
+show_scope_chull = None
+show_scope_chull_frames = 0
+show_object_chull = None
+show_object_chull_frames = 0
+
+[clustering]
+method = meanshift
+recursive_clusterization = clusterization
+recursive_threshold = >0.9
+cluster_all = True
+bandwidth = Auto
+
+[reclustering]
+method = meanshift
+recursive_clusterization = False
+recursive_threshold = False
+cluster_all = False
+bandwidth = Auto
+
+[smooth]
+method = window

@@ -1,0 +1,14 @@
+HETATM    0  UNK L3  T   0       2.683   2.584   1.526
+TER
+HETATM    1  UNK L3  T   1       2.875   2.973   1.691
+TER
+HETATM    2  UNK L3  T   2       2.728   3.417   1.861
+TER
+HETATM    3  UNK L3  T   3       2.604   3.885   1.976
+TER
+HETATM    4  UNK L3  T   4       2.591   4.232   2.336
+TER
+HETATM    5  UNK L3  T   5       2.324   4.476   2.558
+TER
+HETATM    6  UNK A3  T   6       2.634   3.594   1.991
+END

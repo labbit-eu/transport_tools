@@ -1,0 +1,217 @@
+========================================================================
+Aqua-Duct analysis
+2021-02-09 15:02:52
+Aqua-Duct: v1.0.11
+NumPy: v1.20.0
+MDAnalysis: v1.0
+========================================================================
+Configuration file name: config.txt
+-----------------------------------
+[global]
+top = ../structure.parm7
+trj = ../trajectory.nc
+twoway = True
+sps = True
+sandwich = False
+waterfall = False
+max_frame = None
+min_frame = None
+step_frame = None
+cache_dir = None
+cache_mem = False
+cache_type = full
+[traceable_residues]
+execute = runonce
+dump = 1_traceable_residues_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+scope_convexhull_inflate = None
+object = (resname WAT) and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+add_passing = None
+[raw_paths]
+execute = runonce
+dump = 2_raw_paths_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+scope_convexhull_inflate = None
+object = (resname WAT) and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+clear_in_object_info = False
+discard_singletons = 1
+discard_empty_paths = True
+[separate_paths]
+execute = runonce
+dump = 3_separate_paths_data.dump
+allow_passing_paths = False
+auto_barber_tovdw = True
+auto_barber_maxcut = 2.8
+auto_barber_mincut = None
+auto_barber_maxcut_level = True
+auto_barber_mincut_level = True
+auto_barber = False
+separate_barber = True
+discard_empty_paths = True
+sort_by_id = True
+apply_smoothing = False
+apply_soft_smoothing = False
+remove_unused_parts = True
+calculate_coo = False
+discard_short_paths = 1
+discard_short_object = 2.0
+discard_short_logic = or
+[inlets_clustering]
+execute = runonce
+dump = 4_inlets_clusterization_data.dump
+max_level = 2
+recluster_outliers = True
+detect_outliers = Auto
+singletons_outliers = 2
+create_master_paths = False
+exclude_passing_in_clustering = True
+add_passing_to_clusters = None
+renumber_clusters = False
+join_clusters = None
+master_paths_amount = None
+separate_master = False
+separate_master_all = True
+inlets_center = cos
+remove_inlets = None
+clustering_order = old-school
+exclude_passing_in_clusterization = True
+[analysis]
+execute = runonce
+save = 5_analysis_results.txt
+calculate_scope_object_size = False
+scope_chull = backbone
+scope_chull_inflate = None
+object_chull = resname WAT and (sphzone 6.0 ((resnum 103 and name CG) or (resnum 104 and name CD2) or (resnum 243 and name N) or (resnum 165 and name N)))
+cluster_area = True
+cluster_area_precision = 20
+cluster_area_expand = 2
+dump_config = True
+[visualize]
+execute = runonce
+save = 6_visualize_results.py
+split_by_type = False
+retain_all_types = False
+all_paths_raw = False
+all_paths_smooth = False
+all_paths_split = False
+all_paths_raw_io = False
+all_paths_smooth_io = False
+all_paths_amount = None
+paths_raw = True
+paths_smooth = False
+paths_states = True
+paths_raw_io = False
+paths_smooth_io = False
+ctypes_raw = False
+ctypes_smooth = False
+ctypes_amount = None
+inlets_clusters = False
+inlets_clusters_amount = None
+cluster_area = False
+cluster_area_precision = 20
+cluster_area_expand = 2
+show_molecule = protein
+show_molecule_frames = 0
+show_scope_chull = None
+show_scope_chull_inflate = None
+show_scope_chull_frames = 0
+show_object_chull = None
+show_object_chull_frames = 0
+[clustering]
+method = meanshift
+recursive_clustering = clustering
+recursive_threshold = >0.9
+auto_barber = None
+recursive_clusterization = clusterization
+cluster_all = True
+bandwidth = Auto
+[reclustering]
+method = meanshift
+recursive_clustering = False
+recursive_threshold = False
+recursive_clusterization = False
+cluster_all = False
+bandwidth = Auto
+[smooth]
+method = window
+========================================================================
+Frames window: 0:999 step 1
+========================================================================
+Names of traced molecules: WAT
+========================================================================
+Number of traceable residues: 6
+Number of separate paths: 6
+========================================================================
+Number of inlets: 5
+Number of clusters: 0
+Outliers: yes
+========================================================================
+Clustering history:
+all-+ {size: 5; MeanShift}
+    0 {size: 5}
+========================================================================
+Clusters summary - inlets
+-----------------------------------------
+     Nr Cluster    Size INCOMING OUTGOING
+-----------------------------------------
+      1       0       5        3        2
+-----------------------------------------
+========================================================================
+Clusters summary - areas
+------------------------------------------------------------------------------
+     Nr Cluster     D100      D95      D90      D80      D70      D60      D50
+------------------------------------------------------------------------------
+      1       0    50.22    48.46    46.81    43.90    41.04    36.83    25.29
+------------------------------------------------------------------------------
+========================================================================
+Clusters statistics (of paths) probabilities of transfers
+---------------------------------------------------------------------------------
+     Nr Cluster   IN-OUT     diff        N  IN-OUT_prob    diff_prob       N_prob
+---------------------------------------------------------------------------------
+      1       0        2        0        1         0.67         0.00         0.33
+---------------------------------------------------------------------------------
+Clusters statistics (of paths) mean lengths of transfers
+-----------------------------------------------------------------------------------------
+     Nr Cluster    X->Obj    Obj->X   p-value X->ObjMin X->ObjMinID Obj->XMin Obj->XMinID
+-----------------------------------------------------------------------------------------
+      1       0     267.6      57.7    0.4643      30.5     0:329:0      42.7     0:329:0
+-----------------------------------------------------------------------------------------
+Clusters statistics (of paths) mean frames numbers of transfers
+-----------------------------------------------------------------------------------------
+     Nr Cluster    X->Obj    Obj->X   p-value X->ObjMin X->ObjMinID Obj->XMin Obj->XMinID
+-----------------------------------------------------------------------------------------
+      1       0     287.3      48.0    0.4822      22.0     0:329:0      39.0     0:329:0
+-----------------------------------------------------------------------------------------
+========================================================================
+Separate paths clusters types summary - mean lengths of paths
+--------------------------------------------------------------------------------------------------------------
+     Nr   CType    Size  Size%       Tot    TotStd       Inp    InpStd       Obj    ObjStd       Out    OutStd
+--------------------------------------------------------------------------------------------------------------
+      1     N:N       3  50.00     975.2     56.99       nan       nan     975.2     56.99       nan       nan
+      2     0:0       2  33.33     411.5    335.08     341.6    311.12      12.3      9.03      57.7     14.93
+      3     0:N       1  16.67     398.2      0.00     119.6      0.00     278.5      0.00       nan       nan
+--------------------------------------------------------------------------------------------------------------
+Separate paths clusters types summary - mean number of frames of paths
+--------------------------------------------------------------------------------------------------------------
+     Nr   CType    Size  Size%       Tot    TotStd       Inp    InpStd       Obj    ObjStd       Out    OutStd
+--------------------------------------------------------------------------------------------------------------
+      1     N:N       3  50.00    1000.0      0.00       0.0      0.00    1000.0      0.00       0.0      0.00
+      2     0:0       2  33.33     442.0    380.00     385.5    363.50       8.5      7.50      48.0      9.00
+      3     0:N       1  16.67     503.0      0.00      91.0      0.00     412.0      0.00       0.0      0.00
+--------------------------------------------------------------------------------------------------------------
+========================================================================
+List of separate paths and properties
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+     Nr        ID  RES  BeginF    InpF    ObjF   ObjFS    OutF    EndF      TotL      InpL      ObjL      OutL     TotS  TotStdS     InpS  InpStdS     ObjS  ObjStdS     OutS  OutStdS   CType
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      1   0:326:0  WAT     144     749      16      16      57     965     746.6     652.7      21.3      72.6     0.91    0.671     0.87    0.639     1.25    0.978     1.27    0.754     0:0
+      2   0:327:0  WAT       0       0    1000    1000       0     999     894.9       nan     894.9       nan     0.90    0.636      nan      nan     0.90    0.636      nan      nan     N:N
+      3   0:328:0  WAT       0       0    1000    1000       0     999    1021.9       nan    1021.9       nan     1.02    0.736      nan      nan     1.02    0.736      nan      nan     N:N
+      4   0:329:0  WAT     880      22       1       1      39     941      76.4      30.5       3.2      42.7     1.25    1.012     1.39    0.848     1.61    0.093     1.10    0.983     0:0
+      5   0:330:0  WAT       0       0    1000     999       0     999    1008.7       nan    1008.7       nan     1.01    0.717      nan      nan     1.01    0.717      nan      nan     N:N
+      6   0:331:0  WAT     497      91     412       1       0     999     398.2     119.6     278.5       nan     0.79    0.660     1.31    0.962     0.68    0.489      nan      nan     0:N
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

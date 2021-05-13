@@ -1,0 +1,24 @@
+HETATM    0  UNK L4  T   0       1.022  -4.262   4.161
+TER
+HETATM    1  UNK L4  T   1       0.838  -4.614   4.457
+TER
+HETATM    2  UNK L4  T   2       0.829  -4.974   4.802
+TER
+HETATM    3  UNK L4  T   3      -0.721  -4.369   4.435
+TER
+HETATM    4  UNK L4  T   4      -0.541  -4.769   4.675
+TER
+HETATM    5  UNK L4  T   5      -0.201  -5.068   4.659
+TER
+HETATM    6  UNK L4  T   6      -0.701  -3.654   5.100
+TER
+HETATM    7  UNK L4  T   7      -0.561  -4.081   5.198
+TER
+HETATM    8  UNK L4  T   8      -0.305  -4.500   5.260
+TER
+HETATM    9  UNK L4  T   9       1.473  -4.684   4.213
+TER
+HETATM   10  UNK L4  T  10       1.338  -4.972   4.502
+TER
+HETATM   11  UNK A4  T  11       0.224  -4.541   4.678
+END

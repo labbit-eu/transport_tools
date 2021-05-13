@@ -1,0 +1,84 @@
+Tunnel clusters and transport events assignment to superclusters (ordered by their priority):
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 1
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 3
+Tunnel clusters:
+from md1: 1, 5, 13, 
+
+Details on transport events:
+Number of MD simulations = 0
+Number of entry events = 0
+Number of release events = 0
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 2
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 2, 
+
+Details on transport events:
+Number of MD simulations = 1
+Number of entry events = 1
+Number of release events = 1
+entry: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
+from md1: 1, (WAT:326), 144->893; 
+release: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
+from md1: 1, (WAT:326), 908->965; 
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 3
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 3, 
+
+Details on transport events:
+Number of MD simulations = 0
+Number of entry events = 0
+Number of release events = 0
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 4
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 4, 
+
+Details on transport events:
+Number of MD simulations = 0
+Number of entry events = 0
+Number of release events = 0
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 5
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 6, 
+
+Details on transport events:
+Number of MD simulations = 0
+Number of entry events = 0
+Number of release events = 0
+------------------------------------------------------------------------------------------------------------------------
+Supercluster ID 7
+
+Details on tunnel network:
+Number of MD simulations = 1
+Number of tunnel clusters = 1
+Tunnel clusters:
+from md1: 10, 
+
+Details on transport events:
+Number of MD simulations = 0
+Number of entry events = 0
+Number of release events = 0
+------------------------------------------------------------------------------------------------------------------------

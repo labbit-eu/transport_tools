@@ -1,0 +1,24 @@
+Statistics for: md1
+Total simulations = 1
+No snapshots per simulation = 1000
+
+Parameters used for pre-selection of input tunnels for clustering:
+length >= 5.00 A
+radius >= 0.75 A
+curvature <= 5.00
+
+Active tunnel filters:
+length = (5.00, 999.00) A
+radius = (1.00, 999.00) A
+curvature = (1.00, 999.00)
+occurred in at least 0 simulations
+occurred in at least 1 snapshots
+occurred in at least 0.000 snapshots on average per simulation
+
+SC_ID, No_Sims, Total_No_Frames, Avg_No_Frames, Avg_BR, StDev, Max_BR, Avg_Len, StDev, Avg_Cur, StDev, Avg_throug,   StDev, Priority
+    1,       1,             646,         646.0,  1.178, 0.129,  1.720,  14.094, 1.420,   1.243, 0.091,    0.54384, 0.06088,  0.35132
+    2,       1,             384,         384.0,  1.125, 0.090,  1.565,  14.274, 1.863,   1.189, 0.064,    0.52771, 0.05154,  0.20264
+    3,       1,             117,         117.0,  1.082, 0.077,  1.461,  15.505, 2.302,   1.341, 0.125,    0.53594, 0.04716,  0.06271
+    4,       1,              10,          10.0,  1.061, 0.056,  1.169,  13.042, 1.045,   1.212, 0.086,    0.49458, 0.02408,  0.00495
+    5,       1,               1,           1.0,  1.007, 0.000,  1.007,  18.971, 0.000,   1.180, 0.000,    0.40153, 0.00000,  0.00040
+    7,       1,               1,           1.0,  1.041, 0.000,  1.041,  24.420, 0.000,   1.653, 0.000,    0.32229, 0.00000,  0.00032

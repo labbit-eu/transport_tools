@@ -1,0 +1,10 @@
+HETATM    0  UNK L10 T   0      -4.171   8.003  12.033
+TER
+HETATM    1  UNK L10 T   1      -3.853   8.231  12.345
+TER
+HETATM    2  UNK L10 T   2      -3.536   8.459  12.657
+TER
+HETATM    3  UNK L10 T   3      -3.372   8.718  12.950
+TER
+HETATM    4  UNK A10 T   4      -3.733   8.353  12.496
+END

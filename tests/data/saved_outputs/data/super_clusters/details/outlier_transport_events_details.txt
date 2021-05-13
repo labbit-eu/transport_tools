@@ -1,0 +1,7 @@
+Unassigned transport events:
+Number of entry events = 2
+Number of release events = 1
+entry: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
+from md1: 4, (WAT:329), 880->902; 6, (WAT:331), 497->588; 
+release: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
+from md1: 4, (WAT:329), 902->941; 

@@ -1,0 +1,68 @@
+HETATM    0  UNK L5  T   0       2.448  -6.916   0.540
+TER
+HETATM    1  UNK L5  T   1       2.345  -7.015   1.017
+TER
+HETATM    2  UNK L5  T   2       2.585  -7.280   1.351
+TER
+HETATM    3  UNK L5  T   3       2.951  -7.571   1.528
+TER
+HETATM    4  UNK L5  T   4       3.373  -7.778   1.634
+TER
+HETATM    5  UNK L5  T   5       2.173  -6.782   0.788
+TER
+HETATM    6  UNK L5  T   6       2.003  -7.091   1.134
+TER
+HETATM    7  UNK L5  T   7       1.963  -7.482   1.429
+TER
+HETATM    8  UNK L5  T   8       1.833  -7.928   1.610
+TER
+HETATM    9  UNK L5  T   9       1.892  -8.333   1.803
+TER
+HETATM   10  UNK L5  T  10       2.319  -6.725   0.646
+TER
+HETATM   11  UNK L5  T  11       2.300  -7.147   0.913
+TER
+HETATM   12  UNK L5  T  12       2.546  -7.519   1.112
+TER
+HETATM   13  UNK L5  T  13       2.824  -7.909   1.253
+TER
+HETATM   14  UNK L5  T  14       3.122  -8.285   1.395
+TER
+HETATM   15  UNK L5  T  15       1.820  -6.775   0.424
+TER
+HETATM   16  UNK L5  T  16       1.745  -7.214   0.651
+TER
+HETATM   17  UNK L5  T  17       1.736  -7.644   0.904
+TER
+HETATM   18  UNK L5  T  18       1.880  -8.003   1.176
+TER
+HETATM   19  UNK L5  T  19       2.134  -8.313   1.471
+TER
+HETATM   20  UNK L5  T  20       2.254  -6.649  -0.313
+TER
+HETATM   21  UNK L5  T  21       2.454  -6.768   0.100
+TER
+HETATM   22  UNK L5  T  22       1.948  -6.642  -1.593
+TER
+HETATM   23  UNK L5  T  23       2.150  -6.948  -1.286
+TER
+HETATM   24  UNK L5  T  24       2.423  -7.028  -0.932
+TER
+HETATM   25  UNK L5  T  25       2.644  -6.648  -0.738
+TER
+HETATM   26  UNK L5  T  26       3.044  -6.555  -0.589
+TER
+HETATM   27  UNK L5  T  27       3.542  -6.537  -0.549
+TER
+HETATM   28  UNK L5  T  28       3.791  -6.531  -0.217
+TER
+HETATM   29  UNK L5  T  29       3.948  -6.587   0.242
+TER
+HETATM   30  UNK L5  T  30       2.838  -6.492   0.085
+TER
+HETATM   31  UNK L5  T  31       3.326  -6.486   0.140
+TER
+HETATM   32  UNK L5  T  32       3.825  -6.479   0.102
+TER
+HETATM   33  UNK A5  T  33       2.551  -7.153   0.522
+END

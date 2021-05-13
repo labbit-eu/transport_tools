@@ -1,0 +1,12 @@
+HETATM    0  UNK L0  T   0      -0.105   0.298  -0.040
+TER
+HETATM    1  UNK L0  T   1      -0.055  -0.062  -0.299
+TER
+HETATM    2  UNK L0  T   2      -0.020  -0.419  -0.647
+TER
+HETATM    3  UNK L0  T   3      -0.120  -0.380   0.109
+TER
+HETATM    4  UNK L0  T   4       0.099  -0.789  -0.075
+TER
+HETATM    5  UNK A0  T   5      -0.040  -0.271  -0.190
+END
