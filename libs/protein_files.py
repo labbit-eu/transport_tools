@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.3'
+__version__ = '0.8.4'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -88,8 +88,8 @@ class Trajectory:
         """
 
         reference_pdb_file = os.path.join(self.parameters["transformation_folder"], "ref_transformed.pdb")
-        caver_pdb = pt.load(reference_pdb_file, frame_indices=[0])
-        frame1 = pt.load(self.traj, self.top, frame_indices=[0])
+        caver_pdb = pt.iterload(reference_pdb_file, frame_slice=(0, 1))
+        frame1 = pt.iterload(self.traj, self.top, frame_slice=(0, 1))
         self.ref_frame = frame1.superpose(mask=self.superpose_mask, ref=caver_pdb, ref_mask=self.superpose_mask)
 
     def get_coords(self, start_frame: int, end_frame: int, remove_mask: Optional[str] = None) -> np.array:
