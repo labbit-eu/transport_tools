@@ -451,12 +451,25 @@ class Tunnel:
             self.filters_passed = True
 
         #  here we transform the data to fit the reference structure
-        xyz = np.array([dataset["X"], dataset["Y"], dataset["Z"], [1.0] * len(dataset["X"])]).astype(float)
+        try:
+            xyz = np.array([dataset["X"], dataset["Y"], dataset["Z"], [1.0] * len(dataset["X"])]).astype(float)
+        except ValueError:
+            raise RuntimeError("\nThe input CAVER data in '{}' file from '{}' seems to be corrupted for "
+                               "CAVER cluster '{}' and snapshot '{}'"
+                               "\n".format(self.parameters["caver_relative_profile_file"], self.parameters["md_label"],
+                                           self.caver_cluster_id, self.snapshot))
+
         if self.transform_mat is not None:
             xyz = self.transform_mat.dot(xyz)
 
-        self.spheres_data = np.append(xyz[0:3, :], np.array([dataset["distance"], dataset["R"],
-                                                             dataset["length"]]).astype(float), axis=0).T
+        try:
+            self.spheres_data = np.append(xyz[0:3, :], np.array([dataset["distance"], dataset["R"],
+                                                                 dataset["length"]]).astype(float), axis=0).T
+        except TypeError:
+            raise RuntimeError("\nThe input CAVER data in '{}' file from '{}' seems to be corrupted for "
+                               "CAVER cluster '{}' and snapshot '{}'"
+                               "\n".format(self.parameters["caver_relative_profile_file"], self.parameters["md_label"],
+                                           self.caver_cluster_id, self.snapshot))
 
         self.layer_membership = assign_layer_from_distances(einsum_dist(self.spheres_data[:, 0:3],
                                                                         np.array([0., 0., 0.])),
