@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.3'
+__version__ = '0.8.5'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -825,7 +825,7 @@ class TransportProcesses:
                     progress_counter += 1
                     progressbar(progress_counter, num_folders2process)
 
-            if (num_raw_paths / len(self.aquaduct_input_folders)) <= self.parameters["num_cpus"]:
+            if self.aquaduct_input_folders and (num_raw_paths / len(self.aquaduct_input_folders)) <= self.parameters["num_cpus"]:
                 self._aquaduct_single_event_inputs = True
             # compute general transformation matrix to have unified orientation of MD simulations less dependent on
             # the selection of reference PDB file

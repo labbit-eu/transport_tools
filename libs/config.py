@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.3'
+__version__ = '0.8.5'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -686,7 +686,7 @@ class AnalysisConfig:
 
         search_pattern = os.path.join(self.parameters["caver_results_folder_pattern"],
                                       self.parameters["caver_relative_pdb_file"])
-        ref_structure = [*Path(self.parameters["caver_results_path"]).glob(search_pattern)][0].as_posix()
+        ref_structure = sorted([*Path(self.parameters["caver_results_path"]).glob(search_pattern)])[0].as_posix()
         self.parameters["pdb_reference_structure"] = ref_structure
         self.calculations_settings["pdb_reference_structure"] = ref_structure
 

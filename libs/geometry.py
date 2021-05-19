@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.8.3'
+__version__ = '0.8.5'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
