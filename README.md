@@ -52,17 +52,21 @@ via CONDA:
 4. install TransportTools and all required dependencies: conda install transport_tools -c labbit -c conda-forge
 
 or PyPi:
-1. install [AmberTools](http://ambermd.org/AmberTools.php) according to the [instructions](http://ambermd.org/Installation.php)
-2. source the amber.sh file
-3. pip install transport_tools
-    
+1. pip install transport_tools
+
+Additionally, you might want to install following two packages to enhance your experience using *TransportTools*:
+1. [AmberTools](http://ambermd.org/AmberTools.php) to speed-up trajectory processing with *pytraj* engine; by following these [instructions](http://ambermd.org/GetAmber.php#ambertools)
+2. [PyMCubes](https://github.com/pmneila/PyMCubes) to enable supercluster visualization with surface: pip install --upgrade PyMCubes
+
 To start using *TransportTools* type:
 
     tt_engine.py --help
 
+ 
+
 ## Troubleshooting
 
-If you encounter any problems with installation or the use of *TransportTools* please contact us at [github.com](https://github.com/labbit-eu/transport_tools/issues).
+If you encounter any problems with installation, or the use of *TransportTools* please contact us at [github.com](https://github.com/labbit-eu/transport_tools/issues).
 
 ## Documentation
 
