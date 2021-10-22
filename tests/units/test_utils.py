@@ -17,12 +17,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
+import numpy as np
 
 
 class TestUtils(unittest.TestCase):
@@ -41,7 +42,46 @@ class TestUtils(unittest.TestCase):
         from transport_tools.libs.utils import convert_coords2cgo
         from transport_tools.tests.units.data.data_utils import coorinates, cgo
 
-        self.assertListEqual(cgo, convert_coords2cgo(coorinates, 1))
+        for item1, item2 in zip(cgo, convert_coords2cgo(coorinates, 1)):
+            self.assertAlmostEqual(item1, item2)
+
+    def test_get_boundaries(self):
+        from transport_tools.libs.utils import _get_boundaries
+        from transport_tools.tests.units.data.data_utils import spheres
+
+        x_lims, y_lims, z_lims = _get_boundaries(spheres)
+        self.assertAlmostEqual(-1.9707431512941527, x_lims[0])
+        self.assertAlmostEqual(1.7799817245391525, x_lims[1])
+        self.assertAlmostEqual(-1.8790397812941526, y_lims[0])
+        self.assertAlmostEqual(5.182953051294152, y_lims[1])
+        self.assertAlmostEqual(-2.9844158212941525, z_lims[0])
+        self.assertAlmostEqual(1.7790397812941525, z_lims[1])
+
+    def test_build_grid(self):
+        from transport_tools.libs.utils import _build_grid
+        from transport_tools.tests.units.data.data_utils import spheres, x_points, y_points, z_points, grid
+        self.assertTrue(np.allclose(_build_grid(spheres, x_points, y_points, z_points), grid, atol=1e-7))
+
+    def test__get_mesh(self):
+        from transport_tools.libs.utils import _get_mesh
+        from transport_tools.tests.units.data.data_utils import x_points, y_points, z_points, grid, vertices, normals, \
+            triangles
+
+        results = _get_mesh(grid, x_points, y_points, z_points)
+        self.assertTrue(np.allclose(vertices, results[0], atol=1e-7))
+        self.assertTrue(np.allclose(normals, results[1], atol=1e-7, equal_nan=True))
+        self.assertTrue(np.allclose(triangles, results[2], atol=1e-7))
+
+    def test_convert_spheres2cgo_surface(self):
+        from transport_tools.libs.utils import convert_spheres2cgo_surface
+        from transport_tools.tests.units.data.data_utils import spheres, cgo_surf
+
+        try:
+            import mcubes
+        except ModuleNotFoundError:
+            self.assertTrue(True)
+        for item1, item2 in zip(cgo_surf, convert_spheres2cgo_surface(spheres, 1, resolution=0.5)):
+            self.assertAlmostEqual(item1, item2)
 
     def test_node_labels_split(self):
         from transport_tools.libs.utils import node_labels_split

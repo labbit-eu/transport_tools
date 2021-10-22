@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -25,7 +25,6 @@ __mail__ = 'janbre@amu.edu.pl'
 from logging import getLogger
 import numpy as np
 import os
-import pytraj as pt
 from typing import Optional, Tuple, Dict
 from transport_tools.libs.utils import test_file, get_filepath
 import Bio.PDB
@@ -49,13 +48,29 @@ THREE2ONE_CODES_MAP = {
 }
 
 
-class Trajectory:
-    def __init__(self,  parameters: dict, md_label: str, superpose_mask: str = "!:WAT,Cl-,Na+"):
+def TrajectoryFactory(parameters: dict, md_label: str, superpose_mask: str = None):
+    if parameters["trajectory_engine"] == "mdtraj":
+        if superpose_mask is not None:
+            return TrajectoryMdtraj(parameters, md_label, superpose_mask)
+        else:
+            return TrajectoryMdtraj(parameters, md_label)
+    elif parameters["trajectory_engine"] == "pytraj":
+        if superpose_mask is not None:
+            return TrajectoryPytraj(parameters, md_label, superpose_mask)
+        else:
+            return TrajectoryPytraj(parameters, md_label)
+    else:
+        raise RuntimeError("Trajectory processing engine '{}' is not "
+                           "supported.".format(parameters["trajectory_engine"]))
+
+
+class TrajectoryTT:
+    def __init__(self, parameters: dict, md_label: str, superpose_mask: str):
         """
-        Generic class for handling transport tunnels and paths
+        Generic class for handling MD trajectories
         :param parameters: job configuration parameters
         :param md_label: name of folder with the source MD simulation data
-        :param superpose_mask: AMBER mask for selection to get same system used in CAVER, if None, all atoms are used
+        :param superpose_mask: mask for selection to get same system used in CAVER, if None, all atoms are used
         """
 
         self.parameters = parameters
@@ -82,47 +97,163 @@ class Trajectory:
         return True
 
     def _get_ref_frame_from_caver_ref(self):
+        raise NotImplementedError("Provide implementation of this method.")
+
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
+                   out_file: Optional[str] = None) -> np.array:
+        """
+        Get coordinates of system across specified frames, potentially after removing some of its parts. And if
+        out_file is provided, the resulting structure is saved too
+        :param start_frame: start frame to consider
+        :param end_frame: end frame to consider
+        :param keep_mask: mask to select part of system to keep
+        :param out_file: file where to save specified frames as MULTIMODEL PDB file
+        :return: coordinates of the kept system in selected frames
+        """
+
+        raise NotImplementedError("Provide implementation of this method.")
+
+    def write_frames(self, start_frame: int, end_frame: int, out_file: str, keep_mask: Optional[str] = None):
+        """
+        Write specified frames to MULTIMODEL PDB file
+        :param start_frame: start frame to consider
+        :param end_frame: end frame to consider
+        :param out_file: file where to save specified frames
+        :param keep_mask: mask to select part of system to keep
+        """
+
+        self.get_coords(start_frame, end_frame, keep_mask, out_file)
+
+
+class TrajectoryMdtraj(TrajectoryTT):
+    def __init__(self, parameters: dict, md_label: str, superpose_mask: str = "name CA"):
+        """
+        Class for handling MD trajectories with MDtraj package
+        :param parameters: job configuration parameters
+        :param md_label: name of folder with the source MD simulation data
+        :param superpose_mask: MDtraj mask for selection to get same system used in CAVER, if None, all atoms are used
+        """
+
+        TrajectoryTT.__init__(self, parameters, md_label, superpose_mask)
+
+    def _get_ref_frame_from_caver_ref(self):
         """
         For CAVER we have aligned to first simulation frame. Now to get back, we can align first frame to reference
         PDB file from tunnel analyses and use this frame as valid reference structure for further snapshots
         """
 
+        import mdtraj
+        reference_pdb_file = os.path.join(self.parameters["transformation_folder"], "ref_transformed.pdb")
+        caver_pdb = mdtraj.load(reference_pdb_file)
+        frame1 = mdtraj.load_frame(self.traj, index=0, top=self.top)
+        self.ref_frame = frame1.superpose(reference=caver_pdb, atom_indices=frame1.topology.select(self.superpose_mask),
+                                          ref_atom_indices=caver_pdb.topology.select(self.superpose_mask),
+                                          parallel=False)
+
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
+                   out_file: Optional[str] = None) -> np.array:
+        """
+        Get coordinates of system across specified frames, potentially after removing some of its parts
+        :param start_frame: start frame to consider
+        :param end_frame: end frame to consider
+        :param keep_mask: MDtraj mask to select part of system to keep
+        :param out_file: file where to save specified frames as MULTIMODEL PDB file
+        :return: coordinates of the kept system in selected frames
+        """
+
+        import mdtraj
+        if keep_mask is None:
+            keep_mask = "all"
+
+        align_indices = self.ref_frame.topology.select(self.superpose_mask)
+        keep_indices = self.ref_frame.topology.select(keep_mask)
+
+        fitted_traj = None
+        chunk_size = 1000
+        start_chunk = start_frame // chunk_size
+        end_chunk = end_frame // chunk_size
+        for i, md_frame in enumerate(mdtraj.iterload(self.traj, top=self.top, chunk=chunk_size)):
+
+            if i not in range(start_chunk, end_chunk + 1):
+                continue
+
+            slice_start = 0
+            slice_end = chunk_size - 1
+            chunk_start_frame = i * chunk_size
+
+            if i == start_chunk:
+                slice_start = start_frame - chunk_start_frame
+            if i == end_chunk:
+                slice_end = end_frame - chunk_start_frame
+
+            md_frame = md_frame[slice_start: slice_end + 1]
+            md_frame.superpose(reference=self.ref_frame, atom_indices=align_indices, parallel=False)
+            md_frame.restrict_atoms(keep_indices)
+
+            if fitted_traj is None:
+                fitted_traj = md_frame
+            else:
+                fitted_traj = mdtraj.join((fitted_traj, md_frame), check_topology=False)
+
+        if out_file is not None:
+            fitted_traj.save_pdb(out_file)
+
+        return fitted_traj.xyz * 10  # nm -> A
+
+
+class TrajectoryPytraj(TrajectoryTT):
+    def __init__(self, parameters: dict, md_label: str, superpose_mask: str = "@CA"):
+        """
+        Class for handling MD trajectories with Pytraj package
+        :param parameters: job configuration parameters
+        :param md_label: name of folder with the source MD simulation data
+        :param superpose_mask: Pytraj mask for selection to get same system used in CAVER, if None, all atoms are used
+        """
+
+        TrajectoryTT.__init__(self, parameters, md_label, superpose_mask)
+
+    def _get_ref_frame_from_caver_ref(self):
+        """
+        For CAVER we have aligned to first simulation frame. Now to get back, we can align first frame to reference
+        PDB file from tunnel analyses and use this frame as valid reference structure for further snapshots
+        """
+
+        try:
+            import pytraj as pt
+        except ModuleNotFoundError:
+            raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
+                               "imported. Please check that it is properly installed in the current environment.")
         reference_pdb_file = os.path.join(self.parameters["transformation_folder"], "ref_transformed.pdb")
         caver_pdb = pt.iterload(reference_pdb_file, frame_slice=(0, 1))
         frame1 = pt.iterload(self.traj, self.top, frame_slice=(0, 1))
         self.ref_frame = frame1.superpose(mask=self.superpose_mask, ref=caver_pdb, ref_mask=self.superpose_mask)
 
-    def get_coords(self, start_frame: int, end_frame: int, remove_mask: Optional[str] = None) -> np.array:
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
+                   out_file: Optional[str] = None) -> np.array:
+
         """
         Get coordinates of system across specified frames, potentially after removing some of its parts
         :param start_frame: start frame to consider
         :param end_frame: end frame to consider
-        :param remove_mask: AMBER mask to select part of system for removal
+        :param keep_mask: inverted AMBER mask to select part of system to keep
+        :param out_file: file where to save specified frames as MULTIMODEL PDB file
         :return: coordinates of the kept system in selected frames
         """
 
+        try:
+            import pytraj as pt
+        except ModuleNotFoundError:
+            raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
+                               "imported. Please check that it is properly installed in the current environment.")
         md_traj = pt.iterload(self.traj, self.top, frame_slice=(start_frame, end_frame + 1)).autoimage()
         fitted_traj = md_traj.superpose(mask=self.superpose_mask, ref=self.ref_frame)
-        if remove_mask is not None:
-            fitted_traj = fitted_traj.strip(remove_mask)
+        if keep_mask is not None:
+            fitted_traj = fitted_traj.strip(keep_mask)
+
+        if out_file is not None:
+            pt.write_traj(out_file, fitted_traj, overwrite=True, options="model")
 
         return fitted_traj.xyz
-
-    def write_frames(self, start_frame: int, end_frame: int, out_file: str, remove_mask: Optional[str] = None):
-        """
-        Write specified frames to MULTIMODEL PDB file
-        :param start_frame: start frame to consider
-        :param end_frame: end frame to consider
-        :param out_file: file where to save
-        :param remove_mask: AMBER mask to select part of system for removal
-        """
-
-        md_traj = pt.iterload(self.traj, self.top, frame_slice=(start_frame, end_frame + 1)).autoimage()
-        fitted_traj = md_traj.superpose(mask=self.superpose_mask, ref=self.ref_frame)
-        if remove_mask is not None:
-            fitted_traj = fitted_traj.strip(remove_mask)
-
-        pt.write_traj(out_file, fitted_traj, overwrite=True, options="model")
 
 
 class AtomFromPDB:
@@ -382,12 +513,14 @@ def transform_pdb_file(in_pdb_file: str, out_pdb_file: str, transform_mat: np.ar
     :param out_pdb_file: path to the transformed pdb file
     :param transform_mat: 4x4 transformation matrix to be applied on the input coordinates
     """
-
-    to_move = pt.io.load(in_pdb_file)
+    import mdtraj
+    to_move = mdtraj.load(in_pdb_file)
+    to_move.xyz = to_move.xyz * 10
     coords = np.ones((to_move.xyz.shape[1], 4))
     coords[:, :3] = to_move.xyz[0]
     to_move.xyz[0] = np.matmul(coords, transform_mat.T)[:, :3]
-    pt.save(out_pdb_file, obj=to_move, overwrite=True)
+    to_move.xyz = to_move.xyz / 10
+    to_move.save_pdb(out_pdb_file)
 
 
 def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.array:
@@ -460,8 +593,8 @@ def transform_aquaduct(md_label: str, tar_file: str, aquaduct_results_pdb_filena
         data = tar_handle.extractfile(aquaduct_results_pdb_filename).read()
         out_stream.write(data)
     _matrix, _md_label = get_transform_matrix(pdb_filename_from_tar, reference_pdb_file, md_label)
-    os.remove(pdb_filename_from_tar)
     os.close(fd)
+    os.remove(pdb_filename_from_tar)
 
     for filename in tar_handle.getnames():
         if search(r'^raw_paths_\d+\.dump', filename):

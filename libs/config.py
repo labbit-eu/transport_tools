@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -25,9 +25,8 @@ __mail__ = 'janbre@amu.edu.pl'
 import os
 import sys
 import numpy as np
-import pytraj as pt
 from pathlib import Path
-from pkg_resources import get_distribution
+from pkg_resources import get_distribution, DistributionNotFound
 from configparser import ConfigParser
 from typing import List, Any, Optional, Union
 from logging import getLogger
@@ -106,7 +105,7 @@ class AnalysisConfig:
 
             # Parsing of tunnel clusters from CAVER results
             "snapshots_per_simulation": None,  # number of snapshots used for CAVER calculation
-            "caver_traj_offset": 1,  # difference in IDs of PyTraj frames (from 0) and caver snapshots (often from 1)
+            "caver_traj_offset": 1,  # difference in IDs of MD frames (from 0) and caver snapshots (often from 1)
             "snapshot_id_position": 1,  # location of IDs in snapshot filenames from CAVER split by snapshot_delimiter
             "snapshot_delimiter": ".",  # delimiter used for splitting snapshot filenames from CAVER to get IDs
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
@@ -154,6 +153,7 @@ class AnalysisConfig:
             "save_super_cluster_profiles_csvs": False,
             "save_distance_matrix_csv": False,
             # Optional visualization
+            "visualize_super_cluster_volumes": False,
             "visualize_transformed_tunnels": False,
             "visualize_transformed_transport_events": False
         }
@@ -165,6 +165,7 @@ class AnalysisConfig:
             "aqauduct_ligand_effective_radius": 1.0,  # for overlap calculations
             "perform_exact_matching_analysis": False,
             "perform_comparative_analysis": False,
+            "visualize_comparative_super_cluster_volumes": False,
             "comparative_groups_definition": None,
             # Format of group definition: group_name1: [folder1, folder2, ...]; group_name2: [folder1, folder2, ...]...
 
@@ -173,7 +174,8 @@ class AnalysisConfig:
             "visualize_exact_matching_outcomes": False,
             "visualize_layered_clusters": False,  # mostly for debugging only
             "visualize_layered_events": False,  # mostly for debugging only
-            "legacy_pymol_support": False,
+            "legacy_pymol_support": True,
+            "trajectory_engine": "mdtraj",  # mdtraj or pytraj if installed additionally
             "logfilename": "transport_tools.log",
             "log_level": "info",
             "max_events_per_cluster4visualization": 1000
@@ -228,6 +230,8 @@ class AnalysisConfig:
             "perform_comparative_analysis",
             "save_super_cluster_profiles_csvs",
             "save_distance_matrix_csv",
+            "visualize_super_cluster_volumes",
+            "visualize_comparative_super_cluster_volumes",
             "visualize_transformed_tunnels",
             "visualize_transformed_transport_events",
             "visualize_layered_clusters",
@@ -294,6 +298,7 @@ class AnalysisConfig:
             "internal_settings": self.internal_settings
         }
 
+        forbid_autoactivation = list()
         for section in config.sections():
             config_dictionary = config_sections[str(section).lower()]
             for param_name in config[section].keys():
@@ -315,12 +320,46 @@ class AnalysisConfig:
                     else:
                         param_value = str(config[section].get(param_name))
 
+                if param_name == "visualize_super_cluster_volumes" and param_value is False:
+                    forbid_autoactivation.append(param_name)
+                if param_name == "trajectory_engine" and param_value == "mdtraj":
+                    forbid_autoactivation.append(param_name)
+
                 if param_name == "output_path":  # update also dependent paths
                     self._set_output_paths(param_value)
 
                 config_dictionary[param_name] = param_value
 
         self._set_input_paths()
+        self._autoactivate_functionalities(forbid_autoactivation)
+
+    def _autoactivate_functionalities(self, overridden_parameters: List[str]):
+        """
+        Activate optional functionalities if required modules are available, still can be overridden in a config file.
+        :param overridden_parameters: list of parameter names which have been overridden
+        """
+        if not self.output_settings["visualize_super_cluster_volumes"] and \
+                "visualize_super_cluster_volumes" not in overridden_parameters:
+            try:
+                import mcubes
+            except ModuleNotFoundError:
+                pass
+            else:
+                logger.warning("'mcubes' module detected, provisionally enabling 'visualize_super_cluster_volumes'. "
+                               "Should you like to override this action, please set 'visualize_super_cluster_volumes = "
+                               "False' in 'OUTPUT_SETTINGS' section of your configuration file.")
+                self.output_settings["visualize_super_cluster_volumes"] = True
+
+        if self.advanced_settings["trajectory_engine"] != "pytraj" and "trajectory_engine" not in overridden_parameters:
+            try:
+                import pytraj
+            except ModuleNotFoundError:
+                pass
+            else:
+                logger.warning("'pytraj' module detected, provisionally enabling 'pytraj' as 'trajectory_engine'. "
+                               "Should you like to override this action, please set 'trajectory_engine = mdtraj' in "
+                               "'ADVANCED_SETTINGS' section of your configuration file.")
+                self.advanced_settings["trajectory_engine"] = "pytraj"
 
     def _set_input_paths(self):
         """
@@ -679,6 +718,11 @@ class AnalysisConfig:
             if missing_file_reports:
                 raise FileNotFoundError(missing_file_reports)
 
+        if self.parameters["visualize_comparative_super_cluster_volumes"]:
+            if not self.parameters["visualize_super_cluster_volumes"]:
+                raise ValueError("\nWhen 'visualize_comparative_super_cluster_volumes' parameter is enabled, "
+                                 "'visualize_super_cluster_volumes' must be enabled too.")
+
     def _detect_set_pdb_reference_structure(self):
         """
         Sets a reference PDB structure as the caver PDB file form the first CAVER results folder
@@ -714,6 +758,15 @@ class AnalysisConfig:
         set the number of snapshots
         """
 
+        if self.parameters["trajectory_engine"] == "pytraj":
+            try:
+                import pytraj
+            except ModuleNotFoundError:
+                raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
+                                   "imported. Please check that it is properly installed in the current environment.")
+        else:
+            import mdtraj
+
         folders_trajectory = Path(self.parameters["trajectory_path"]).glob(self.parameters["trajectory_folder_pattern"])
         n_frames = set()
         for folder_path in folders_trajectory:
@@ -721,8 +774,17 @@ class AnalysisConfig:
                 continue
             trajname = get_filepath(folder_path.as_posix(), self.input_paths["trajectory_relative_file"])
             topname = get_filepath(folder_path.as_posix(), self.input_paths["topology_relative_file"])
-            md_traj = pt.iterload(trajname, topname)
-            n_frames.add(md_traj.n_frames)
+
+            if self.parameters["trajectory_engine"] == "pytraj":
+                md_traj = pytraj.iterload(trajname, topname)
+                n_frames.add(md_traj.n_frames)
+
+            else:
+                traj_frames = 0
+
+                for traj in mdtraj.iterload(trajname, top=topname, chunk=1000):
+                    traj_frames += traj.n_frames
+                n_frames.add(traj_frames)
 
         if len(n_frames) == 1:  # same num frames exists in all locations
             num_snaps = n_frames.pop()
@@ -832,8 +894,23 @@ class AnalysisConfig:
         msg += "biopython {}\n".format(get_distribution('biopython').version)
         msg += "fastcluster {}\n".format(get_distribution('fastcluster').version)
         msg += "hdbscan {}\n".format(get_distribution('hdbscan').version)
-        msg += "pytraj {}\n".format(get_distribution('pytraj').version)
-        msg += "cpptraj {}\n".format(pt.__cpptraj_internal_version__)
+        msg += "MDtraj {}\n".format(get_distribution('mdtraj').version)
+        if self.parameters["visualize_super_cluster_volumes"]:
+            try:
+                msg += "mcubes {}\n".format(get_distribution('pymcubes').version)
+            except DistributionNotFound:
+                raise RuntimeError("Requested to 'visualize_super_cluster_volumes' but required 'mcubes' module "
+                                   "cannot be imported. Please ensure that it is properly installed in the current "
+                                   "environment--for example by running 'pip install --upgrade PyMCubes'.")
+        if self.parameters["trajectory_engine"] == "pytraj":
+            try:
+                import pytraj
+                msg += "pytraj {}\n".format(get_distribution('pytraj').version)
+                msg += "cpptraj {}\n".format(pytraj.__cpptraj_internal_version__)
+            except (DistributionNotFound, ModuleNotFoundError):
+                raise RuntimeError("Requested to use 'pytraj' as 'trajectory_engine' but 'pytraj' module cannot be "
+                                   "imported. Please ensure that it is properly installed in the current "
+                                   "environment--for example by running 'conda install ambertools -c conda-forge'.")
         msg += "\nJob configuration loaded from file: '{}'\n".format(self.source_file)
         msg += "#=== General calculations settings ===\n"
         for name, values in self.calculations_settings.items():
@@ -1012,7 +1089,7 @@ class AnalysisConfig:
             "min_total_events": "# Additional filters applied on superclusters after event assignment "
                                 "(-1 => inactive filter)",
             "save_super_cluster_profiles_csvs": "# Optional data generation",
-            "visualize_transformed_tunnels": "# Optional visualization",
+            "visualize_super_cluster_volumes": "# Optional visualization",
             "random_seed": "# Calculations",
             "visualize_exact_matching_outcomes": "# Finer control of outputs & logging"
         }

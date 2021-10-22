@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -646,13 +646,14 @@ class LayeredPathSet:
         return new_set
 
     def visualize_cgo(self, output_folder: str, entity_label: str, color_id: int = 0, merged: bool = False,
-                      flag: str = ""):
+                      flag: str = "", surface_cgo: bool = False):
         """
         Save this pathset as Pymol compiled graphics object(CGO) for visualization
         :param output_folder: folder to which CGO will be saved
         :param entity_label: name of the layered entity (tunnel cluster or transport event) to visualize
         :param color_id: Pymol ID of color to use for this pathset
         :param merged: if all paths should be in single CGO
+        :param surface_cgo: if to generate also surface visualization
         :param flag: additional description enabling differentiation of cgo files among various results after filtering
         """
 
@@ -660,8 +661,8 @@ class LayeredPathSet:
             raise RuntimeError("No data for visualization of PathSet from {} of {}".format(entity_label, output_folder))
 
         node_data = dict(zip(self.node_labels, self.nodes_data))
-        filename = os.path.join(output_folder, "{}_pathset{}.dump.gz".format(entity_label, flag))
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        filename1 = os.path.join(output_folder, "{}_pathset{}.dump.gz".format(entity_label, flag))
+        os.makedirs(os.path.dirname(filename1), exist_ok=True)
         pathset_cgos = list()
         if merged:
             for path_id, path in enumerate(self.node_paths):
@@ -669,6 +670,20 @@ class LayeredPathSet:
                 for node_label in path[1:]:
                     xyz = np.concatenate((xyz, node_data[node_label][:3].reshape(1, 3)), axis=0)
                 pathset_cgos.extend(convert_coords2cgo(xyz, color_id=color_id))
+
+            if surface_cgo:
+                from transport_tools.libs.utils import convert_spheres2cgo_surface
+                filename2 = os.path.join(output_folder, "{}_volume{}.dump.gz".format(entity_label, flag))
+                spheres = list()
+                for path_id, path in enumerate(self.node_paths):
+                    for node_label in path:
+                        xyz = node_data[node_label][:3]
+                        radius = node_data[node_label][5]
+                        spheres.append((xyz, radius))
+
+                with gzip.open(filename2, "wb") as out_stream:
+                    pickle.dump(convert_spheres2cgo_surface(spheres, color_id=color_id,),
+                                out_stream, self.parameters["pickle_protocol"])
         else:
             for path_id, path in enumerate(self.node_paths):
                 xyz = node_data[path[0]][:3].reshape(1, 3)
@@ -676,7 +691,7 @@ class LayeredPathSet:
                     xyz = np.concatenate((xyz, node_data[node_label][:3].reshape(1, 3)), axis=0)
                 pathset_cgos.append(convert_coords2cgo(xyz, color_id=color_id))
 
-        with gzip.open(filename, "wb") as out_stream:
+        with gzip.open(filename1, "wb") as out_stream:
             pickle.dump(pathset_cgos, out_stream, self.parameters["pickle_protocol"])
 
     def __str__(self):

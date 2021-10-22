@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -241,6 +241,7 @@ class Tunnel:
         self.layer_membership: Optional[np.array] = None
         self.bottleneck_residues = list()
         self.bottleneck_xyz: Optional[np.array] = None
+        self.weight = 1.0
 
     def __str__(self):
         output = ""
@@ -852,6 +853,12 @@ class TunnelNetwork(Network):
         if self.parameters["process_bottleneck_residues"]:
             self._read_bottleneck_data()
 
+    def _read_reweighting_data(self):
+        """
+        TODO
+        """
+        pass
+
     def _read_bottleneck_data(self):
         """
         Process bottlenecks.csv from CAVER to fill info about Tunnels' bottlenecks
@@ -961,8 +968,8 @@ class AquaductNetwork(Network):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.remove(self.pdb_file)
         os.close(self.fd)
+        os.remove(self.pdb_file)
 
     def clean_tempfile(self):
         """
@@ -970,8 +977,8 @@ class AquaductNetwork(Network):
         """
 
         utils.test_file(self.pdb_file)
-        os.remove(self.pdb_file)
         os.close(self.fd)
+        os.remove(self.pdb_file)
 
     def get_pdb_file(self):
         """
@@ -1850,8 +1857,7 @@ class SuperCluster:
         if events_assigned:
             # add transport events data
             details_txt += "\nDetails on transport events:\n"
-            details_txt += "Number of MD simulations = {:d}\n".format(len(self.get_md_labels(
-                only_with_transport_events=True)))
+            details_txt += "Number of MD simulations = {:d}\n".format(self.count_md_labels4events())
             details_txt += "Number of entry events = {:d}\n".format(self.num_events["overall"]["entry"])
             details_txt += "Number of release events = {:d}\n".format(self.num_events["overall"]["release"])
 
@@ -2022,9 +2028,21 @@ class SuperCluster:
 
         return False
 
+    def count_md_labels4events(self):
+        """
+        Counts how many simulations contributed some event in this supercluster
+        :return: number of simulations
+        """
+
+        md_labels = set()
+        for event_type in self.transport_events.keys():
+            md_labels.update(self.transport_events[event_type].keys())
+
+        return len(md_labels)
+
     def get_md_labels(self, only_with_transport_events: bool = False) -> List[str]:
         """
-        Enumerate names of folder with the MD simulations (md_labels) contributing with at least one valid tunnel
+        Enumerate names of folders with the MD simulations (md_labels) contributing with at least one valid tunnel
         cluster to this supercluster
         :consider_transport_events: if the md_labels should be listed also considering assigned events
         :return: list of md_labels with valid tunnel clusters
@@ -2138,45 +2156,52 @@ class SuperCluster:
         return transport_event.how_much_is_inside(self.path_sets["overall"])
 
     # === methods for data reporting ===
-    def prepare_visualization(self,  md_label: str = "overall", flag: str = "") -> List[str]:
+    def prepare_visualization(self,  md_label: str = "overall",
+                              flag: str = "") -> Tuple[List[str],
+                                                       Optional[Tuple[LayeredPathSet, Tuple[str, str, int, bool, str]]]]:
         """
         Prepare overall CGO files for visualization of paths representing this supercluster (SC) and generate lines
         for Pymol visualization script
         :param md_label: visualization of which simulations to prepare; by default 'overall' visualization
         :param flag: additional description enabling differentiation of cgo files among various results after filtering
-        :return: lines to load visualization of this SC into Pymol
+        :return: lines to load visualization of this SC into Pymol, LayeredPathSet and parameters to generate CGO file
         """
 
         plines = list()
+        viz_data = None
 
         if md_label not in self.path_sets.keys() or md_label not in self.properties.keys() \
                 or not self.properties[md_label]:
             # pathset not created or invalid supercluster
-            return plines
+            return plines, viz_data
 
         # dump CGO files for visualization of paths representing this SC
         os.makedirs(self.parameters["super_cluster_vis_path"], exist_ok=True)
-        self.path_sets[md_label].visualize_cgo(self.parameters["super_cluster_vis_path"],
+        viz_data = (self.path_sets[md_label], (self.parameters["super_cluster_vis_path"],
                                                "SC{:02d}_{}".format(self.sc_id, md_label),
-                                               color_id=(self.prioritized_sc_id - 1), merged=True, flag=flag)
+                                               self.prioritized_sc_id - 1, True, flag))
 
         root_folder = self.parameters["visualization_folder"]
         if "overall" not in md_label:
             root_folder = os.path.join(root_folder, "comparative_analysis", md_label)
 
         vis_folder = os.path.relpath(self.parameters["super_cluster_vis_path"], root_folder)
-
         # CGO filepath for loading to Pymol
         filename = os.path.join(vis_folder, "SC{:02d}_{}_pathset{}.dump.gz".format(self.sc_id, md_label, flag))
+        filename_vol = os.path.join(vis_folder, "SC{:02d}_{}_volume{}.dump.gz".format(self.sc_id, md_label, flag))
 
         # generate Pymol script of this SC
-        plines.append("with gzip.open('{}', 'rb') as in_stream:\n".format(filename))
+        plines.append("with gzip.open({}, 'rb') as in_stream:\n".format(utils.path_loader_string(filename)))
         plines.append("    pathset = pickle.load(in_stream)\n")
         plines.append("cmd.load_cgo(pathset, 'cluster_{:03d}')\n".format(self.sc_id))
         plines.append("cmd.set('cgo_line_width', {}, 'cluster_{:03d}')\n\n".format(5, self.sc_id))
+        if self.parameters["visualize_super_cluster_volumes"] and \
+                ("overall" in md_label or self.parameters["visualize_comparative_super_cluster_volumes"]):
+            plines.append("with gzip.open({}, 'rb') as in_stream:\n".format(utils.path_loader_string(filename_vol)))
+            plines.append("    volume = pickle.load(in_stream)\n")
+            plines.append("cmd.load_cgo(volume, 'cluster_{:03d}_vol')\n\n".format(self.sc_id))
 
         vis_folder = os.path.relpath(self.parameters["layered_aquaduct_vis_path"], root_folder)
-
         comparative_groups_definition = {}
         if self.parameters["perform_comparative_analysis"] \
                 and self.parameters["comparative_groups_definition"] is not None:
@@ -2191,7 +2216,7 @@ class SuperCluster:
                                                        md_label, comparative_groups_definition):
                 filename = os.path.join(vis_folder, _md_label, "paths",
                                         "wat_{}_{}_pathset.dump.gz".format(path_id, event_type))
-                event_filenames.append("'{}'".format(filename))
+                event_filenames.append("{}".format(utils.path_loader_string(filename)))
 
             if event_filenames:
                 plines.append("events = [{}]\n".format(",\n".join(event_filenames)))
@@ -2203,7 +2228,7 @@ class SuperCluster:
                 plines.append("            cmd.load_cgo(path, '{}_{:03d}')\n".format(event_type, self.sc_id))
                 plines.append("cmd.set('cgo_line_width', {}, '{}_{:03d}')\n\n".format(2, event_type, self.sc_id))
 
-        return plines
+        return plines, viz_data
 
     def get_summary_line_data(self, print_transport_events: bool = False, md_label: str = "overall") -> List[str]:
         """

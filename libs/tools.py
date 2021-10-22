@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -36,8 +36,8 @@ from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point
-from transport_tools.libs.protein_files import Trajectory, get_transform_matrix, transform_pdb_file, \
-    get_general_rot_mat_from_2_ca_atoms, transform_aquaduct
+from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
+    transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct
 
 
 logger = getLogger(__name__)
@@ -192,7 +192,7 @@ class OutlierTransportEvents:
                                                        md_label, comparative_groups_definition):
                 filename = os.path.join(vis_folder, _md_label, "paths",
                                         "wat_{}_{}_pathset.dump.gz".format(path_id, event_type))
-                event_filenames.append("'{}'".format(filename))
+                event_filenames.append("{}".format(utils.path_loader_string(filename)))
 
             if event_filenames:
                 plines.append("events = [{}]\n".format(",\n".join(event_filenames)))
@@ -490,7 +490,6 @@ class TransportProcesses:
                 with Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     progressbar(0, items2process)
-
                     for event_specification, event_path_set in path_sets.items():
                         event_assigner = EventAssigner(self.parameters, event_specification, event_path_set,
                                                        self._super_clusters, self._active_filters)
@@ -504,6 +503,9 @@ class TransportProcesses:
                         traced_event = event_specification[2]
 
                         if assigned_sc_ids is None:
+                            logger.debug("Assigned transport event '{}' is not buried inside any supercluster"
+                                         " (the highest buried_ratio was {:.2f})".format(event_specification,
+                                                                                         max_buriedness))
                             self._outlier_transport_events.add_transport_event(md_label, event_path_id, event_type,
                                                                                traced_event)
                         else:
@@ -825,7 +827,8 @@ class TransportProcesses:
                     progress_counter += 1
                     progressbar(progress_counter, num_folders2process)
 
-            if self.aquaduct_input_folders and (num_raw_paths / len(self.aquaduct_input_folders)) <= self.parameters["num_cpus"]:
+            if self.aquaduct_input_folders and (num_raw_paths / len(self.aquaduct_input_folders)) \
+                    <= self.parameters["num_cpus"]:
                 self._aquaduct_single_event_inputs = True
             # compute general transformation matrix to have unified orientation of MD simulations less dependent on
             # the selection of reference PDB file
@@ -1321,17 +1324,23 @@ class TransportProcesses:
                                                             "ref_transformed.pdb"), viz_folder)
 
                 with open(os.path.join(viz_folder, script_name), "w") as out_stream:
-                    out_stream.write("import pickle, gzip\n\n")
+                    out_stream.write("import pickle, gzip, os\n\n")
                     # visualize protein
-                    out_stream.write("cmd.load('{}', 'protein_structure')\n".format(viz_pdb_file))
+                    out_stream.write("cmd.load({}, "
+                                     "'protein_structure')\n".format(utils.path_loader_string(viz_pdb_file)))
                     out_stream.write("cmd.show_as('cartoon', 'protein_structure')\n")
                     out_stream.write("cmd.color('gray', 'protein_structure')\n\n")
 
                     # visualize SCs and assigned transport events
+                    data4vis = list()
                     for prio_sc_id in sorted(self._prioritized_clusters.keys()):
                         prio_super_cluster = self._super_clusters[self._prioritized_clusters[prio_sc_id]]
                         prio_super_cluster.load_path_sets()
-                        out_stream.writelines(prio_super_cluster.prepare_visualization(md_label, str(self.vis_flag)))
+                        script_lines, vis_data = prio_super_cluster.prepare_visualization(md_label, str(self.vis_flag))
+                        if vis_data is None:
+                            continue
+                        out_stream.writelines(script_lines)
+                        data4vis.append(vis_data)
 
                     # visualize unassigned transport events
                     if self._outlier_transport_events.exist():
@@ -1341,6 +1350,26 @@ class TransportProcesses:
                     out_stream.write("cmd.show('cgo')\n")
                     out_stream.write("cmd.disable('release_*')\n")
                     out_stream.write("cmd.disable('entry_*')\n")
+                    out_stream.write("cmd.zoom()\n")
+
+                surface_cgo = False
+                if self.parameters["visualize_super_cluster_volumes"] and \
+                        ("overall" in md_label or self.parameters["visualize_comparative_super_cluster_volumes"]):
+                    surface_cgo = True
+
+                with Pool(processes=self.parameters["num_cpus"]) as pool:
+                    processing = list()
+                    # parallel generation of SC visualization
+                    for vis_data in data4vis:
+                        path_set, params = vis_data
+                        processing.append(pool.apply_async(path_set.visualize_cgo, args=(params[0], params[1],
+                                                                                         params[2], params[3],
+                                                                                         params[4], surface_cgo)))
+                    items2process = len(processing)
+                    progressbar(0, items2process)
+                    for i, p in enumerate(processing):
+                        p.get()
+                        progressbar(i + 1, items2process)
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict,
                                          sc_id: Optional[int] = None,
@@ -1446,7 +1475,14 @@ class TransportProcesses:
                 start_frame = start_snapshot - self.parameters["caver_traj_offset"]
                 end_frame = end_snapshot - self.parameters["caver_traj_offset"]
                 out_pdbfile = os.path.join(out_folder_path, "{}_structure.pdb.gz".format(md_label))
-                Trajectory(self.parameters, md_label).write_frames(start_frame, end_frame, out_pdbfile, ":WAT,Cl-,Na+")
+
+                if self.parameters["trajectory_engine"] == "mdtraj":
+                    selector = "protein"  # to keep
+                elif self.parameters["trajectory_engine"] == "pytraj":
+                    selector = ":WAT,Cl-,Na+"  # to remove
+                else:
+                    selector = None
+                TrajectoryFactory(self.parameters, md_label).write_frames(start_frame, end_frame, out_pdbfile, selector)
 
         if not trajectory:
             _save_pymol_script(vis_inputs)
@@ -1556,7 +1592,7 @@ class EventAssigner:
         if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching":
             msg = "Using Exact matching to identify the best supercluster for transport event '{:s}' buried inside " \
                   "{:d} superclusters (buriedness = {:.2f})\n".format(str(self.event_specification),
-                                                                       buried_sc_ids.size, max_buriedness)
+                                                                      buried_sc_ids.size, max_buriedness)
 
             if not self.parameters["perform_exact_matching_analysis"]:  # not to run this twice
                 buriedness = self._exact_event_tunnel_matching(buried_sc_ids)
@@ -1600,7 +1636,6 @@ class EventAssigner:
         # parse event info
         md_label = self.event_specification[0]
         residue = int(self.event_specification[2][0].split(":")[1])
-        resid = residue + 1  # AquaDuct to PyTraj transformation
         start_frame, end_frame = self.event_specification[2][1]
         start_frame = int(start_frame)
         end_frame = int(end_frame)
@@ -1617,11 +1652,17 @@ class EventAssigner:
         }
 
         # get coordinates of ligand
-        trajectory = Trajectory(self.parameters, md_label)
+        trajectory = TrajectoryFactory(self.parameters, md_label)
         if not trajectory.inputs_exists():
             return buriedness
 
-        event_coords = trajectory.get_coords(start_frame, end_frame, "!:{}".format(resid))
+        if self.parameters["trajectory_engine"] == "mdtraj":
+            selector = "resid {}".format(residue)  # to keep
+        elif self.parameters["trajectory_engine"] == "pytraj":
+            selector = "!:{}".format(residue + 1)  # to remove
+        else:
+            selector = None
+        event_coords = trajectory.get_coords(start_frame, end_frame, selector)
 
         for sc_id in considered_sc_ids:
             super_cluster = self.super_clusters[sc_id]
@@ -1697,13 +1738,20 @@ class EventAssigner:
                 if self.parameters["visualize_exact_matching_outcomes"]:
                     folder_path = os.path.join(self.parameters["exact_matching_vis_path"], md_label,
                                                "{}_sc{}".format(self.event_specification[1], sc_id))
+
+                    if self.parameters["trajectory_engine"] == "mdtraj":
+                        resid = [residue]
+                    elif self.parameters["trajectory_engine"] == "pytraj":
+                        resid = [residue + 1]
+                    else:
+                        resid = None
                     visualize_transport_details(folder_path, trajectory, start_frame, end_frame,
-                                                self.parameters["caver_traj_offset"], clusters2proc, resids=[resid])
+                                                self.parameters["caver_traj_offset"], clusters2proc, resids=resid)
 
         return buriedness
 
 
-def visualize_transport_details(out_folder_path: str, trajectory: Trajectory, start_frame: int,
+def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int,
                                 end_frame: int, caver_traj_offset: int,
                                 caver_clusters: Optional[List[TunnelCluster]] = None,
                                 start_snapshot: Optional[int] = None, end_snapshot: Optional[int] = None,
@@ -1714,7 +1762,7 @@ def visualize_transport_details(out_folder_path: str, trajectory: Trajectory, st
     :param trajectory: MD simulation trajectory to process
     :param start_frame: start frame for visualization
     :param end_frame: end frame for visualization
-    :param caver_traj_offset: difference in IDs of PyTraj frames (from 0) and caver snapshots (often from 1)
+    :param caver_traj_offset: difference in IDs of MD frames (from 0) and caver snapshots (often from 1)
     :param caver_clusters: list of tunnel clusters for visualization
     :param start_snapshot: start snapshot for visualization
     :param end_snapshot: end snapshot for visualization
@@ -1734,7 +1782,14 @@ def visualize_transport_details(out_folder_path: str, trajectory: Trajectory, st
 
     os.makedirs(out_folder_path, exist_ok=True)
     protein_filename = os.path.join(out_folder_path, "structure.pdb.gz")
-    trajectory.write_frames(start_frame, end_frame, protein_filename, ":WAT,Cl-,Na+")
+
+    if trajectory.parameters["trajectory_engine"] == "mdtraj":
+        selector = "protein"  # to keep
+    elif trajectory.parameters["trajectory_engine"] == "pytraj":
+        selector = ":WAT,Cl-,Na+"  # for removal
+    else:
+        selector = None
+    trajectory.write_frames(start_frame, end_frame, protein_filename, selector)
 
     cluster_labels = list()
     if caver_clusters:
@@ -1748,7 +1803,13 @@ def visualize_transport_details(out_folder_path: str, trajectory: Trajectory, st
             resid_label = "event_{}".format(resid)
             resid_labels.append(resid_label)
             event_filename = os.path.join(out_folder_path, resid_label + ".pdb.gz")
-            trajectory.write_frames(start_frame, end_frame, event_filename, "!:{}".format(resid))
+            if trajectory.parameters["trajectory_engine"] == "mdtraj":
+                selector = "resid {}".format(resid)  # to keep
+            elif trajectory.parameters["trajectory_engine"] == "pytraj":
+                selector = "!:{}".format(resid + 1)  # to remove
+            else:
+                selector = None
+            trajectory.write_frames(start_frame, end_frame, event_filename, selector)
 
     with open(os.path.join(out_folder_path, "show_matched_event.py"), "w") as out_stream:
         for cluster_label, color in cluster_labels:

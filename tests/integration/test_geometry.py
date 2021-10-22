@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -27,24 +27,13 @@ import os
 
 
 def set_paths(*args):
+    from transport_tools.libs.utils import splitall
     cwd = os.getcwd()
-    allparts = []
-    while 1:
-        parts = os.path.split(cwd)
-        if parts[0] == cwd:  # sentinel for absolute paths
-            allparts.insert(0, parts[0])
-            break
-        elif parts[1] == cwd:  # sentinel for relative paths
-            allparts.insert(0, parts[1])
-            break
-        else:
-            cwd = parts[0]
-            allparts.insert(0, parts[1])
-    if "transport_tools" not in allparts:
+    all_parts = splitall(cwd)
+    if "transport_tools" not in all_parts:
         raise RuntimeError("Must be executed from the 'transport_tools' folder")
-
-    root_index = allparts.index("transport_tools")
-    root = os.path.join(*allparts[:root_index + 1], *args)
+    root_index = all_parts.index("transport_tools")
+    root = os.path.join(*all_parts[:root_index + 1], *args)
 
     return root
 

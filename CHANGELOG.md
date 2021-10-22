@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - in aquaduct parallel mode + more stable selection of reference structure ([d2104fa](https://github.com/labbit-eu/transport_tools/commit/d2104fae4af9847a767c9b55435e32bd4a0528f7) by briza81).
 
 ### Documentation
--fixed some typos and formatting issues ([7a2b198](https://github.com/labbit-eu/transport_tools/commit/7a2b198aa264e5d3621116f63a11aa273b4bf0d6) by briza81).
+- fixed some typos and formatting issues ([7a2b198](https://github.com/labbit-eu/transport_tools/commit/7a2b198aa264e5d3621116f63a11aa273b4bf0d6) by briza81).
 
 ## [v0.8.3](https://github.com/labbit-eu/transport_tools/releases/tag/v0.8.3) - 2021-05-14
 

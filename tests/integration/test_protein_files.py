@@ -17,7 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -27,24 +27,13 @@ import os
 
 
 def set_paths(*args):
+    from transport_tools.libs.utils import splitall
     cwd = os.getcwd()
-    allparts = []
-    while 1:
-        parts = os.path.split(cwd)
-        if parts[0] == cwd:  # sentinel for absolute paths
-            allparts.insert(0, parts[0])
-            break
-        elif parts[1] == cwd:  # sentinel for relative paths
-            allparts.insert(0, parts[1])
-            break
-        else:
-            cwd = parts[0]
-            allparts.insert(0, parts[1])
-    if "transport_tools" not in allparts:
+    all_parts = splitall(cwd)
+    if "transport_tools" not in all_parts:
         raise RuntimeError("Must be executed from the 'transport_tools' folder")
-
-    root_index = allparts.index("transport_tools")
-    root = os.path.join(*allparts[:root_index + 1], *args)
+    root_index = all_parts.index("transport_tools")
+    root = os.path.join(*all_parts[:root_index + 1], *args)
 
     return root
 
@@ -88,6 +77,8 @@ class TestProteinFiles(unittest.TestCase):
         self.assertTrue(len(res_lines) == len(out_lines),
                         msg="Different length of files '{}' and '{}':".format(out_file, res_file))
         for res_line, out_line in zip(res_lines, out_lines):
+            if ".pdb" in res_file and "REMARK   1 CREATED WITH MDTraj" in res_line:
+                continue
             self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file, res_file))
 
     def setUp(self):
@@ -104,20 +95,20 @@ class TestProteinFiles(unittest.TestCase):
         self.parameters = configuration.get_parameters()
 
     def test_Trajectory(self):
-        from transport_tools.libs.protein_files import Trajectory
+        from transport_tools.libs.protein_files import TrajectoryFactory
         import numpy as np
 
-        traj = Trajectory(self.parameters, "md1")
-        self.assertTrue(np.allclose([18.325685793, -12.265158779, -7.218769817], traj.get_coords(1, 10)[1, 0, :],
-                                    atol=1e-7))
-        traj = Trajectory(self.parameters, "md1", superpose_mask="@CA")
-        self.assertTrue(np.allclose([18.393050373, -12.217455977, -7.220951829], traj.get_coords(1, 10)[1, 0, :],
-                                    atol=1e-7))
-
-        traj.write_frames(1, 10, os.path.join(self.out_path, "traj1.pdb"))
-        traj.write_frames(1, 10, os.path.join(self.out_path, "traj2.pdb"), remove_mask=":WAT,Cl-,Na+")
+        traj1 = TrajectoryFactory(self.parameters, "md1", superpose_mask="protein")
+        coords1 = traj1.get_coords(1, 10)
+        self.assertTrue(np.allclose([18.325684, -12.265163, -7.21877], coords1[1, 0, :], atol=1e-7))
+        traj1.write_frames(1, 10, os.path.join(self.out_path, "traj1.pdb"))
         self._compare_files(os.path.join(self.saved_data, "trajs", "traj1.pdb"),
                             os.path.join(self.out_path, "traj1.pdb"))
+
+        traj2 = TrajectoryFactory(self.parameters, "md1", superpose_mask="name CA")
+        coords2 = traj2.get_coords(1, 10)
+        self.assertTrue(np.allclose([18.393047, -12.21746, -7.220956], coords2[1, 0, :], atol=1e-7))
+        traj2.write_frames(1, 10, os.path.join(self.out_path, "traj2.pdb"), keep_mask="protein")
         self._compare_files(os.path.join(self.saved_data, "trajs", "traj2.pdb"),
                             os.path.join(self.out_path, "traj2.pdb"))
 

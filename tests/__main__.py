@@ -19,7 +19,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.8.5'
+__version__ = '0.9.0'
 __author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
              'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
 __mail__ = 'janbre@amu.edu.pl'
@@ -33,10 +33,10 @@ from transport_tools.tests.integration.test_tools import set_paths
 
 if os.path.exists(set_paths("tests", "data")):
     import transport_tools.tests.integration.test_tools as TT_test_tools
+    import transport_tools.tests.integration.test_protein_files as TT_test_protein_files
     import transport_tools.tests.integration.test_config as TT_test_config
     import transport_tools.tests.integration.test_geometry as TT_test_geometry2
     import transport_tools.tests.integration.test_networks as TT_test_networks2
-    import transport_tools.tests.integration.test_protein_files as TT_test_protein_files
 else:
     print("No test data available, running unit tests only.")
 
@@ -44,8 +44,8 @@ tests_suite = unittest.defaultTestLoader.loadTestsFromModule(TT_test_utils)
 tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry))
 tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks))
 if os.path.exists(set_paths("tests", "data")):
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
     tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_protein_files))
+    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
     tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry2))
     tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks2))
     tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tools))
