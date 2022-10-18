@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -1518,7 +1518,7 @@ class EventAssigner:
         try:
             event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
         except IndexError:
-            logger.warning("Event {} could not be assigned\n".format(self.event.entity_label))
+            logger.debug("Event {} could not be assigned\n".format(self.event.entity_label))
             return list()
 
         for super_cluster in self.super_clusters.values():

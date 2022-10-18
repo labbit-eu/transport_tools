@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -438,10 +438,10 @@ class TestAquaductPath(unittest.TestCase):
                                                                                           list_of_points1[-1])
         self.assertFalse(a)
         self.assertEqual(4, len(b))
-        self.assertTrue(np.allclose(np.array([[0.3, -0.81, -0.55, 1.03, 0.0]]), b[0].data))
-        self.assertTrue(np.allclose(np.array([[-0.43, -2.07, -1.27, 2.47, 0.0]]), b[1].data))
-        self.assertTrue(np.allclose(np.array([[-0.78, -4.81, -3.23, 5.85, 0.0]]), b[2].data))
-        self.assertTrue(np.allclose(np.array([[-1.84, -2.34, -3.85, 4.87, 0.0]]), b[3].data))
+        self.assertTrue(np.allclose(np.array([[0.3, -0.81, -0.55, 1.03, 0.0]]), b[0][1].data))
+        self.assertTrue(np.allclose(np.array([[-0.43, -2.07, -1.27, 2.47, 0.0]]), b[1][1].data))
+        self.assertTrue(np.allclose(np.array([[-0.78, -4.81, -3.23, 5.85, 0.0]]), b[2][1].data))
+        self.assertTrue(np.allclose(np.array([[-1.84, -2.34, -3.85, 4.87, 0.0]]), b[3][1].data))
 
         self.path.parameters["aqauduct_ligand_effective_radius"] = 1.5
         a, b = self.path._get_points_from_intersection_between_starting_and_border_points(list_of_points1,
@@ -451,16 +451,16 @@ class TestAquaductPath(unittest.TestCase):
 
     def test__find_overlapping_path2starting_point(self):
         from transport_tools.libs.geometry import Point
-        from transport_tools.tests.units.data.data_networks import list_of_points1, list_of_points4
+        from transport_tools.tests.units.data.data_networks import list_of_points1_aug, list_of_points4_aug
 
-        outlist = self.path._find_overlapping_path2starting_point(list_of_points1[:2],
+        outlist = self.path._find_overlapping_path2starting_point(list_of_points1_aug[:2],
                                                                   Point([-1.84, -2.34, -3.85], 4.87, 0.00))
         self.assertEqual(0, len(outlist))
 
         outlist = self.path._find_overlapping_path2starting_point([], Point([-1.84, -2.34, -3.85], 4.87, 0.00))
         self.assertEqual(0, len(outlist))
 
-        outlist = self.path._find_overlapping_path2starting_point(list_of_points4,
+        outlist = self.path._find_overlapping_path2starting_point(list_of_points4_aug,
                                                                   Point([0.40, -2.78, 4.85], 5.61, 0.00))
         self.assertEqual(1, len(outlist))
         self.assertTrue(np.allclose(np.array([[0.09, -2.88, 4.79, 5.59, 0.0]]), outlist[0].data))
@@ -499,17 +499,17 @@ class TestAquaductPath(unittest.TestCase):
 
     def test__compute_network_of_overlapping_points(self):
         from transport_tools.libs.geometry import Point
-        from transport_tools.tests.units.data.data_networks import list_of_points1, list_of_points4
+        from transport_tools.tests.units.data.data_networks import list_of_points1_aug, list_of_points4_aug
 
-        network = self.path._compute_network_of_overlapping_points(list_of_points1[:2],
+        network = self.path._compute_network_of_overlapping_points(list_of_points1_aug[:2],
                                                                    Point([-1.84, -2.34, -3.85], 4.87, 0.00))
         self.assertDictEqual({'BP': set(), 'SP': set(), 0: {1}, 1: {0}}, network)
-        network = self.path._compute_network_of_overlapping_points(list_of_points4,
+        network = self.path._compute_network_of_overlapping_points(list_of_points4_aug,
                                                                    Point([0.40, -2.78, 4.85], 5.61, 0.00))
         self.assertDictEqual({'BP': {0, 1, 2}, 'SP': set(), 0: {1, 2, 'BP'}, 1: {0, 2, 'BP'}, 2: {0, 1, 'BP'}}, network)
 
         self.path.parameters["aqauduct_ligand_effective_radius"] = 1.5
-        network = self.path._compute_network_of_overlapping_points(list_of_points1[:2],
+        network = self.path._compute_network_of_overlapping_points(list_of_points1_aug[:2],
                                                                    Point([-1.84, -2.34, -3.85], 4.87, 0.00))
         self.assertDictEqual({'BP': {1}, 'SP': {0}, 0: {1, 'SP'}, 1: {0, 'BP'}}, network)
 

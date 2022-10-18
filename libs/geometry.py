@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -42,13 +42,14 @@ logger = getLogger(__name__)
 
 
 class Point:
-    def __init__(self, xyz, distance=-1, radius=0):
+    def __init__(self, xyz: List[float], distance: float = -1, radius: float = 0):
         """
         Class for point storing and manipulation
         :param xyz: coordinates
         :param distance: distance to arbitrary point
         :param radius: radius of allocated space
         """
+
         self.data = np.append(xyz, [distance, radius]).astype(float).reshape(1, 5)
 
     def __str__(self):

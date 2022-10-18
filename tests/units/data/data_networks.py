@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -597,6 +597,15 @@ list_of_points1 = [
     Point([-2.78, -4.36, -4.04], 6.56, 0.00)
 ]
 
+list_of_points1_aug = [
+    [0, Point([0.30, -0.81, -0.55], 1.03, 0.00)],
+    [1, Point([-0.43, -2.07, -1.27], 2.47, 0.00)],
+    [2, Point([-0.78, -4.81, -3.23], 5.85, 0.00)],
+    [3, Point([-1.84, -2.34, -3.85], 4.87, 0.00)],
+    [4, Point([-2.78, -4.36, -4.04], 6.56, 0.00)]
+]
+
+
 list_of_points2 = [
     Point([-2.78, -4.36, -4.04], 6.56, 0.00),
     Point([-1.84, -2.34, -3.85], 4.87, 0.00),
@@ -615,6 +624,13 @@ list_of_points4 = [
     Point([0.09, -2.88, 4.79], 5.59, 0.00),
     Point([0.67, -2.40, 4.93], 5.52, 0.00)
 ]
+
+list_of_points4_aug = [
+    [0, Point([1.08, -3.01, 4.46], 5.49, 0.00)],
+    [1, Point([0.09, -2.88, 4.79], 5.59, 0.00)],
+    [2, Point([0.67, -2.40, 4.93], 5.52, 0.00)]
+]
+
 
 full_scores = {'BP': 5.609217279972872, 'SP': np.inf, 0: 6.488174186054253, 1: 6.585181422829492, 2: 6.521948226554441}
 

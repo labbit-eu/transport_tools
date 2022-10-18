@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.1'
+__version__ = '0.9.2'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -1126,6 +1126,7 @@ class TransportEvent:
         self.path_label = path_label
         self.md_label = md_label
         self.transform_mat = transform_mat
+        self.modified = False
 
     def __str__(self):
         msg = "{}\n".format(self.type)
@@ -1167,6 +1168,7 @@ class TransportEvent:
         """
 
         self.points.append(point)
+        self.modified = True
 
     def extend_points_front(self, points2add: List[Point]):
         """
@@ -1177,6 +1179,7 @@ class TransportEvent:
         tmp = self.points.copy()
         self.points = points2add.copy()
         self.points.extend(tmp)
+        self.modified = True
 
     def extend_points_back(self, points2add: List[Point]):
         """
@@ -1185,6 +1188,7 @@ class TransportEvent:
         """
 
         self.points.extend(points2add)
+        self.modified = True
 
     def get_num_points(self) -> int:
         """
@@ -1219,11 +1223,11 @@ class TransportEvent:
 
     def get_points_data(self) -> np.array:
         """
-        Convert data of points forming this event, adding info on order of points and identifying the tunnel end point
+        Convert data of points forming this event, adding info on order of points and identifying the event end point
         :return: augmented data for this event suitable for LayeredRepresentation.load_points() method
         """
 
-        if self.points_data is None:
+        if self.points_data is None or self.modified:
             self.points_data = self.points[0].data
             for point in self.points[1:]:
                 self.points_data = np.concatenate((self.points_data, point.data))
@@ -1247,6 +1251,13 @@ class TransportEvent:
         return points_data
 
     # ===  Events methods ===
+    def is_singleton(self) -> bool:
+        """
+        Test if this event is composed of more than one point
+        """
+
+        return len(self.points) <= 1
+
     def has_transition(self) -> bool:
         """
         Test if this event has transition between bulk solvent and active site
@@ -1273,13 +1284,14 @@ class TransportEvent:
         """
 
         self.extend_points_front(other_event.points)
+        self.modified = True
 
     def get_visualization_cgo(self) -> List[float]:
         """
         Converts event points to Pymol compiled graphics object(CGO) for visualization
         :return: CGO of event points
         """
-        if self.points_data is None:
+        if self.points_data is None or self.modified:
             self.points_data = self.points[0].data
             for point in self.points[1:]:
                 self.points_data = np.concatenate((self.points_data, point.data))
@@ -1397,6 +1409,21 @@ class AquaductPath:
         self._prune_events_outside_required_min_distance()
         self._extend_transition_parts()
         self._find_overlapping_connections2starting_point()
+        self._prune_singleton_events()
+
+    def _prune_singleton_events(self):
+        """
+        Remove events that contain less then two points
+        """
+        singletons = list()
+        for event in self.events.values():
+            if event.has_transition() and event.is_singleton():
+                logger.debug("Event {}_{} is composed of a single point only, skipping!".format(self.path_label,
+                                                                                                event.type))
+                singletons.append(event.type)
+
+        for event_type in singletons:
+            del self.events[event_type]
 
     def _parse_aquaduct_path(self, cgo_object: list) -> List[TransportEvent]:
         """
@@ -1595,15 +1622,17 @@ class AquaductPath:
         return include_points
 
     def _get_points_from_intersection_between_starting_and_border_points(self, points: List[Point],
-                                                                         border_point: Point) -> (bool, List[Point]):
+                                                                         border_point: Point) -> (bool,
+                                                                                                  List[Tuple[int,
+                                                                                                             Point]]):
         """
         Identify points that are in the intersection between starting point (SP) and the border point
         :param points: points to evaluate
         :param border_point: border point (BP) from the transit event that is closest to the SP
-        :return: if BP overlaps with SP and list of points between SP and BP
+        :return: if BP overlaps with SP and list of points (and their original IDs) between SP and BP
         """
 
-        points_inbetween = list()
+        points_dataset = list()
         border_overlaps_starting_point = False
 
         # previously run check_events_within_required_min_distance provided precomputed distances to SP
@@ -1611,30 +1640,32 @@ class AquaductPath:
         if radius <= self.parameters["aqauduct_ligand_effective_radius"]:
             border_overlaps_starting_point = True
             # BP of event efficiently overlaps with SP => no need to find any further connection, just add SP
-            return border_overlaps_starting_point, points_inbetween
+            return border_overlaps_starting_point, points_dataset
 
-        for point in points:
+        for i, point in enumerate(points):
             dist2start = point.data[0, 3]
             if dist2start <= radius:  # close to SP
                 if 0 < point.distance2point(border_point) <= radius:  # close to BP but not the BP itself
-                    points_inbetween.append(point)
+                    points_dataset.append((i, point))
 
-        return border_overlaps_starting_point, points_inbetween
+        return border_overlaps_starting_point, points_dataset
 
-    def _find_overlapping_path2starting_point(self, points: List[Point], border_point: Point) -> List[Point]:
+    def _find_overlapping_path2starting_point(self, points_dataset: List[Tuple[int, Point]],
+                                              border_point: Point) -> List[Point]:
         """
         Identify points for extension of transition events by searching the shortest direct path of overlapping points
         between border point (BP) and starting point (SP) using A* algorithm
-        :param points: points to evaluate
+        :param points_dataset: points (and their original IDs) to evaluate
         :param border_point: BP from the transit event that is closest to the SP
         :return: list of overlapping points forming the shortest 'direct' path efficiently leading to the SP, or as
         close to it as possible
         """
 
-        if not points:
+        if not points_dataset:
             return []
 
-        network = self._compute_network_of_overlapping_points(points, border_point)
+        network = self._compute_network_of_overlapping_points(points_dataset, border_point)
+        points = [x[1] for x in points_dataset]
 
         length_scores = dict()  # connectivity cost of reaching this point from BP
         full_scores = dict()  # length_score + distance to the target (SP)
@@ -1744,26 +1775,29 @@ class AquaductPath:
 
         return min(tmp_list)[1]
 
-    def _compute_network_of_overlapping_points(self, points: List[Point],
+    def _compute_network_of_overlapping_points(self, points_dataset: List[Tuple[int, Point]],
                                                border_point: Point) -> Dict[Union[str, int], Set[Union[str, int]]]:
         """
         Define connectivity between points on the basis of their potential overlaps
-        :param points: points to evaluate
+        :param points_dataset: points to evaluate
         :param border_point: border point (BP) from the transit event that is closest to the starting point (SP)
         :return: dictionary with a set of IDs of overlapping (connected) points for each point
         """
 
-        num_obs = len(points)
+        num_obs = len(points_dataset)
         network = dict()
         network["BP"] = set()
         network["SP"] = set()
 
         for id1 in range(num_obs):
-            point1 = points[id1]
+            point1 = points_dataset[id1][1]
             if id1 not in network.keys():
                 network[id1] = set()
             for id2 in range(id1 + 1, num_obs):
-                point2 = points[id2]
+                point2 = points_dataset[id2][1]
+                diff_in_original_order = abs(points_dataset[id1][0]-points_dataset[id2][0])
+                if diff_in_original_order == 1:  # points were originally connected in AquaDuct trace
+                    network[id1].add(id2)
                 if point1.distance2point(point2) <= 2 * self.parameters["aqauduct_ligand_effective_radius"]:
                     # points are connected when considering ligand radii
                     network[id1].add(id2)
@@ -2156,7 +2190,8 @@ class SuperCluster:
     # === methods for data reporting ===
     def prepare_visualization(self,  md_label: str = "overall",
                               flag: str = "") -> Tuple[List[str],
-                                                       Optional[Tuple[LayeredPathSet, Tuple[str, str, int, bool, str]]]]:
+                                                       Optional[Tuple[LayeredPathSet,
+                                                                      Tuple[str, str, int, bool, str]]]]:
         """
         Prepare overall CGO files for visualization of paths representing this supercluster (SC) and generate lines
         for Pymol visualization script
