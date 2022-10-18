@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -1023,7 +1023,8 @@ class LayeredPathSet:
         """
 
         angle = vector_angle(self._get_direction(), other_set._get_direction())
-        if self.parameters["directional_cutoff"] <= angle <= (2 * np.pi - self.parameters["directional_cutoff"]):
+        if not self.parameters["calculate_exact_path_distances"] and self.parameters["directional_cutoff"] <= angle <= \
+                (2 * np.pi - self.parameters["directional_cutoff"]):
             # directionally misaligned
             return 999
 
@@ -1092,7 +1093,7 @@ class LayeredPathSet:
 
                         # project the mean value to test for far away pathsets
                         sum_distances += (dist4path1 + cum_frag_dist) / dists2evaluate
-                        if sum_distances > too_distant:
+                        if not self.parameters["calculate_exact_path_distances"] and sum_distances > too_distant:
                             # avg of two path_sets that are too distant will still be beyond the cutoff,
                             # not messing the clustering much
                             return 999
@@ -1921,6 +1922,28 @@ def get_layer_id_from_distance(distances: np.array, layer_thickness: float) -> n
     return np.ceil(np.ceil(distances) / layer_thickness) - 1
 
 
+def read_starting_points(tunnel_origin_file: str) -> np.array:
+    """
+    Extracts ensemble of coordinates of starting points from origin_file
+    :param tunnel_origin_file: file with caver starting points
+    :return: array with coordinates of all starting points extracted from the file
+    """
+
+    from transport_tools.libs.utils import test_file
+    from transport_tools.libs.protein_files import AtomFromPDB
+
+    starting_points = np.empty((1, 4))
+    test_file(tunnel_origin_file)
+    with open(tunnel_origin_file) as ORIGIN:
+        for line in ORIGIN.readlines():
+            if line.startswith("ATOM"):
+                atom = AtomFromPDB(line.rstrip("\n"))
+                starting_points = np.concatenate((starting_points, np.array([atom.x, atom.y, atom.z, 1]).reshape(1, 4)),
+                                                 axis=0)
+
+    return starting_points[1:]
+
+
 def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> (np.array, str):
     """
     Computes the average coordinates of starting points from origin_file
@@ -1929,23 +1952,8 @@ def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> (np.a
     :return: array containing the average starting point coordinates & md_label
     """
 
-    from transport_tools.libs.utils import test_file
-    from transport_tools.libs.protein_files import AtomFromPDB
-
-    starting_point = np.zeros((4, 1))
-    i = 0
-
-    test_file(tunnel_origin_file)
-    with open(tunnel_origin_file) as ORIGIN:
-        for line in ORIGIN.readlines():
-            if line.startswith("ATOM"):
-                i = i + 1
-                atom = AtomFromPDB(line.rstrip("\n"))
-                starting_point += np.array([atom.x, atom.y, atom.z, 1]).reshape(4, 1)
-
-    starting_point /= i
-    
-    return starting_point, md_label
+    starting_points = read_starting_points(tunnel_origin_file)
+    return np.mean(starting_points, axis=0).reshape(4, 1), md_label
             
 
 def cart2spherical(xyz: np.array) -> np.array:

@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -519,6 +519,25 @@ def transform_pdb_file(in_pdb_file: str, out_pdb_file: str, transform_mat: np.ar
     to_move.xyz[0] = np.matmul(coords, transform_mat.T)[:, :3]
     to_move.xyz = to_move.xyz / 10
     to_move.save_pdb(out_pdb_file)
+
+
+def save_caver_starting_points(out_pdb_file: str, coords: np.array, transform_mat: Optional[np.array] = None):
+    """
+    Translates and rotates atoms in PDB file by transformation matrix
+    :param out_pdb_file: path to the transformed pdb file
+    :param coords: coordinates of the starting points
+    :param transform_mat: 4x4 transformation matrix to be applied on the input coordinates
+    """
+
+    if transform_mat is not None:
+        coords = np.matmul(coords, transform_mat.T)[:, :3]
+
+    with open(out_pdb_file, "w") as out_stream:
+        for i, xyz in enumerate(coords):
+            out_stream.write("MODEL        {:d}\n".format(i + 1))
+            out_stream.write("ATOM{:7d}  {:<3s} {:3s} S{:4d}{:12.3f}{:8.3f}{:8.3f}\n".format(i + 1, "H", "FIL", 1,
+                                                                                             xyz[0], xyz[1], xyz[2]))
+            out_stream.write("ENDMDL\n".format(i + 1))
 
 
 def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.array:

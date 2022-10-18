@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -147,7 +147,8 @@ class TestLayeredPathSet(unittest.TestCase):
             "clustering_max_num_rep_frag": 0,
             "directional_cutoff": 1.5707963267948966,
             "random_seed": 4,
-            "sp_radius": 0.5
+            "sp_radius": 0.5,
+            "calculate_exact_path_distances": False
         }
 
         self.node_path_tun = ['0_1', '1_1', '2_1', '3_1', '4_1', '5_1', '6_2', '7_1', '8_1', '8_3', '7_3', '6_3', '5_2',

@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -33,9 +33,9 @@ from transport_tools.libs.ui import progressbar, TimeProcess, process_count
 from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     subsample_events, get_md_membership4groups
-from transport_tools.libs.geometry import LayeredPathSet, average_starting_point
+from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
-    transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct
+    transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
 
 logger = getLogger(__name__)
@@ -540,17 +540,23 @@ class TransportProcesses:
             if self._outlier_transport_events.exist():
                 self._outlier_transport_events.report_events_details("outlier_transport_events_details.txt")
 
-    def clear_results(self, overwrite: bool = False):
+    def clear_results(self, overwrite: bool = False, output_folders: List[str] = None):
         """
         Removes output folder
         :param overwrite: if to perform the cleaning of non empty folder
+        :param output_folders: which folders to be cleaned out, if not specified, all are removed
         """
 
         from shutil import rmtree
-        output_folder_keys = ["internal_folder", "data_folder", "visualization_folder", "statistics_folder"]
 
-        for folder_key in output_folder_keys:
-            output_path = self.parameters[folder_key]
+        if output_folders is None:  # default behavior is to remove all output folders produced
+            folders2remove = list()
+            for folder_key in ["internal_folder", "data_folder", "visualization_folder", "statistics_folder"]:
+                folders2remove.append(self.parameters[folder_key])
+        else:
+            folders2remove = output_folders
+
+        for output_path in folders2remove:
             logger.debug("Cleaning content of results folder '{}'".format(output_path))
             if not overwrite and os.path.exists(output_path) and os.listdir(output_path):
                 raise RuntimeError("Error output folder '{}' exists and is not empty. Specify different name in "
@@ -645,7 +651,7 @@ class TransportProcesses:
         with TimeProcess("Cluster-cluster distances calculation"):
             # collect clusters from all analyzed MD simulations & order clusters according to their importance,
             # e.g., cluster ID, their mean throughput, number of tunnels, finally we have md_label to avoid
-            # Duplicated keys in case of exact same clusters apperaing more times (e.g. due to analyses of parts of
+            # Duplicated keys in case of exact same clusters appearing more times (e.g. due to analyses of parts of
             # the same simulation
 
             path_sets = dict()
@@ -679,6 +685,18 @@ class TransportProcesses:
         """
         Performs clustering of tunnel clusters and creates of their superclusters (SCs)
         """
+
+        # clean data produced by previous merging, if any are present
+        folders2remove = list()
+        for folder_key in ["visualization_folder", "statistics_folder"]:
+            folders2remove.append(self.parameters[folder_key])
+        folders2remove.append(os.path.join(self.parameters["internal_folder"], "super_cluster_pathsets"))
+        folders2remove.append(os.path.join(self.parameters["internal_folder"], "super_cluster_profiles"))
+        if os.path.exists(self.parameters["data_folder"]):
+            for folder in os.listdir(self.parameters["data_folder"]):
+                if folder != "clustering":  # since this contains data from previous stage
+                    folders2remove.append(os.path.join(self.parameters["data_folder"], folder))
+        self.clear_results(self.parameters["overwrite"], folders2remove)
 
         total_num_md_sims = len(self.caver_input_folders)
         with TimeProcess("Clustering"):
@@ -849,6 +867,14 @@ class TransportProcesses:
                 with open(os.path.join(self.transformation_folder, self.parameters["caver_foldername"],
                                        md_label + "-transform_mat.dump"), "wb") as out:
                     pickle.dump(tunnel_full_trans_mat, out)
+
+                # save transformed origin pdb file
+                in_origin_file = utils.get_filepath(os.path.join(self.parameters["caver_results_path"], md_label),
+                                                    self.parameters["caver_relative_origin_file"])
+                out_origin_file = os.path.join(self.transformation_folder, self.parameters["caver_foldername"],
+                                               "v_origin-" + md_label + "-transformed.pdb")
+                sp_coords = read_starting_points(in_origin_file)
+                save_caver_starting_points(out_origin_file, sp_coords, tunnel_full_trans_mat)
 
             for md_label in self.aquaduct_input_folders:
                 aquaduct_full_trans_mat = general_transform_mat.dot(aquaduct_transform_mat[md_label] +

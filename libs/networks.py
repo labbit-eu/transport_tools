@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 

@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.2'
+__version__ = '0.9.3'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -114,6 +114,7 @@ class AnalysisConfig:
             "max_tunnel_curvature4clustering": 2.0,  # filters on tunnel load, applies for layering only
             "clustering_linkage": "complete",  # for agglomerative clustering
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
+            "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -221,6 +222,7 @@ class AnalysisConfig:
 
         self.boolean_params = [
             "process_bottleneck_residues",
+            "calculate_exact_path_distances",
             "use_cluster_spread",
             "perform_exact_matching_analysis",
             "verbose_logging",
@@ -235,7 +237,7 @@ class AnalysisConfig:
             "visualize_layered_clusters",
             "visualize_layered_events",
             "visualize_exact_matching_outcomes",
-            "legacy_pymol_support"
+            "legacy_pymol_support",
         ]
 
         self.integer_params = [
