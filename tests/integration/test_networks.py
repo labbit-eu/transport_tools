@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2021  Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej
-# Surpeta, Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal  <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,9 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.0'
-__author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
-             'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
+__version__ = '0.9.1'
+__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
@@ -641,11 +639,11 @@ Number of release events = 0
         self._prioritize()
         self.super_clusters[1].compute_space_descriptors()
         self.super_clusters[1].load_path_sets()
-        self.assertListEqual(["with gzip.open('sources/super_cluster_CGOs/SC01_overall_pathset.dump.gz', 'rb') as in_stream:\n",
+        self.assertListEqual(["with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC01_overall_pathset.dump.gz'), 'rb') as in_stream:\n",
                               "    pathset = pickle.load(in_stream)\n",
                               "cmd.load_cgo(pathset, 'cluster_001')\n",
                               "cmd.set('cgo_line_width', 5, 'cluster_001')\n\n",
-                              "events = ['sources/layered_data/aquaduct/md1/paths/wat_1_entry_pathset.dump.gz',\n'sources/layered_data/aquaduct/md1/paths/wat_4_entry_pathset.dump.gz']\n",
+                              "events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_1_entry_pathset.dump.gz'),\nos.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_4_entry_pathset.dump.gz')]\n",
                               "for event in events:\n",
                               "    with gzip.open(event, 'rb') as in_stream:\n",
                               "        pathset = pickle.load(in_stream)\n",
@@ -653,7 +651,7 @@ Number of release events = 0
                               "            path[3:6] = [0.0, 0.0, 1.0]\n",
                               "            cmd.load_cgo(path, 'entry_001')\n",
                               "cmd.set('cgo_line_width', 2, 'entry_001')\n\n",
-                              "events = ['sources/layered_data/aquaduct/md1/paths/wat_1_release_pathset.dump.gz']\n",
+                              "events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_1_release_pathset.dump.gz')]\n",
                               "for event in events:\n",
                               "    with gzip.open(event, 'rb') as in_stream:\n",
                               "        pathset = pickle.load(in_stream)\n",

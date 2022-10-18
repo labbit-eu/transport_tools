@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2021  Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej
-# Surpeta, Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal  <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,9 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.0'
-__author__ = 'Jan Brezovsky, Aravind Selvaram Thirunavukarasu, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta, ' \
-             'Nishita Mandal, Cedrix Jurgal Dongmo Foumthuim, Dheeraj Kumar Sarkar, Nikhil Agrawal'
+__version__ = '0.9.1'
+__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
 import os
@@ -646,7 +644,9 @@ class TransportProcesses:
 
         with TimeProcess("Cluster-cluster distances calculation"):
             # collect clusters from all analyzed MD simulations & order clusters according to their importance,
-            # e.g., cluster ID, number of tunnels, and their mean throughput
+            # e.g., cluster ID, their mean throughput, number of tunnels, finally we have md_label to avoid
+            # Duplicated keys in case of exact same clusters apperaing more times (e.g. due to analyses of parts of
+            # the same simulation
 
             path_sets = dict()
             ordered_clusters = dict()
@@ -660,13 +660,13 @@ class TransportProcesses:
                     cluster_specification = (md_label, cls_id)
                     avg_throughput, num_tunnels = layered_path_set.characteristics
                     cluster_characteristics[cluster_specification] = layered_path_set.characteristics
-                    importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels)
+                    importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels, md_label)
                     path_sets[cluster_specification] = layered_path_set
                     ordered_clusters[importance_key] = cluster_specification
 
             cluster_specifications = [ordered_clusters[x] for x in sorted(ordered_clusters.keys())]
             if len(cluster_specifications) <= 1:
-                raise RuntimeError("Not enough tunnel clusters are available to perform calculate their distances")
+                raise RuntimeError("Not enough tunnel clusters available to calculate their distances")
 
             logger.info("Computing distances for {:d} tunnel clusters "
                         "using {:d} {}:".format(len(cluster_specifications), self.parameters["num_cpus"],
@@ -1515,7 +1515,11 @@ class EventAssigner:
 
         directionally_fitting_super_clusters = set()
         # compute direction of transport_event based on its terminal node
-        event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
+        try:
+            event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
+        except IndexError:
+            logger.warning("Event {} could not be assigned\n".format(self.event.entity_label))
+            return list()
 
         for super_cluster in self.super_clusters.values():
             if super_cluster.has_passed_filter(consider_transport_events=False, active_filters=self.active_filters):
