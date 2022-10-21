@@ -72,4 +72,7 @@ If you encounter any problems with installation, or the use of *TransportTools* 
 
 Documentation can be found on [github.com](https://github.com/labbit-eu/transport_tools).
 
+## References
+* [Brezovsky et al, 2022: TransportTools: a library for high-throughput analyses of internal voids in biomolecules and ligand transport through them. Bioinformatics 38: 1752-1753](https://doi.org/10.1093/bioinformatics/btab872)
+
 
