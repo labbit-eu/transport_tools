@@ -1,7 +1,7 @@
 TransportTools
 ==============
 
-*TransportTools* library builds on and extends results of [CAVER](http://caver.cz) and [AQUA-DUCT](http://aquaduct.pl) analyses to provide comprehensive insights into molecular details of transport processes related to biomolecules. 
+*TransportTools* library builds on and extends results of [CAVER](http://caver.cz) and [AQUA-DUCT](http://aquaduct.pl) analyses to provide comprehensive insights into molecular details of transport processes related to biomolecules. The developement of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).
 
 Visit our [homepage](http://labbit.eu/software).
 
