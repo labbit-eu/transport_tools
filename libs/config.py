@@ -79,6 +79,7 @@ class AnalysisConfig:
             "caver_relative_profile_file": None,
             "caver_relative_origin_file": None,
             "caver_relative_pdb_file": None,
+            "caver_pdb_file_pattern": "*[0-9]*.pdb",
             "caver_relative_bottleneck_file": None,
 
             # AQUA-DUCT
@@ -842,7 +843,7 @@ class AnalysisConfig:
 
     def _get_caver_filenames(self) -> str:
         """
-        Check if files with same filenames matching the pattern can be found in analyzed folders
+        Check if files with same filenames matching the pdbfile_pattern can be found in analyzed folders
         :return: file_name
         """
 
@@ -851,7 +852,8 @@ class AnalysisConfig:
         for folder_path in folders_caver:
             if not folder_path.is_dir():
                 continue
-            _search = os.path.join(self.input_paths["caver_results_relative_subfolder_path"], "data", "*[0-9]*.pdb")
+            _search = os.path.join(self.input_paths["caver_results_relative_subfolder_path"], "data",
+                                   self.input_paths["caver_pdb_file_pattern"])
             for item in folder_path.glob(_search):
                 if item.is_file():
                     filenames.add(item.name)
