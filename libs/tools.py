@@ -275,47 +275,48 @@ class TransportProcesses:
         num_clusters = len(cluster_specifications)
         distance_matrix = np.full((num_clusters, num_clusters), np.inf)
 
-        # parallel processing and progress monitoring related variables
-        processing = list()
-        n_jobs = int((num_clusters ** 2 - num_clusters) / 2)
-        current_batch_size = 0
-        done_calcs = 0
-        jobs4batch = min(self.parameters["num_cpus"] * self.parameters["n_jobs_per_cpu_batch"], int(n_jobs / 10))
-        progressbar(done_calcs, n_jobs)
-
-        with Pool(processes=self.parameters["num_cpus"]) as pool:
-            for cls1 in range(num_clusters):
-                num_dists2compute = num_clusters - cls1 - 1
-
-                # to avoid large memory allocation, keep processing queue moderately filled
-                if jobs4batch <= current_batch_size + num_dists2compute and current_batch_size > 0:
-
-                    # perform accumulated calculation jobs in this batch
-                    for p in processing:
-                        id1, id2, distance = p.get()
-                        distance_matrix[id1, id2] = distance
-
-                    done_calcs += len(processing)
-                    progressbar(done_calcs, n_jobs)
-                    processing = list()
-                    current_batch_size = 0
-
-                for cls2 in range(cls1 + 1, num_clusters):
-                    cluster1_specification = cluster_specifications[cls1]
-                    cluster2_specification = cluster_specifications[cls2]
-                    processing.append(pool.apply_async(self._calc_avg_cluster_distance,
-                                                       args=(cls1, cls2, path_sets[cluster1_specification],
-                                                             path_sets[cluster2_specification], precision,
-                                                             self.parameters["clustering_cutoff"])))
-                current_batch_size += num_dists2compute
-
-            # perform remaining calculation jobs
-            for p in processing:
-                id1, id2, distance = p.get()
-                distance_matrix[id1, id2] = distance
-
-            done_calcs += len(processing)
+        if num_clusters > 1:
+            # parallel processing and progress monitoring related variables
+            processing = list()
+            n_jobs = int((num_clusters ** 2 - num_clusters) / 2)
+            current_batch_size = 0
+            done_calcs = 0
+            jobs4batch = min(self.parameters["num_cpus"] * self.parameters["n_jobs_per_cpu_batch"], int(n_jobs / 10))
             progressbar(done_calcs, n_jobs)
+
+            with Pool(processes=self.parameters["num_cpus"]) as pool:
+                for cls1 in range(num_clusters):
+                    num_dists2compute = num_clusters - cls1 - 1
+
+                    # to avoid large memory allocation, keep processing queue moderately filled
+                    if jobs4batch <= current_batch_size + num_dists2compute and current_batch_size > 0:
+
+                        # perform accumulated calculation jobs in this batch
+                        for p in processing:
+                            id1, id2, distance = p.get()
+                            distance_matrix[id1, id2] = distance
+
+                        done_calcs += len(processing)
+                        progressbar(done_calcs, n_jobs)
+                        processing = list()
+                        current_batch_size = 0
+
+                    for cls2 in range(cls1 + 1, num_clusters):
+                        cluster1_specification = cluster_specifications[cls1]
+                        cluster2_specification = cluster_specifications[cls2]
+                        processing.append(pool.apply_async(self._calc_avg_cluster_distance,
+                                                           args=(cls1, cls2, path_sets[cluster1_specification],
+                                                                 path_sets[cluster2_specification], precision,
+                                                                 self.parameters["clustering_cutoff"])))
+                    current_batch_size += num_dists2compute
+
+                # perform remaining calculation jobs
+                for p in processing:
+                    id1, id2, distance = p.get()
+                    distance_matrix[id1, id2] = distance
+
+                done_calcs += len(processing)
+                progressbar(done_calcs, n_jobs)
 
         # complete the matrix
         for cls1 in range(num_clusters):
@@ -1391,11 +1392,12 @@ class TransportProcesses:
                         processing.append(pool.apply_async(path_set.visualize_cgo, args=(params[0], params[1],
                                                                                          params[2], params[3],
                                                                                          params[4], surface_cgo)))
-                    items2process = len(processing)
-                    progressbar(0, items2process)
-                    for i, p in enumerate(processing):
-                        p.get()
-                        progressbar(i + 1, items2process)
+                    if len(processing) > 0:
+                        items2process = len(processing)
+                        progressbar(0, items2process)
+                        for i, p in enumerate(processing):
+                            p.get()
+                            progressbar(i + 1, items2process)
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict,
                                          sc_id: Optional[int] = None,
