@@ -178,6 +178,7 @@ class AnalysisConfig:
             "trajectory_engine": "mdtraj",  # mdtraj or pytraj if installed additionally
             "logfilename": "transport_tools.log",
             "log_level": "info",
+            "msms": None,  # path to binary of  https://ccsb.scripps.edu/msms/ program for faster volume visulaization
             "max_events_per_cluster4visualization": 1000
         }
         self.advanced_settings_defaults = self.advanced_settings.copy()
@@ -218,7 +219,8 @@ class AnalysisConfig:
             "num_cpus",
             "pdb_reference_structure",
             "snapshots_per_simulation",
-            "comparative_groups_definition"
+            "comparative_groups_definition",
+            "msms"
         ]
 
         self.boolean_params = [
@@ -340,7 +342,8 @@ class AnalysisConfig:
         :param overridden_parameters: list of parameter names which have been overridden
         """
         if not self.output_settings["visualize_super_cluster_volumes"] and \
-                "visualize_super_cluster_volumes" not in overridden_parameters:
+                "visualize_super_cluster_volumes" not in overridden_parameters \
+                and self.advanced_settings["msms"] is None:
             try:
                 import mcubes
             except ModuleNotFoundError:
@@ -898,12 +901,23 @@ class AnalysisConfig:
         msg += "hdbscan {}\n".format(get_distribution('hdbscan').version)
         msg += "MDtraj {}\n".format(get_distribution('mdtraj').version)
         if self.parameters["visualize_super_cluster_volumes"]:
-            try:
-                msg += "mcubes {}\n".format(get_distribution('pymcubes').version)
-            except DistributionNotFound:
-                raise RuntimeError("Requested to 'visualize_super_cluster_volumes' but required 'mcubes' module "
-                                   "cannot be imported. Please ensure that it is properly installed in the current "
-                                   "environment--for example by running 'pip install --upgrade PyMCubes'.")
+            if self.parameters["msms"] is None:
+                try:
+                    msg += "mcubes {}\n".format(get_distribution('pymcubes').version)
+                except DistributionNotFound:
+                    raise RuntimeError("Requested to 'visualize_super_cluster_volumes' but required 'mcubes' module "
+                                       "cannot be imported. Please ensure that it is properly installed in the current "
+                                       "environment--for example by running 'pip install --upgrade PyMCubes'.")
+            else:
+                import subprocess
+                try:
+                    result = subprocess.run(self.parameters["msms"], capture_output=True, text=True).stdout
+                    msg += "msms {}\n".format(result.split()[1])
+                except FileNotFoundError:
+                    raise RuntimeError("The program msms was not found at '{}' as specified by 'msms' parameter in "
+                                       "'ADVANCED_SETTINGS' section of your "
+                                       "configuration file.".format(self.parameters["msms"]))
+
         if self.parameters["trajectory_engine"] == "pytraj":
             try:
                 import pytraj

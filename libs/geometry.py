@@ -672,7 +672,8 @@ class LayeredPathSet:
 
             if surface_cgo:
                 from transport_tools.libs.utils import convert_spheres2cgo_surface
-                filename2 = os.path.join(output_folder, "{}_volume{}.dump.gz".format(entity_label, flag))
+                from transport_tools.libs.msms import filter_spheres
+
                 spheres = list()
                 for path_id, path in enumerate(self.node_paths):
                     for node_label in path:
@@ -680,9 +681,24 @@ class LayeredPathSet:
                         radius = node_data[node_label][5]
                         spheres.append((xyz, radius))
 
+                filtered_spheres = filter_spheres(spheres)
+
+                filename2 = os.path.join(output_folder, "{}_volume{}.dump.gz".format(entity_label, flag))
                 with gzip.open(filename2, "wb") as out_stream:
-                    pickle.dump(convert_spheres2cgo_surface(spheres, color_id=color_id,),
-                                out_stream, self.parameters["pickle_protocol"])
+                    if self.parameters["msms"] is None:
+                        pickle.dump(convert_spheres2cgo_surface(filtered_spheres, color_id=color_id,),
+                                    out_stream, self.parameters["pickle_protocol"])
+                    else:
+                        from transport_tools.libs.msms import msms_surface
+                        try:
+                            pickle.dump(msms_surface(self.parameters["msms"], filtered_spheres, color_id=color_id, ),
+                                        out_stream, self.parameters["pickle_protocol"])
+                        except RuntimeError:
+                            logger.warning("The program 'msms' was not found or is not correctly configured.\n")
+                            logger.warning("Default calculation of surfaces will be employed.\n")
+                            pickle.dump(convert_spheres2cgo_surface(filtered_spheres, color_id=color_id, ),
+                                        out_stream, self.parameters["pickle_protocol"])
+
         else:
             for path_id, path in enumerate(self.node_paths):
                 xyz = node_data[path[0]][:3].reshape(1, 3)
