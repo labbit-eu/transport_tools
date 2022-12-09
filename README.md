@@ -7,7 +7,7 @@ Visit our [homepage](http://labbit.eu/software).
 
 ## Overview
 
-Using the *TransportTools engine*, end-users can get access to 
+Using the *TransportTools* engine, end-users can get access to 
 * efficient analyses of molecular tunnels in extensive MD simulations, including those originating from massively parallel calculations or very long simulations,
 * information on molecular voids in the biomolecules with their actual utilization by small molecules, 
 * rigorous comparison of transport processes in different simulation sets, e.g., contrasting transport in the original system and system perturbed by mutations, different solvents, presence of ligands, etc.
@@ -20,7 +20,7 @@ From a programmatic point of view, the library will also help to
 
 <br>
 
-Currently, TransportTools engine can perform its action in 10 consecutive stages:
+Currently, *TransportTools* engine can perform its action in 10 consecutive stages:
 1. Preparatory stage including defining transformations needed for unified analyses
 2. Processing of input datasets of tunnel networks
 3. Layering tunnel clusters to get their simplified representation
