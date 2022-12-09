@@ -1,7 +1,7 @@
 TransportTools
 ==============
 
-*TransportTools* library builds on and extends results of [CAVER](http://caver.cz) and [AQUA-DUCT](http://aquaduct.pl) analyses to provide comprehensive insights into molecular details of transport processes related to biomolecules. The developement of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).
+*TransportTools* library builds on and extends results of [CAVER](http://caver.cz) and [AQUA-DUCT](http://aquaduct.pl) analyses to provide comprehensive insights into molecular details of transport processes related to biomolecules.
 
 Visit our [homepage](http://labbit.eu/software).
 
@@ -54,9 +54,10 @@ via CONDA:
 or PyPi:
 1. pip install transport_tools
 
-Additionally, you might want to install following two packages to enhance your experience using *TransportTools*:
+Additionally, you might want to install following packages to enhance your experience using *TransportTools*:
 1. [AmberTools](http://ambermd.org/AmberTools.php) to speed-up trajectory processing with *pytraj* engine; by following these [instructions](http://ambermd.org/GetAmber.php#ambertools)
 2. [PyMCubes](https://github.com/pmneila/PyMCubes) to enable supercluster visualization with surface: pip install --upgrade PyMCubes
+3. [MSMS](https://ccsb.scripps.edu/msms/) to speed-up supercluster visualization with the surface
 
 To start using *TransportTools* type:
 
@@ -74,5 +75,7 @@ Documentation can be found on [github.com](https://github.com/labbit-eu/transpor
 
 ## References
 * [Brezovsky et al, 2022: TransportTools: a library for high-throughput analyses of internal voids in biomolecules and ligand transport through them. Bioinformatics 38: 1752-1753](https://doi.org/10.1093/bioinformatics/btab872)
+* Sequeiros-Borja et al, 2022, unpublished
 
-
+## Funding
+ The initial developement of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).
