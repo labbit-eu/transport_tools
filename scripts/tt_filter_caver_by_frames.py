@@ -671,7 +671,9 @@ def main():
         if len(_nc.tunnels) >= args.occurence_limit:
             new_clusters.append(_nc)
         else:
-            print("Removed cluster {} since it has less than {} tunnel members ({})".format(_nc.cluster_id, args.occurence_limit, len(_nc.tunnels)))
+            print("Removed cluster {} since it has less than {} tunnel members ({})".format(_nc.cluster_id,
+                                                                                            args.occurence_limit,
+                                                                                            len(_nc.tunnels)))
     # Sort the clusters by priority, in this case the average cluster throughput
     # divided by the total number of frames
     prioritized_clusters = prioritize_clusters(new_clusters, args.frames)
@@ -689,13 +691,15 @@ def main():
         print("Time used for refactoring bottlenecks: {:>6.3f} seconds".format(time.time() - start))
     else:
         print("No bottlenecks.csv file found, skipping...")
+
     # Copy protein and origins pdbs
     pdbs = [f for f in os.listdir(os.path.join(args.inputdir, "data")) if f.endswith(".pdb")]
     for pdb in pdbs:
         if "origins" in pdb:
             shutil.copy(os.path.join(args.inputdir, "data", pdb), os.path.join(args.outdir, "data", pdb))
         else:
-            shutil.copy(os.path.join(args.inputdir, "data", pdb), os.path.join(args.outdir, "data", "caver_ref.pdb"))
+            shutil.copy(os.path.join(args.inputdir, "data", pdb), os.path.join(args.outdir, "data", "caver_ref.1.pdb"))
+
     # Build vmd visualization files
     if args.vis:
         start = time.time()
