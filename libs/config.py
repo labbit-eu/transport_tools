@@ -851,6 +851,7 @@ class AnalysisConfig:
         """
 
         folders_caver = Path(self.input_paths["caver_results_path"]).glob(self.input_paths["caver_results_folder_pattern"])
+        irrelevant_pdb_files = ["start_zone.pdb", "end_zone.pdb", "v_origins.pdb", "origins.pdb"]
         filenames = set()
         for folder_path in folders_caver:
             if not folder_path.is_dir():
@@ -858,7 +859,7 @@ class AnalysisConfig:
             _search = os.path.join(self.input_paths["caver_results_relative_subfolder_path"], "data",
                                    self.input_paths["caver_pdb_file_pattern"])
             for item in folder_path.glob(_search):
-                if item.is_file():
+                if item.is_file() and os.path.basename(item) not in irrelevant_pdb_files:
                     filenames.add(item.name)
 
         if len(filenames) == 1:  # same file exists in all locations

@@ -1215,7 +1215,7 @@ class Layer:
 
         num_points = points_coords.shape[0]
         if 1 < num_points < 50:
-            cluster_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="average",
+            cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average",
                                                      distance_threshold=2)
         elif num_points == 1:
             return np.array([0])
@@ -1318,7 +1318,7 @@ class Layer:
             out_mat = end_points_mat[clustering == -1, :]
             out_coords = out_mat[:, :3]
             with parallel_backend('loky', n_jobs=1):
-                cluster_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="average",
+                cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average",
                                                          distance_threshold=2)
                 clustering = cluster_method.fit_predict(out_coords)
 
@@ -1402,7 +1402,7 @@ class LayeredRepresentation:
                     ids.append(cls_id)
                     values = np.concatenate((values, cluster.average.reshape(1, 3)), axis=0)
 
-                clustering_method = AgglomerativeClustering(n_clusters=None, metric="euclidean",
+                clustering_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean",
                                                             linkage="complete", distance_threshold=2)
                 clustering = clustering_method.fit_predict(values)
                 ids = np.array(ids).astype(int)
