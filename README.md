@@ -78,4 +78,4 @@ Documentation can be found on [github.com](https://github.com/labbit-eu/transpor
 * Sequeiros-Borja et al, 2022, unpublished
 
 ## Funding
- The initial developement of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).
+ The initial development of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).

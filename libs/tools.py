@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.4'
+__version__ = '0.9.5'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -1664,7 +1664,7 @@ class EventAssigner:
         :param considered_sc_ids: superclusters considered for the matching with investigated event
         :return: details on buriedness of event in the actual tunnels of considered superclusters
         """
-
+        from pathlib import Path
         # parse event info
         md_label = self.event_specification[0]
         residue = int(self.event_specification[2][0].split(":")[1])
@@ -1673,7 +1673,10 @@ class EventAssigner:
         end_frame = int(end_frame)
         frames = range(start_frame, end_frame + 1)
         snap_ids = [x + self.parameters["caver_traj_offset"] for x in frames]
-        if self.parameters["perform_exact_matching_analysis"]:
+        perform_exact_matching_analysis = self.parameters["perform_exact_matching_analysis"] and\
+                                          md_label in [a.name for a in Path(self.parameters["trajectory_path"]).glob(self.parameters["folder_pattern4exact_matching_analysis"]) if a.is_dir()]
+
+        if perform_exact_matching_analysis:
             details_path = os.path.join(self.parameters["exact_matching_details_folder"], md_label)
             os.makedirs(details_path, exist_ok=True)
 
@@ -1743,7 +1746,7 @@ class EventAssigner:
             buriedness["4all_frames"][sc_id] = num_buried_nodes / (end_frame - start_frame + 1)
             buriedness["4existing_tunnels"][sc_id] = num_buried_nodes / surface_distances.shape[0]
 
-            if self.parameters["perform_exact_matching_analysis"]:
+            if perform_exact_matching_analysis:
                 # save info on matching to files
                 details_file = os.path.join(details_path, "{}_sc{}.txt".format(self.event_specification[1], sc_id))
                 with open(details_file, "w") as out_stream:
@@ -1838,7 +1841,7 @@ def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, 
             if trajectory.parameters["trajectory_engine"] == "mdtraj":
                 selector = "resid {}".format(resid)  # to keep
             elif trajectory.parameters["trajectory_engine"] == "pytraj":
-                selector = "!:{}".format(resid + 1)  # to remove
+                selector = "!:{}".format(resid)  # to remove, here we already have resid so no need to alter
             else:
                 selector = None
             trajectory.write_frames(start_frame, end_frame, event_filename, selector)

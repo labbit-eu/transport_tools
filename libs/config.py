@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.4'
+__version__ = '0.9.5'
 __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -164,6 +164,8 @@ class AnalysisConfig:
             "directional_cutoff": np.pi / 2,  # detect serious misalignments during clustering and assignment of events
             "aqauduct_ligand_effective_radius": 1.0,  # for overlap calculations
             "perform_exact_matching_analysis": False,
+            "folder_pattern4exact_matching_analysis": "*",  # exact_matching_analysis is performed only for folders
+            # matching this pattern
             "perform_comparative_analysis": False,
             "visualize_comparative_super_cluster_volumes": False,
             "comparative_groups_definition": None,
