@@ -75,7 +75,7 @@ Documentation can be found on [github.com](https://github.com/labbit-eu/transpor
 
 ## References
 * [Brezovsky et al, 2022: TransportTools: a library for high-throughput analyses of internal voids in biomolecules and ligand transport through them. Bioinformatics 38: 1752-1753](https://doi.org/10.1093/bioinformatics/btab872)
-* Sequeiros-Borja et al, 2022, unpublished
+* [Sequeiros-Borja et al, 2023: Divide-and-conquer approach to study protein tunnels in long molecular dynamics simulations, MethodsX 10C: 101968](https://www.sciencedirect.com/science/article/pii/S2215016122003429)
 
 ## Funding
  The initial development of this library was funded by the National Science Centre, Poland - grant no. [2017/25/B/NZ1/01307](https://projekty.ncn.gov.pl/en/index.php?projekt_id=373166) and [2017/26/E/NZ1/00548](https://projekty.ncn.gov.pl/en/index.php?projekt_id=384020).
