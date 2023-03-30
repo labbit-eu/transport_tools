@@ -387,8 +387,10 @@ class AnalysisConfig:
 
             caver_pdb_filename = self._get_caver_filenames()
             if not caver_pdb_filename:
-                raise RuntimeError("\nCould not detected PDB file of protein in CAVER data folder! Please define its "
-                                   "relative path in 'caver_relative_pdb_file' parameter.")
+                msg = "\nCould not detect PDB file of protein in CAVER data folder! Please make sure your {}/data " \
+                      "folders contain the PDB file with structure having the same filename and that it can be matched " \
+                      "with the following pattern {}!".format(caver_results_relative_subfolder_path, caver_pdb_file_pattern)
+                raise RuntimeError(msg)
 
             self.input_paths["caver_relative_pdb_file"] = os.path.join(caver_subfolder_path, "data", caver_pdb_filename)
 
@@ -866,7 +868,12 @@ class AnalysisConfig:
 
         if len(filenames) == 1:  # same file exists in all locations
             return filenames.pop()
-        else:  # different or none => cannot define the name unambiguously
+        elif len(filenames) == 0:  # none
+            logger.error("Cannot match any file with 'caver_pdb_file_pattern' in the given paths")
+            return ""
+        else: # multiple different filenames found => cannot define the name unambigiously
+            logger.error("Multiple different files matching 'caver_pdb_file_pattern' in the given paths were found."
+                          "Cannot define the filename unambigiously")
             return ""
 
     def _test_input_files(self, analyzed_folders: List[str], keys2test: List[str], root_folder: str = ".") -> str:
