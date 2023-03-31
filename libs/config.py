@@ -869,11 +869,11 @@ class AnalysisConfig:
         if len(filenames) == 1:  # same file exists in all locations
             return filenames.pop()
         elif len(filenames) == 0:  # none
-            logger.error("Cannot match any file with 'caver_pdb_file_pattern' in the given paths")
+            print("Cannot match any file with 'caver_pdb_file_pattern' in the given paths")
             return ""
         else: # multiple different filenames found => cannot define the name unambigiously
-            logger.error("Multiple different files matching 'caver_pdb_file_pattern' in the given paths were found."
-                          "Cannot define the filename unambigiously")
+            print("Multiple different files matching 'caver_pdb_file_pattern' in the given paths were found. "
+                  "Cannot define the filename unambigiously")
             return ""
 
     def _test_input_files(self, analyzed_folders: List[str], keys2test: List[str], root_folder: str = ".") -> str:
