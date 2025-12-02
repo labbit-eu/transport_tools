@@ -68,7 +68,7 @@ class OutlierTransportEvents:
         else:
             return False
 
-    def count_events(self, md_label: str = "overall") -> (int, int, int):
+    def count_events(self, md_label: str = "overall") -> Tuple[int, int, int]:
         """
         Counts number of all unassigned events (total, entries, releases)
         :param md_label: name of folder with the MD simulation data that contain this transport event
@@ -247,7 +247,7 @@ class TransportProcesses:
 
     @staticmethod
     def _calc_avg_cluster_distance(cls1: int, cls2: int, path_set1: LayeredPathSet, path_set2: LayeredPathSet,
-                                   precision: int, cutoff: float) -> (int, int, float):
+                                   precision: int, cutoff: float) -> Tuple[int, int, float]:
         """
         Computes average distance between the paths representing the two clusters
         :param cls1: order ID of evaluated cluster1 to enable its identification during distance matrix creation
@@ -1556,7 +1556,7 @@ class EventAssigner:
 
         return list(directionally_fitting_super_clusters)
 
-    def perform_assignment(self) -> (Tuple[str, str, Tuple[str, Tuple[int, int]]], np.array, float, float):
+    def perform_assignment(self) -> Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], np.array, float, float]:
         """
         Identifies most likely supercluster (SC) through which a single evaluated transport event occurred
         :return: event specification, array with IDs of SC to which the event is assigned, maximal buriedness and

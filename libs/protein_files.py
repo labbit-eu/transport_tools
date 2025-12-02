@@ -469,7 +469,7 @@ def _update_atoms(rmsds: np.array, target_atoms: dict, moved_atoms: dict,
 
 
 def get_transform_matrix(moved_protein: str, target_protein: str, md_label: str = "", max_iter: int = 5,
-                         rmsd_cutoff: float = 0.1) -> (np.array, str):
+                         rmsd_cutoff: float = 0.1) -> Tuple[np.array, str]:
     """
     Performs a sequence alignment of the target and moved proteins, then tries to reduce the RMSD by a series of
     iterations removing the atoms with the higher difference before and after alignment.
@@ -589,7 +589,7 @@ def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.array:
 
 
 def transform_aquaduct(md_label: str, tar_file: str, aquaduct_results_pdb_filename: str,
-                       reference_pdb_file: str) -> (np.array, str, int):
+                       reference_pdb_file: str) -> Tuple[np.array, str, int]:
     """
     Prepares temporary files from AQUA-DUCT data and gets transformation matrix
     :param md_label: name of folder with the source MD simulation data

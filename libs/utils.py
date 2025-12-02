@@ -23,13 +23,13 @@ __mail__ = 'janbre@amu.edu.pl'
 import numpy as np
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from logging import getLogger
 
 logger = getLogger(__name__)
 
 
-def get_caver_color(color_id: int or None) -> List[float]:
+def get_caver_color(color_id: Union[int, None]) -> List[float]:
     """
     Converts Pymol color IDs to RGB format, keeping within the set of 'reasonable' colors from CAVER rgb.py
     :param color_id: Pymol color ID
@@ -246,7 +246,7 @@ def get_caver_color(color_id: int or None) -> List[float]:
     return colors[color_id]
 
 
-def convert_coords2cgo(coords: np.array, color_id: int or None) -> List[float]:
+def convert_coords2cgo(coords: np.array, color_id: Union[int, None]) -> List[float]:
     """
     Converts xyz-coordinates of sequence of points such as trace and tunnel to Pymol compiled graphics object(CGO)
     :param coords: xyz-coordinates of points
@@ -373,7 +373,7 @@ def _get_mesh(grid: np.array, x_points: np.array, y_points: np.array, z_points: 
     return vertices, normals, triangles
 
 
-def convert_spheres2cgo_surface(spheres: List[Tuple[np.array, float]], color_id: int or None,
+def convert_spheres2cgo_surface(spheres: List[Tuple[np.array, float]], color_id: Union[int, None],
                                 resolution: float = 0.5) -> List[float]:
     """
     Converts spheres (tuples that contain XYZ coords and radius) to surface complied graphics object for Pymol.
@@ -422,7 +422,7 @@ def test_file(filename: str):
         raise FileNotFoundError("Input file '{}' does not exist!".format(filename))
 
 
-def node_labels_split(node_label: str) -> (int, int):
+def node_labels_split(node_label: str) -> Tuple[int, int]:
     """
     Returns layer ID and cluster ID, useful for sorting of nodes labels
     :param node_label: node label formatted as {layer}_{cluster_id} or SP for starting point

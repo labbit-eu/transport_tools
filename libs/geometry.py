@@ -765,7 +765,7 @@ class LayeredPathSet:
         self.node_paths.append(np.array(node_path).astype(np.unicode_))
 
     def _get_adjacent_nodes_data(self, query_node_data: np.array, query_last_layer_id: float,
-                                 query_first_terminal_layer: float) -> (np.array, np.array):
+                                 query_first_terminal_layer: float) -> Tuple[np.array, np.array]:
         """
         Get information on the nodes from this PathSet located in the same and surrounding layers as the query node
         :param query_node_data: data of the query node
@@ -870,7 +870,7 @@ class LayeredPathSet:
         return np.min(terminal_nodes[:, 3])
 
     def _pre_compute_distance_matrices(self, other_set: LayeredPathSet, consider_rmsf: bool = False) \
-            -> (Dict[str, Dict[str, Tuple[float, float, float]]], Dict[str, Dict[str, Tuple[float, float, float]]]):
+            -> Tuple[Dict[str, Dict[str, Tuple[float, float, float]]], Dict[str, Dict[str, Tuple[float, float, float]]]]:
         """
         For each pair of nodes (clusters) in adjacent layers of this and other pathsets, three distances are precomputed
         :param other_set: other evaluated pathset
@@ -909,7 +909,7 @@ class LayeredPathSet:
 
     @staticmethod
     def _get_dist2closest_node(node_label: str, dist_mat: Dict[str, Dict[str, Tuple[float, float, float]]],
-                               dist_type: int = 1, nodes_subset: Optional[Set[str]] = None) -> (float, str):
+                               dist_type: int = 1, nodes_subset: Optional[Set[str]] = None) -> Tuple[float, str]:
         """
         Finds surface distance from query node to the closest node in the distance matrix
         :param node_label: label of query node
@@ -981,7 +981,7 @@ class LayeredPathSet:
 
         return fragmented_path
 
-    def how_much_is_inside(self, other_set: LayeredPathSet) -> (float, float):
+    def how_much_is_inside(self, other_set: LayeredPathSet) -> Tuple[float, float]:
         """
         Computes the fraction of nodes from this set buried inside the nodes of the other set, and maximal depth
         (counted towards starting point (SP) along shortest path)
@@ -1907,7 +1907,7 @@ def remove_loops_from_path(node_path: List[str]) -> Optional[List[str]]:
     return direct_path
 
 
-def assign_layer_from_distances(distances: np.array, layer_thickness: float) -> (np.array, np.array):
+def assign_layer_from_distances(distances: np.array, layer_thickness: float) -> Tuple[np.array, np.array]:
     """
     Calculate membership of points in layers based on point distance form starting point and the layer thickness
     :param distances: distance of points from starting point
@@ -1960,7 +1960,7 @@ def read_starting_points(tunnel_origin_file: str) -> np.array:
     return starting_points[1:]
 
 
-def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> (np.array, str):
+def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> Tuple[np.array, str]:
     """
     Computes the average coordinates of starting points from origin_file
     :param tunnel_origin_file: file with caver starting points

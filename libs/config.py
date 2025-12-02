@@ -26,7 +26,7 @@ import numpy as np
 from pathlib import Path
 from pkg_resources import get_distribution, DistributionNotFound
 from configparser import ConfigParser
-from typing import List, Any, Optional, Union
+from typing import List, Any, Optional, Union, Tuple
 from logging import getLogger
 from transport_tools.libs.ui import initiate_tools
 from transport_tools.libs.utils import get_filepath
@@ -389,7 +389,8 @@ class AnalysisConfig:
             if not caver_pdb_filename:
                 msg = "\nCould not detect PDB file of protein in CAVER data folder! Please make sure your {}/data " \
                       "folders contain the PDB file with structure having the same filename and that it can be matched " \
-                      "with the following pattern {}!".format(caver_results_relative_subfolder_path, caver_pdb_file_pattern)
+                      "with the following pattern {}!".format(self.input_paths["caver_results_relative_subfolder_path"], 
+                      self.input_paths["caver_pdb_file_pattern"])
                 raise RuntimeError(msg)
 
             self.input_paths["caver_relative_pdb_file"] = os.path.join(caver_subfolder_path, "data", caver_pdb_filename)
@@ -482,7 +483,7 @@ class AnalysisConfig:
             self.parameters["pickle_protocol"] = 2
             self.internal_settings["pickle_protocol"] = 2
 
-    def _test_parameter_sanity(self, param_name: str, min_val: int or float, max_val: int or float):
+    def _test_parameter_sanity(self, param_name: str, min_val: Union[int, float], max_val: Union[int, float]):
         """
         Checking if value assigned to parameter is within allowed range (if not raising error),
         and also prints warning for suboptimal values (however, job continues in this case)
@@ -1060,7 +1061,7 @@ class AnalysisConfig:
 
         return self.parameters.copy()
 
-    def get_input_folders(self) -> (List[str], List[str], List[str]):
+    def get_input_folders(self) -> Tuple[List[str], List[str], List[str]]:
         """
         Enumerates source folders with CAVER data, MD trajectories and AQUA-DUCT data separately
         :return: list of source folders with CAVER data, MD trajectories, and AQUA-DUCT data, respectively
