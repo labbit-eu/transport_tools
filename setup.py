@@ -29,7 +29,7 @@ install_requires = ['numpy>=1.17.3',
                     'joblib<1.2.0'
                     ]
 
-with open('transport_tools/README.md', 'r') as fh:
+with open('./README.md', 'r') as fh:
     file_content = fh.read()
 
 setup(name='transport_tools',
