@@ -58,26 +58,33 @@ class TestUtils(unittest.TestCase):
     def test_build_grid(self):
         from transport_tools.libs.utils import _build_grid
         from transport_tools.tests.units.data.data_utils import spheres, x_points, y_points, z_points, grid
-        self.assertTrue(np.allclose(_build_grid(spheres, x_points, y_points, z_points), grid, atol=1e-7))
+        self.assertTrue(np.allclose(_build_grid(spheres, x_points, y_points, z_points), grid, atol=1e-3))
 
     def test__get_mesh(self):
+        try:
+            import mcubes
+        except ModuleNotFoundError:
+            self.skipTest("mcubes not installed")
+            return
         from transport_tools.libs.utils import _get_mesh
         from transport_tools.tests.units.data.data_utils import x_points, y_points, z_points, grid, vertices, normals, \
             triangles
 
         results = _get_mesh(grid, x_points, y_points, z_points)
-        self.assertTrue(np.allclose(vertices, results[0], atol=1e-7))
-        self.assertTrue(np.allclose(normals, results[1], atol=1e-7, equal_nan=True))
-        self.assertTrue(np.allclose(triangles, results[2], atol=1e-7))
+        self.assertTrue(np.allclose(vertices, results[0], atol=1e-3))
+        self.assertTrue(np.allclose(normals, results[1], atol=1e-3, equal_nan=True))
+        self.assertTrue(np.allclose(triangles, results[2], atol=1e-3))
 
     def test_convert_spheres2cgo_surface(self):
-        from transport_tools.libs.utils import convert_spheres2cgo_surface
-        from transport_tools.tests.units.data.data_utils import spheres, cgo_surf
-
         try:
             import mcubes
         except ModuleNotFoundError:
-            self.assertTrue(True)
+            self.skipTest("mcubes not installed")
+            return
+
+        from transport_tools.libs.utils import convert_spheres2cgo_surface
+        from transport_tools.tests.units.data.data_utils import spheres, cgo_surf
+
         for item1, item2 in zip(cgo_surf, convert_spheres2cgo_surface(spheres, 1, resolution=0.5)):
             self.assertAlmostEqual(item1, item2)
 

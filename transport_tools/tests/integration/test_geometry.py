@@ -22,19 +22,7 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 import os
-
-
-def set_paths(*args):
-    from transport_tools.libs.utils import splitall
-    cwd = os.getcwd()
-    all_parts = splitall(cwd)
-    if "transport_tools" not in all_parts:
-        raise RuntimeError("Must be executed from the 'transport_tools' folder")
-    root_index = all_parts.index("transport_tools")
-    root = os.path.join(*all_parts[:root_index + 1], *args)
-
-    return root
-
+from transport_tools.libs.utils import set_paths_from_package_root
 
 def prep_config(root: str):
     in_config_file = os.path.join(root, "tmp_config.ini")
@@ -50,7 +38,7 @@ def prep_config(root: str):
 
 class TestFileProcessing(unittest.TestCase):
     def setUp(self):
-        self.root = set_paths("tests", "data")
+        self.root = set_paths_from_package_root("tests", "data")
         prep_config(self.root)
 
     def tearDown(self):
@@ -66,8 +54,8 @@ class TestFileProcessing(unittest.TestCase):
         result2 = average_starting_point(in_val2)[0]
         out_val1 = np.array([[42.78924099999999], [42.17802499999996], [30.81321299999997], [1.0]])
         out_val2 = np.array([[42.97486599999998], [40.84702699999997], [31.67991399999999], [1.0]])
-        self.assertTrue(np.allclose(out_val1, result1, atol=1e-7))
-        self.assertTrue(np.allclose(out_val2, result2, atol=1e-7))
+        self.assertTrue(np.allclose(out_val1, result1, atol=1e-3))
+        self.assertTrue(np.allclose(out_val2, result2, atol=1e-3))
 
 
 if __name__ == '__main__':

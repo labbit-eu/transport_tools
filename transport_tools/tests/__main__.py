@@ -27,36 +27,60 @@ import os
 import transport_tools.tests.units.test_utils as TT_test_utils
 import transport_tools.tests.units.test_geometry as TT_test_geometry
 import transport_tools.tests.units.test_networks as TT_test_networks
-from transport_tools.tests.integration.test_tools import set_paths
+from transport_tools.libs.utils import set_paths_from_package_root
 
-if os.path.exists(set_paths("tests", "data")):
+# Create unit tests suite
+unit_tests_suite = unittest.defaultTestLoader.loadTestsFromModule(TT_test_utils)
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks))
+
+# Run unit tests first
+print("=" * 80)
+print("Running Unit Tests")
+print("=" * 80)
+print(f"Number of unit tests loaded: {unit_tests_suite.countTestCases()}")
+unit_results = unittest.TextTestRunner(verbosity=2).run(unit_tests_suite)
+
+# Perform integration tests if data present
+if os.path.exists(set_paths_from_package_root("tests", "data")):
+    integration_tests_suite = unittest.TestSuite()
     import transport_tools.tests.integration.test_tools as TT_test_tools
     import transport_tools.tests.integration.test_protein_files as TT_test_protein_files
     import transport_tools.tests.integration.test_config as TT_test_config
     import transport_tools.tests.integration.test_geometry as TT_test_geometry2
     import transport_tools.tests.integration.test_networks as TT_test_networks2
+
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_protein_files))
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry2))
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks2))
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tools))
+
+    print("\n" + "=" * 80)
+    print("Running Integration Tests")
+    print("=" * 80)
+    print(f"Number of integration tests loaded: {integration_tests_suite.countTestCases()}")
+    integration_results = unittest.TextTestRunner(verbosity=2).run(integration_tests_suite)
+
+    # Combine results
+    all_errors = unit_results.errors + integration_results.errors
+    all_failures = unit_results.failures + integration_results.failures
 else:
-    print("No test data available, running unit tests only.")
+    print("\nNo test data available, skipping integration tests.")
+    all_errors = unit_results.errors
+    all_failures = unit_results.failures
 
-tests_suite = unittest.defaultTestLoader.loadTestsFromModule(TT_test_utils)
-tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry))
-tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks))
-if os.path.exists(set_paths("tests", "data")):
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_protein_files))
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry2))
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks2))
-    tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tools))
+# Print summary
+print("\n" + "=" * 80)
+print("Test Summary")
+print("=" * 80)
 
-print("Number of tests loaded:", tests_suite.countTestCases())
-results = unittest.TextTestRunner(verbosity=2).run(tests_suite)
-
-for error in results.errors:
+for error in all_errors:
     for e in error:
         print(e)
     print("*"+"-"*78+"*")
 
-for failure in results.failures:
+for failure in all_failures:
     for f in failure:
         print(f)
     print("*"+"-"*78+"*")

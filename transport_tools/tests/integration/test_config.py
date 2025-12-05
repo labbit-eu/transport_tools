@@ -22,19 +22,7 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 from transport_tools.libs.config import *
-
-
-def set_paths(*args):
-    from transport_tools.libs.utils import splitall
-    cwd = os.getcwd()
-    all_parts = splitall(cwd)
-    if "transport_tools" not in all_parts:
-        raise RuntimeError("Must be executed from the 'transport_tools' folder")
-    root_index = all_parts.index("transport_tools")
-    root = os.path.join(*all_parts[:root_index + 1], *args)
-
-    return root
-
+from transport_tools.libs.utils import set_paths_from_package_root
 
 def prep_config(root: str):
     in_config_file = os.path.join(root, "tmp_config.ini")
@@ -53,7 +41,7 @@ class TestConfig(unittest.TestCase):
         self.maxDiff = None
         from transport_tools.libs.config import AnalysisConfig
         self.results = "test_results"
-        self.root = set_paths("tests", "data")
+        self.root = set_paths_from_package_root("tests", "data")
         prep_config(self.root)
         self.config = AnalysisConfig(os.path.join(self.root, "config.ini"), logging=False)
         self.saved_data = os.path.join(self.root, "saved_outputs")

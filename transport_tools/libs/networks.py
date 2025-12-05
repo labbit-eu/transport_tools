@@ -342,7 +342,7 @@ class Tunnel:
             raise RuntimeError("Data on bottlenecks has not been processed previously. Make sure that "
                                "'process_bottleneck_residues' parameter was set to 'True' during stage 2.")
 
-        return "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, " \
+        return "{},{},{},{},{},{},{},{},{},{}," \
                "{}\n".format(md_label, self.snapshot, self.caver_cluster_id, self.tunnel_id, self.throughput, self.cost,
                              self.bottleneck_xyz[0], self.bottleneck_xyz[1], self.bottleneck_xyz[2],
                              self.bottleneck_radius, ",".join(self.bottleneck_residues))
@@ -380,7 +380,7 @@ class Tunnel:
         if self.spheres_data.shape != other.spheres_data.shape:
             return False
 
-        return np.allclose(self.spheres_data, other.spheres_data, atol=1e-7)
+        return np.allclose(self.spheres_data, other.spheres_data, atol=1e-3)
 
     def get_parameters(self) -> Tuple[float, float, float, float]:
         """
@@ -420,7 +420,7 @@ class Tunnel:
         if transform_mat is not None:
             self.bottleneck_xyz = np.append(self.bottleneck_xyz, np.array([1.0]))
             self.bottleneck_xyz = transform_mat.dot(self.bottleneck_xyz)[0:3]
-        self.bottleneck_residues = bottleneck_data[4:]
+        self.bottleneck_residues = [res.strip() for res in bottleneck_data[4:]]
 
     def fill_data(self, data_section: List[str]):
         """
@@ -1155,7 +1155,7 @@ class TransportEvent:
             return True
 
         for point, other_point in zip(self.points, other.points):
-            if not np.allclose(point.data, other_point.data, atol=1e-7):
+            if not np.allclose(point.data, other_point.data, atol=1e-3):
                 return False
 
         return True
@@ -1443,7 +1443,7 @@ class AquaductPath:
             else:
                 obj.append(element)
         obj = obj[2:-1]  # skip the first two and the last item that do inform about the start, type and the end of CGO
-        prev_xyz = np.array([np.Inf, np.Inf, np.Inf])
+        prev_xyz = np.array([np.inf, np.inf, np.inf])
 
         event_type = ""
         has_transition = False

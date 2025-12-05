@@ -186,7 +186,7 @@ class TrajectoryMdtraj(TrajectoryTT):
 
             md_frame = md_frame[slice_start: slice_end + 1]
             md_frame.superpose(reference=self.ref_frame, atom_indices=align_indices, parallel=False)
-            md_frame.restrict_atoms(keep_indices)
+            md_frame.atom_slice(keep_indices, inplace=True)
 
             if fitted_traj is None:
                 fitted_traj = md_frame
@@ -319,6 +319,8 @@ class VizAtom:
 
 def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
                         moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.PairwiseAlignment:
+# def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
+#                         moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.Alignment:
     """
     Performs a sequence alignment of two proteins loaded previously with Bio.PDB.Structure.
     :param target_structure: target structure to which we align
@@ -343,6 +345,7 @@ def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
     return alignments[0]
 
 
+# def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.PDB.Structure.Structure,
 def _get_atoms2superpose(alignment: Bio.Align.PairwiseAlignment, target_structure: Bio.PDB.Structure.Structure,
                          moved_structure: Bio.PDB.Structure.Structure) -> Tuple[Dict[int, Bio.PDB.Atom.Atom],
                                                                                 Dict[int, Bio.PDB.Atom.Atom]]:

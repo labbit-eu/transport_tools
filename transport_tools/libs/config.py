@@ -24,7 +24,7 @@ import os
 import sys
 import numpy as np
 from pathlib import Path
-from pkg_resources import get_distribution, DistributionNotFound
+from importlib.metadata import version, PackageNotFoundError
 from configparser import ConfigParser
 from typing import List, Any, Optional, Union, Tuple
 from logging import getLogger
@@ -904,18 +904,18 @@ class AnalysisConfig:
         msg += "TransportTools library version {}\n".format(__version__)
         msg += "\nEmploying:\n"
         msg += "python {}.{}.{}\n".format(sys.version_info.major, sys.version_info.minor, sys.version_info.micro)
-        msg += "numpy {}\n".format(get_distribution('numpy').version)
-        msg += "scikit-learn {}\n".format(get_distribution('scikit-learn').version)
-        msg += "scipy {}\n".format(get_distribution('scipy').version)
-        msg += "biopython {}\n".format(get_distribution('biopython').version)
-        msg += "fastcluster {}\n".format(get_distribution('fastcluster').version)
-        msg += "hdbscan {}\n".format(get_distribution('hdbscan').version)
-        msg += "MDtraj {}\n".format(get_distribution('mdtraj').version)
+        msg += "numpy {}\n".format(version('numpy'))
+        msg += "scikit-learn {}\n".format(version('scikit-learn'))
+        msg += "scipy {}\n".format(version('scipy'))
+        msg += "biopython {}\n".format(version('biopython'))
+        msg += "fastcluster {}\n".format(version('fastcluster'))
+        msg += "hdbscan {}\n".format(version('hdbscan'))
+        msg += "MDtraj {}\n".format(version('mdtraj'))
         if self.parameters["visualize_super_cluster_volumes"]:
             if self.parameters["msms"] is None:
                 try:
-                    msg += "mcubes {}\n".format(get_distribution('pymcubes').version)
-                except DistributionNotFound:
+                    msg += "mcubes {}\n".format(version('pymcubes'))
+                except PackageNotFoundError:
                     raise RuntimeError("Requested to 'visualize_super_cluster_volumes' but required 'mcubes' module "
                                        "cannot be imported. Please ensure that it is properly installed in the current "
                                        "environment--for example by running 'pip install --upgrade PyMCubes'.")
@@ -932,9 +932,9 @@ class AnalysisConfig:
         if self.parameters["trajectory_engine"] == "pytraj":
             try:
                 import pytraj
-                msg += "pytraj {}\n".format(get_distribution('pytraj').version)
+                msg += "pytraj {}\n".format(version('pytraj'))
                 msg += "cpptraj {}\n".format(pytraj.__cpptraj_internal_version__)
-            except (DistributionNotFound, ModuleNotFoundError):
+            except (PackageNotFoundError, ModuleNotFoundError):
                 raise RuntimeError("Requested to use 'pytraj' as 'trajectory_engine' but 'pytraj' module cannot be "
                                    "imported. Please ensure that it is properly installed in the current "
                                    "environment--for example by running 'conda install ambertools -c conda-forge'.")

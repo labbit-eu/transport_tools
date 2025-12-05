@@ -456,6 +456,21 @@ def reweighting_file_parser(engine: str = "gamd"):
     pass
 
 
+def set_paths_from_package_root(*args)-> str:
+    """
+    Set paths leading from root, mainly for test suite 
+    
+    :param args: folders to include in path
+    :return: full path relative to the root of installed transport_tools package
+    """
+
+    import transport_tools
+    # Get the package directory location
+    package_dir = os.path.dirname(transport_tools.__file__)
+    root = os.path.join(package_dir, *args)
+
+    return root
+
 def splitall(path2split: str) -> List[str]:
     """
     Get all sub-parts of a file or directory path. Credited to Trent Mick.

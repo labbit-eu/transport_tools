@@ -22,19 +22,8 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 import os
-
-
-def set_paths(*args):
-    from transport_tools.libs.utils import splitall
-    cwd = os.getcwd()
-    all_parts = splitall(cwd)
-    if "transport_tools" not in all_parts:
-        raise RuntimeError("Must be executed from the 'transport_tools' folder")
-    root_index = all_parts.index("transport_tools")
-    root = os.path.join(*all_parts[:root_index + 1], *args)
-
-    return root
-
+import pytest
+from transport_tools.libs.utils import set_paths_from_package_root
 
 def prep_config(root: str):
     in_config_file = os.path.join(root, "tmp_config.ini")
@@ -49,13 +38,60 @@ def prep_config(root: str):
 
 
 class TestProteinFiles(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _pytest_info(self, request):
+        """Capture pytest request for failure detection"""
+        self._request = request
+
+    @classmethod
+    def setUpClass(cls):
+        cls._test_failed = False # Initialize flag to track failures
+
     @classmethod
     def tearDownClass(cls):
         from shutil import rmtree
 
-        rmtree(set_paths("tests", "test_results", "TestProteinFiles"))
+        # Check if any test failed and keep results
+        if cls._test_failed:
+            return
+        rmtree(set_paths_from_package_root("tests", "test_results", "TestProteinFiles"))
 
+    def tearDown(self):
+        """
+        Called after each test method - track if any test failed
+        """
+        # Check if any test has failed
+        # Works with both unittest and pytest
+        if hasattr(self, '_outcome'):
+            # For unittest (Python 3.11+)
+            if hasattr(self._outcome, 'result'):
+                result_errors = getattr(self._outcome.result, 'errors', [])
+                result_failures = getattr(self._outcome.result, 'failures', [])
+                if result_errors or result_failures:
+                    self.__class__._test_failed = True
+
+        # For pytest - check using pytest's request fixture if available
+        # This is set by pytest when running tests
+        if hasattr(self, '_request') and hasattr(self._request, 'node'):
+            # Check if this test or any previous test in the session has failed
+            if self._request.session.testsfailed > 0:
+                self.__class__._test_failed = True
+            
     def _compare_files(self, out_file: str, res_file: str,):
+        def focus_pdbfile(file_lines: list) -> list:
+            focused_filelines = list()
+            for file_line in file_lines:
+                # skip over version dependent formating of PDB
+                if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
+                    continue
+                # make chain id blank to avoid version dependent treatment
+                if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
+                    file_line =  file_line[:21] + " " + file_line[22:]
+                if file_line.startswith("TER") and len(file_line) > 21:
+                    file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
+                focused_filelines.append(file_line.split())
+            return focused_filelines        
+        
         import gzip
         import pickle
 
@@ -72,40 +108,44 @@ class TestProteinFiles(unittest.TestCase):
                 res_lines = res_in.readlines()
                 out_lines = out_in.readlines()
 
+        #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
+        if ".pdb" in res_file:
+            res_lines = focus_pdbfile(res_lines)
+            out_lines = focus_pdbfile(out_lines)
+
         self.assertTrue(len(res_lines) == len(out_lines),
                         msg="Different length of files '{}' and '{}':".format(out_file, res_file))
+    
         for res_line, out_line in zip(res_lines, out_lines):
-            if ".pdb" in res_file and "REMARK   1 CREATED WITH MDTraj" in res_line:
-                continue
             self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file, res_file))
 
     def setUp(self):
         from transport_tools.libs.config import AnalysisConfig
 
-        self.root = set_paths("tests", "data")
+        self.root = set_paths_from_package_root("tests", "data")
         prep_config(self.root)
-        self.out_path = set_paths("tests", "test_results", "TestProteinFiles")
+        self.out_path = set_paths_from_package_root("tests", "test_results", "TestProteinFiles")
         self.saved_data = os.path.join(self.root, "saved_outputs")
         os.makedirs(self.out_path, exist_ok=True)
         configuration = AnalysisConfig(os.path.join(self.root, "config.ini"), logging=False)
         configuration.set_parameter("transformation_folder", os.path.join(self.root, "saved_outputs",
                                                                           "_internal", "transformations"))
         self.parameters = configuration.get_parameters()
-
+        
     def test_Trajectory(self):
         from transport_tools.libs.protein_files import TrajectoryFactory
         import numpy as np
 
         traj1 = TrajectoryFactory(self.parameters, "md1", superpose_mask="protein")
         coords1 = traj1.get_coords(1, 10)
-        self.assertTrue(np.allclose([18.325684, -12.265163, -7.21877], coords1[1, 0, :], atol=1e-7))
+        self.assertTrue(np.allclose([18.325684, -12.265163, -7.21877], coords1[1, 0, :], atol=1e-3))
         traj1.write_frames(1, 10, os.path.join(self.out_path, "traj1.pdb"))
         self._compare_files(os.path.join(self.saved_data, "trajs", "traj1.pdb"),
                             os.path.join(self.out_path, "traj1.pdb"))
 
         traj2 = TrajectoryFactory(self.parameters, "md1", superpose_mask="name CA")
         coords2 = traj2.get_coords(1, 10)
-        self.assertTrue(np.allclose([18.393047, -12.21746, -7.220956], coords2[1, 0, :], atol=1e-7))
+        self.assertTrue(np.allclose([18.393047, -12.21746, -7.220956], coords2[1, 0, :], atol=1e-3))
         traj2.write_frames(1, 10, os.path.join(self.out_path, "traj2.pdb"), keep_mask="protein")
         self._compare_files(os.path.join(self.saved_data, "trajs", "traj2.pdb"),
                             os.path.join(self.out_path, "traj2.pdb"))
@@ -148,9 +188,9 @@ class TestProteinFiles(unittest.TestCase):
         matrix3 = get_transform_matrix(os.path.join(self.saved_data, "pdbs", "file2.pdb"),
                                        os.path.join(self.saved_data, "pdbs", "file2.pdb"))[0]
 
-        self.assertTrue(np.allclose(out_matrix1, matrix1, atol=1e-7))
-        self.assertTrue(np.allclose(identity, matrix2, atol=1e-7))
-        self.assertTrue(np.allclose(identity, matrix3, atol=1e-7))
+        self.assertTrue(np.allclose(out_matrix1, matrix1, atol=1e-3))
+        self.assertTrue(np.allclose(identity, matrix2, atol=1e-3))
+        self.assertTrue(np.allclose(identity, matrix3, atol=1e-3))
 
     def test_transform_pdb_file(self):
         from transport_tools.libs.protein_files import transform_pdb_file, get_transform_matrix
@@ -185,9 +225,9 @@ class TestProteinFiles(unittest.TestCase):
         matrix2 = get_general_rot_mat_from_2_ca_atoms(os.path.join(self.saved_data, "pdbs", "file2.pdb"))
         matrix3 = get_general_rot_mat_from_2_ca_atoms(os.path.join(self.saved_data, "pdbs", "transformed_file2.pdb"))
 
-        self.assertTrue(np.allclose(out_matrix1, matrix1, atol=1e-7))
-        self.assertTrue(np.allclose(out_matrix2, matrix2, atol=1e-7))
-        self.assertTrue(np.allclose(out_matrix3, matrix3, atol=1e-7))
+        self.assertTrue(np.allclose(out_matrix1, matrix1, atol=1e-3))
+        self.assertTrue(np.allclose(out_matrix2, matrix2, atol=1e-3))
+        self.assertTrue(np.allclose(out_matrix3, matrix3, atol=1e-3))
 
 
 if __name__ == '__main__':

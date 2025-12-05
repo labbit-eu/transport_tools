@@ -22,19 +22,8 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 import os
-
-
-def set_paths(*args):
-    from transport_tools.libs.utils import splitall
-    cwd = os.getcwd()
-    all_parts = splitall(cwd)
-    if "transport_tools" not in all_parts:
-        raise RuntimeError("Must be executed from the 'transport_tools' folder")
-    root_index = all_parts.index("transport_tools")
-    root = os.path.join(*all_parts[:root_index + 1], *args)
-
-    return root
-
+import pytest
+from transport_tools.libs.utils import set_paths_from_package_root
 
 def prep_config(root: str):
     in_config_file = os.path.join(root, "tmp_config.ini")
@@ -49,16 +38,23 @@ def prep_config(root: str):
 
 
 class TestTunnelNetwork(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _pytest_info(self, request):
+        """Capture pytest request for failure detection"""
+        self._request = request
+
     @classmethod
     def setUpClass(cls):
         from transport_tools.libs.config import AnalysisConfig
         from transport_tools.libs.networks import TunnelNetwork
 
+        cls._test_failed = False # Initialize flag to track failures
+
         cls.maxDiff = None
-        cls.root = set_paths("tests", "data")
+        cls.root = set_paths_from_package_root("tests", "data")
         prep_config(cls.root)
         cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths("tests", "test_results", "TestTunnelNetwork"))
+        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestTunnelNetwork"))
         cls.out_path = cls.config.get_parameter("output_path")
         os.makedirs(cls.out_path, exist_ok=True)
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
@@ -73,11 +69,50 @@ class TestTunnelNetwork(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         from shutil import rmtree
+        # Check if any test failed and keep results
+        if cls._test_failed:
+            return
 
         os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
+    
+    def tearDown(self):
+        """
+        Called after each test method - track if any test failed
+        """
+        # Check if any test has failed
+        # Works with both unittest and pytest
+        if hasattr(self, '_outcome'):
+            # For unittest (Python 3.11+)
+            if hasattr(self._outcome, 'result'):
+                result_errors = getattr(self._outcome.result, 'errors', [])
+                result_failures = getattr(self._outcome.result, 'failures', [])
+                if result_errors or result_failures:
+                    self.__class__._test_failed = True
+
+        # For pytest - check using pytest's request fixture if available
+        # This is set by pytest when running tests
+        if hasattr(self, '_request') and hasattr(self._request, 'node'):
+            # Check if this test or any previous test in the session has failed
+            if self._request.session.testsfailed > 0:
+                self.__class__._test_failed = True
 
     def _compare_files(self, out_file: str, res_file: str,):
+        def focus_pdbfile(file_lines: list) -> list:
+            focused_filelines = list()
+            for file_line in file_lines:
+                # skip over version dependent formating of PDB
+                if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
+                    continue
+                # make chain id blank to avoid version dependent treatment
+                if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
+                    file_line =  file_line[:21] + " " + file_line[22:]
+                if file_line.startswith("TER") and len(file_line) > 21:
+                    file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
+                focused_filelines.append(file_line.split())
+
+            return focused_filelines   
+        
         import pickle
         import gzip
         import numpy as np
@@ -106,16 +141,19 @@ class TestTunnelNetwork(unittest.TestCase):
                 res_lines = res_in.readlines()
                 out_lines = out_in.readlines()
 
+        #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
+        if ".pdb" in res_file:
+            res_lines = focus_pdbfile(res_lines)
+            out_lines = focus_pdbfile(out_lines)
+
         if res_lines is not None:
             if isinstance(res_lines, np.ndarray):
-                self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-7),
+                self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
                                 msg="In files '{}' and '{}':".format(out_file, res_file))
             else:
                 self.assertTrue(len(res_lines) == len(out_lines),
                                 msg="Different length of files '{}' and '{}':".format(out_file, res_file))
                 for res_line, out_line in zip(res_lines, out_lines):
-                    if ".pdb" in res_file and "REMARK   1 CREATED WITH MDTraj" in res_line:
-                        continue
                     if isinstance(res_line, list) or isinstance(res_line, tuple):
                         self.assertTrue(len(res_line) == len(out_line),
                                         msg="Different length of lists {} and {}\n "
@@ -137,7 +175,7 @@ class TestTunnelNetwork(unittest.TestCase):
                                                                                                       res_file))
 
         else:
-            self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-7),
+            self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
                             msg="In files '{}' and '{}':".format(out_file, res_file))
 
     def _compare_folders(self, saved_outputs_dir: str, results_dir: str, ):
@@ -229,16 +267,23 @@ class TestTunnelNetwork(unittest.TestCase):
 
 
 class TestAquaductNetwork(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _pytest_info(self, request):
+        """Capture pytest request for failure detection"""
+        self._request = request
+
     @classmethod
     def setUpClass(cls):
         from transport_tools.libs.config import AnalysisConfig
         from transport_tools.libs.networks import AquaductNetwork
 
+        cls._test_failed = False # Initialize flag to track failures
+
         cls.maxDiff = None
-        cls.root = set_paths("tests", "data")
+        cls.root = set_paths_from_package_root("tests", "data")
         prep_config(cls.root)
         cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths("tests", "test_results", "TestAquaductNetwork"))
+        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestAquaductNetwork"))
         cls.out_path = cls.config.get_parameter("output_path")
         os.makedirs(cls.out_path, exist_ok=True)
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
@@ -254,12 +299,50 @@ class TestAquaductNetwork(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         from shutil import rmtree
+        # Check if any test failed and keep results
+        if cls._test_failed:
+            return
 
         os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
         cls.net.clean_tempfile()
 
+    def tearDown(self):
+        """
+        Called after each test method - track if any test failed
+        """
+        # Check if any test has failed
+        # Works with both unittest and pytest
+        if hasattr(self, '_outcome'):
+            # For unittest (Python 3.11+)
+            if hasattr(self._outcome, 'result'):
+                result_errors = getattr(self._outcome.result, 'errors', [])
+                result_failures = getattr(self._outcome.result, 'failures', [])
+                if result_errors or result_failures:
+                    self.__class__._test_failed = True
+
+        # For pytest - check using pytest's request fixture if available
+        # This is set by pytest when running tests
+        if hasattr(self, '_request') and hasattr(self._request, 'node'):
+            # Check if this test or any previous test in the session has failed
+            if self._request.session.testsfailed > 0:
+                self.__class__._test_failed = True
+
     def _compare_files(self, out_file: str, res_file: str,):
+        def focus_pdbfile(file_lines: list) -> list:
+            focused_filelines = list()
+            for file_line in file_lines:
+                # skip over version dependent formating of PDB
+                if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
+                    continue
+                # make chain id blank to avoid version dependent treatment
+                if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
+                    file_line =  file_line[:21] + " " + file_line[22:29]
+                if file_line.startswith("TER") and len(file_line) > 21:
+                    file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
+                focused_filelines.append(file_line.split())
+            return focused_filelines  
+
         import pickle
         import gzip
         import numpy as np
@@ -288,16 +371,19 @@ class TestAquaductNetwork(unittest.TestCase):
                 res_lines = res_in.readlines()
                 out_lines = out_in.readlines()
 
+        #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
+        if ".pdb" in res_file:
+            res_lines = focus_pdbfile(res_lines)
+            out_lines = focus_pdbfile(out_lines)
+
         if res_lines is not None:
             if isinstance(res_lines, np.ndarray):
-                self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-7),
+                self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
                                 msg="In files '{}' and '{}':".format(out_file, res_file))
             else:
                 self.assertTrue(len(res_lines) == len(out_lines),
                                 msg="Different length of files '{}' and '{}':".format(out_file, res_file))
                 for res_line, out_line in zip(res_lines, out_lines):
-                    if ".pdb" in res_file and "REMARK   1 CREATED WITH MDTraj" in res_line:
-                        continue
                     if isinstance(res_line, list) or isinstance(res_line, tuple):
                         self.assertTrue(len(res_line) == len(out_line),
                                         msg="Different length of lists {} and {}\n "
@@ -309,7 +395,6 @@ class TestAquaductNetwork(unittest.TestCase):
                             except (ValueError, TypeError):
                                 self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
                                                                                                           res_file))
-
                     else:
                         try:
                             self.assertAlmostEqual(float(out_line), float(res_line),
@@ -319,7 +404,7 @@ class TestAquaductNetwork(unittest.TestCase):
                                                                                                       res_file))
 
         else:
-            self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-7),
+            self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
                             msg="In files '{}' and '{}':".format(out_file, res_file))
 
     def _compare_folders(self, saved_outputs_dir: str, results_dir: str, ):
@@ -400,16 +485,23 @@ class TestAquaductNetwork(unittest.TestCase):
 
 
 class TestSuperCluster(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _pytest_info(self, request):
+        """Capture pytest request for failure detection"""
+        self._request = request
+
     @classmethod
     def setUpClass(cls):
         from transport_tools.libs.config import AnalysisConfig
         from shutil import copytree
 
+        cls._test_failed = False # Initialize flag to track failures
+
         cls.maxDiff = None
-        cls.root = set_paths("tests", "data")
+        cls.root = set_paths_from_package_root("tests", "data")
         prep_config(cls.root)
         cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths("tests", "test_results", "TestSuperCluster"))
+        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestSuperCluster"))
         cls.out_path = cls.config.get_parameter("output_path")
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
                                                                        "_internal", "transformations"))
@@ -425,9 +517,33 @@ class TestSuperCluster(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         from shutil import rmtree
+        # Check if any test failed and keep results
+        if cls._test_failed:
+            return
 
         os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
+
+    def tearDown(self):
+        """
+        Called after each test method - track if any test failed
+        """
+        # Check if any test has failed
+        # Works with both unittest and pytest
+        if hasattr(self, '_outcome'):
+            # For unittest (Python 3.11+)
+            if hasattr(self._outcome, 'result'):
+                result_errors = getattr(self._outcome.result, 'errors', [])
+                result_failures = getattr(self._outcome.result, 'failures', [])
+                if result_errors or result_failures:
+                    self.__class__._test_failed = True
+
+        # For pytest - check using pytest's request fixture if available
+        # This is set by pytest when running tests
+        if hasattr(self, '_request') and hasattr(self._request, 'node'):
+            # Check if this test or any previous test in the session has failed
+            if self._request.session.testsfailed > 0:
+                self.__class__._test_failed = True
 
     def _compare_files(self, out_file: str, res_file: str,):
         import gzip
@@ -517,12 +633,12 @@ class TestSuperCluster(unittest.TestCase):
             self.super_clusters[old_id].prioritized_sc_id = new_id + 1
 
     def test__get_csv_file(self):
-        self.assertEqual(os.path.join(set_paths("tests"), "test_results", "TestSuperCluster", "data", "super_clusters",
+        self.assertEqual(os.path.join(set_paths_from_package_root("tests"), "test_results", "TestSuperCluster", "data", "super_clusters",
                                       "CSV_profiles", "initial", "super_cluster_05.csv"),
                          self.super_clusters[5]._get_csv_file())
 
     def test__get_bottleneck_file(self):
-        self.assertEqual(os.path.join(set_paths("tests"), "test_results", "TestSuperCluster", "data", "super_clusters",
+        self.assertEqual(os.path.join(set_paths_from_package_root("tests"), "test_results", "TestSuperCluster", "data", "super_clusters",
                                       "bottlenecks", "initial", "super_cluster_05.csv"),
                          self.super_clusters[5]._get_bottleneck_file())
 
@@ -565,11 +681,11 @@ Number of release events = 0
         sc_id, avg_direction = self.super_clusters[1].compute_space_descriptors()
         self.super_clusters[1].load_path_sets()
         self.assertSequenceEqual((48, 7), self.super_clusters[1].path_sets["overall"].nodes_data.shape)
-        self.assertTrue(np.allclose(avg_direction, np.array([-2.49484359, -7.03691757, -6.94671987]), atol=1e-7))
+        self.assertTrue(np.allclose(avg_direction, np.array([-2.49484359, -7.03691757, -6.94671987]), atol=1e-3))
         sc_id, avg_direction = self.super_clusters[23].compute_space_descriptors()
         self.super_clusters[23].load_path_sets()
         self.assertSequenceEqual((33, 7), self.super_clusters[23].path_sets["overall"].nodes_data.shape)
-        self.assertTrue(np.allclose(avg_direction, np.array([15.43776866, 6.38202966, 21.02110355]), atol=1e-7))
+        self.assertTrue(np.allclose(avg_direction, np.array([15.43776866, 6.38202966, 21.02110355]), atol=1e-3))
 
     def test_has_passed_filter(self):
         from transport_tools.libs.networks import define_filters

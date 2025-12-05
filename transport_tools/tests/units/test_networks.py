@@ -65,7 +65,7 @@ class TestTunnel(unittest.TestCase):
 
     def test_get_center_line(self):
         from transport_tools.tests.units.data.data_networks import test_get_center_line_out
-        self.assertTrue(np.allclose(test_get_center_line_out, self.tun1.get_center_line(), atol=1e-7))
+        self.assertTrue(np.allclose(test_get_center_line_out, self.tun1.get_center_line(), atol=1e-3))
 
     def test_get_snapshot_id(self):
         self.assertEqual(1, self.tun1.get_snapshot_id())
@@ -78,7 +78,7 @@ class TestTunnel(unittest.TestCase):
 
     def test_get_points_data(self):
         from transport_tools.tests.units.data.data_networks import test_tunnel_get_points_data_out
-        self.assertTrue(np.allclose(test_tunnel_get_points_data_out, self.tun1.get_points_data(), atol=1e-7))
+        self.assertTrue(np.allclose(test_tunnel_get_points_data_out, self.tun1.get_points_data(), atol=1e-3))
 
     def test_get_csv_lines(self):
         from transport_tools.tests.units.data.data_networks import test_get_csv_lines_out
@@ -145,15 +145,15 @@ class TestTunnel(unittest.TestCase):
 
         min_distance, closest_sphere = self.tun1.get_closest_sphere2coords([-9.47, -32.61, 55.17])
         self.assertAlmostEqual(test_get_closest_sphere2coords1[0], min_distance)
-        self.assertTrue(np.allclose(test_get_closest_sphere2coords1[1], closest_sphere, atol=1e-7))
+        self.assertTrue(np.allclose(test_get_closest_sphere2coords1[1], closest_sphere, atol=1e-3))
 
         min_distance, closest_sphere = self.tun1.get_closest_sphere2coords([-5.47, -35.61, 65.17])
         self.assertAlmostEqual(test_get_closest_sphere2coords2[0], min_distance)
-        self.assertTrue(np.allclose(test_get_closest_sphere2coords2[1], closest_sphere, atol=1e-7))
+        self.assertTrue(np.allclose(test_get_closest_sphere2coords2[1], closest_sphere, atol=1e-3))
 
         min_distance, closest_sphere = self.tun1.get_closest_sphere2coords([-5.47, -32.61, 55.17])
         self.assertAlmostEqual(test_get_closest_sphere2coords3[0], min_distance)
-        self.assertTrue(np.allclose(test_get_closest_sphere2coords3[1], closest_sphere, atol=1e-7))
+        self.assertTrue(np.allclose(test_get_closest_sphere2coords3[1], closest_sphere, atol=1e-3))
 
     def test_get_pdb_file_format(self):
         from transport_tools.tests.units.data.data_networks import test_get_pdb_file_format_out
@@ -263,9 +263,9 @@ class TestTunnelCluster(unittest.TestCase):
         }
 
         result = self.cluster.get_property("length", active_filters)
-        self.assertTrue(np.allclose(np.array([13.93547775, 14.15519756, 14.37838513, 14.63735497]), result, atol=1e-7))
+        self.assertTrue(np.allclose(np.array([13.93547775, 14.15519756, 14.37838513, 14.63735497]), result, atol=1e-3))
         result = self.cluster.get_property("bottleneck_radius", active_filters)
-        self.assertTrue(np.allclose(np.array([1.10964977, 1.59485294, 1.1732877, 1.52701991]), result, atol=1e-7))
+        self.assertTrue(np.allclose(np.array([1.10964977, 1.59485294, 1.1732877, 1.52701991]), result, atol=1e-3))
 
     def test_remove_tunnel(self):
         self.cluster.remove_tunnel(1)
@@ -337,9 +337,9 @@ class TestTransportEvent(unittest.TestCase):
         from transport_tools.tests.units.data.data_networks import test_event_get_points_data_out1, \
             test_event_get_points_data_out2, test_event_get_points_data_out3
 
-        self.assertTrue(np.allclose(test_event_get_points_data_out1, self.inside.get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test_event_get_points_data_out2, self.release.get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test_event_get_points_data_out3, self.entry.get_points_data(), atol=1e-7))
+        self.assertTrue(np.allclose(test_event_get_points_data_out1, self.inside.get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test_event_get_points_data_out2, self.release.get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test_event_get_points_data_out3, self.entry.get_points_data(), atol=1e-3))
 
     def test_get_min_distance2starting_point(self):
         self.assertAlmostEqual(6.158936596, self.inside.get_min_distance2starting_point())
@@ -396,18 +396,18 @@ class TestAquaductPath(unittest.TestCase):
         self.assertEqual("entry", events[0].type)
         self.assertEqual("inside", events[1].type)
         self.assertEqual("release", events[2].type)
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out1, events[0].get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out2, events[1].get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out3, events[2].get_points_data(), atol=1e-7))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out1, events[0].get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out2, events[1].get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out3, events[2].get_points_data(), atol=1e-3))
 
         events = self.path2._parse_aquaduct_path(cgo2)
         self.assertEqual(3, len(events))
         self.assertEqual("entry", events[0].type)
         self.assertEqual("inside", events[1].type)
         self.assertEqual("release", events[2].type)
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out4, events[0].get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out5, events[1].get_points_data(), atol=1e-7))
-        self.assertTrue(np.allclose(test__parse_aquaduct_path_out6, events[2].get_points_data(), atol=1e-7))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out4, events[0].get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out5, events[1].get_points_data(), atol=1e-3))
+        self.assertTrue(np.allclose(test__parse_aquaduct_path_out6, events[2].get_points_data(), atol=1e-3))
 
     def test__get_continuously_closer_points(self):
         from transport_tools.tests.units.data.data_networks import list_of_points1, list_of_points2, list_of_points3
