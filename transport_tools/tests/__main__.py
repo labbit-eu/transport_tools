@@ -27,12 +27,14 @@ import os
 import transport_tools.tests.units.test_utils as TT_test_utils
 import transport_tools.tests.units.test_geometry as TT_test_geometry
 import transport_tools.tests.units.test_networks as TT_test_networks
+import transport_tools.tests.units.test_tunnel_profile as TT_test_tunnel_profile
 from transport_tools.libs.utils import set_paths_from_package_root
 
 # Create unit tests suite
 unit_tests_suite = unittest.defaultTestLoader.loadTestsFromModule(TT_test_utils)
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry))
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tunnel_profile))
 
 # Run unit tests first
 print("=" * 80)
