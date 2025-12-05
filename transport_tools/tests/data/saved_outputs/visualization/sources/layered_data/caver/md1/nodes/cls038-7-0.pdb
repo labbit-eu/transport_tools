@@ -1,54 +1,20 @@
-HETATM    0  UNK L7  T   0      -4.178   4.617  -8.322
+HETATM    0  UNK L7  T   0      -8.834   4.473  -5.855
 TER
-HETATM    1  UNK L7  T   1      -4.661   4.643  -8.256
+HETATM    1  UNK L7  T   1      -9.072   4.723  -5.495
 TER
-HETATM    2  UNK L7  T   2      -5.155   4.575  -8.293
+HETATM    2  UNK L7  T   2      -9.450   4.792  -5.211
 TER
-HETATM    3  UNK L7  T   3      -5.643   4.493  -8.309
+HETATM    3  UNK L7  T   3      -8.469   5.172  -6.063
 TER
-HETATM    4  UNK L7  T   4      -6.093   4.316  -8.181
+HETATM    4  UNK L7  T   4      -8.734   5.415  -5.715
 TER
-HETATM    5  UNK L7  T   5      -6.522   4.381  -8.162
+HETATM    5  UNK L7  T   5      -9.102   5.377  -5.462
 TER
-HETATM    6  UNK L7  T   6      -6.901   4.688  -8.255
+HETATM    6  UNK L7  T   6      -8.558   4.756  -5.264
 TER
-HETATM    7  UNK L7  T   7      -7.525   4.570  -7.945
+HETATM    7  UNK L7  T   7      -9.022   4.598  -5.174
 TER
-HETATM    8  UNK L7  T   8      -7.636   4.331  -7.560
+HETATM    8  UNK L7  T   8      -9.440   4.399  -5.008
 TER
-HETATM    9  UNK L7  T   9      -7.905   4.198  -7.162
-TER
-HETATM   10  UNK L7  T  10      -8.180   4.060  -6.768
-TER
-HETATM   11  UNK L7  T  11      -8.316   3.934  -6.347
-TER
-HETATM   12  UNK L7  T  12      -4.753   4.470  -7.937
-TER
-HETATM   13  UNK L7  T  13      -5.202   4.339  -7.993
-TER
-HETATM   14  UNK L7  T  14      -5.603   4.285  -7.978
-TER
-HETATM   15  UNK L7  T  15      -5.988   4.573  -8.110
-TER
-HETATM   16  UNK L7  T  16      -6.465   4.573  -8.028
-TER
-HETATM   17  UNK L7  T  17      -6.951   4.532  -7.917
-TER
-HETATM   18  UNK L7  T  18      -7.252   4.295  -7.679
-TER
-HETATM   19  UNK L7  T  19      -7.528   4.212  -7.271
-TER
-HETATM   20  UNK L7  T  20      -7.797   4.203  -6.865
-TER
-HETATM   21  UNK L7  T  21      -7.969   4.535  -6.569
-TER
-HETATM   22  UNK L7  T  22      -4.589   5.208  -8.191
-TER
-HETATM   23  UNK L7  T  23      -5.017   5.228  -8.061
-TER
-HETATM   24  UNK L7  T  24      -7.538   4.347  -5.951
-TER
-HETATM   25  UNK L7  T  25      -7.703   4.681  -5.708
-TER
-HETATM   26  UNK A7  T  26      -6.503   4.473  -7.608
+HETATM    9  UNK A7  T   9      -8.964   4.856  -5.472
 END

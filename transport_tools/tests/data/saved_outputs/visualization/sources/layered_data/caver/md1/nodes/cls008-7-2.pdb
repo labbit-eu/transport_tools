@@ -1,6 +1,6 @@
-HETATM    0  UNK L7  T   0       0.958   9.709  -6.278
+HETATM    0  UNK L7  T   0       1.148   7.974  -6.207
 TER
-HETATM    1  UNK L7  T   1       1.148   7.974  -6.207
+HETATM    1  UNK L7  T   1       0.958   9.709  -6.278
 TER
 HETATM    2  UNK A7  T   2       1.053   8.842  -6.242
 END

@@ -1,6 +1,6 @@
-HETATM    0  UNK L13 T   0      -1.684   4.902  19.434
+HETATM    0  UNK L13 T   0      -2.600   6.066  19.898
 TER
-HETATM    1  UNK L13 T   1      -2.600   6.066  19.898
+HETATM    1  UNK L13 T   1      -1.684   4.902  19.434
 TER
 HETATM    2  UNK A13 T   2      -2.142   5.484  19.666
 END

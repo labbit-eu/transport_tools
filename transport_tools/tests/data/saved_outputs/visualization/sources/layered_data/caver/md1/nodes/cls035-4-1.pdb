@@ -1,8 +1,60 @@
-HETATM    0  UNK L4  T   0      -0.721  -4.369   4.435
+HETATM    0  UNK L4  T   0       1.916   0.289   5.693
 TER
-HETATM    1  UNK L4  T   1      -0.541  -4.769   4.675
+HETATM    1  UNK L4  T   1       2.257   0.485   5.982
 TER
-HETATM    2  UNK L4  T   2      -0.201  -5.068   4.659
+HETATM    2  UNK L4  T   2       2.239   0.905   6.225
 TER
-HETATM    3  UNK A4  T   3      -0.488  -4.736   4.589
+HETATM    3  UNK L4  T   3       2.333   1.375   6.351
+TER
+HETATM    4  UNK L4  T   4       2.053   0.677   5.741
+TER
+HETATM    5  UNK L4  T   5       2.393   0.874   6.034
+TER
+HETATM    6  UNK L4  T   6       2.211   0.992   5.682
+TER
+HETATM    7  UNK L4  T   7       2.596   1.094   5.980
+TER
+HETATM    8  UNK L4  T   8       1.468   0.252   5.964
+TER
+HETATM    9  UNK L4  T   9       1.873   0.413   6.206
+TER
+HETATM   10  UNK L4  T  10       2.211   0.651   6.452
+TER
+HETATM   11  UNK L4  T  11       1.561  -0.061   5.941
+TER
+HETATM   12  UNK L4  T  12       1.831  -0.080   6.341
+TER
+HETATM   13  UNK L4  T  13       2.093  -0.007   6.630
+TER
+HETATM   14  UNK L4  T  14       1.852   0.353   5.844
+TER
+HETATM   15  UNK L4  T  15       2.122   0.668   6.123
+TER
+HETATM   16  UNK L4  T  16       2.432   0.854   6.462
+TER
+HETATM   17  UNK L4  T  17       1.331  -0.306   5.903
+TER
+HETATM   18  UNK L4  T  18       1.792  -0.249   6.087
+TER
+HETATM   19  UNK L4  T  19       2.182  -0.018   6.291
+TER
+HETATM   20  UNK L4  T  20       2.604   0.198   6.415
+TER
+HETATM   21  UNK L4  T  21       2.099   0.040   5.865
+TER
+HETATM   22  UNK L4  T  22       2.375   0.298   6.187
+TER
+HETATM   23  UNK L4  T  23       1.837   0.032   5.730
+TER
+HETATM   24  UNK L4  T  24       2.105   0.279   5.980
+TER
+HETATM   25  UNK L4  T  25       2.443   0.481   6.284
+TER
+HETATM   26  UNK L4  T  26       2.132  -0.017   5.750
+TER
+HETATM   27  UNK L4  T  27       2.426   0.311   5.982
+TER
+HETATM   28  UNK L4  T  28       2.741   0.542   6.253
+TER
+HETATM   29  UNK A4  T  29       2.121   0.391   6.082
 END

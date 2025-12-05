@@ -1,28 +1,20 @@
-HETATM    0  UNK L9  T   0       0.075  -0.298  13.335
+HETATM    0  UNK L9  T   0       7.275  -6.653  11.158
 TER
-HETATM    1  UNK L9  T   1       0.346  -0.504  13.682
+HETATM    1  UNK L9  T   1       7.557  -6.626  10.849
 TER
-HETATM    2  UNK L9  T   2       0.500  -0.864  13.913
+HETATM    2  UNK L9  T   2       7.921  -6.812  10.665
 TER
-HETATM    3  UNK L9  T   3       0.740  -1.158  14.239
+HETATM    3  UNK L9  T   3       6.611  -6.536  11.622
 TER
-HETATM    4  UNK L9  T   4       1.028  -1.494  14.449
+HETATM    4  UNK L9  T   4       6.971  -6.447  11.309
 TER
-HETATM    5  UNK L9  T   5       1.348  -1.858  14.573
+HETATM    5  UNK L9  T   5       7.370  -6.440  11.050
 TER
-HETATM    6  UNK L9  T   6       1.628  -2.242  14.707
+HETATM    6  UNK L9  T   6       7.802  -6.431  10.799
 TER
-HETATM    7  UNK L9  T   7      -0.154  -0.289  13.320
+HETATM    7  UNK L9  T   7       6.115  -6.524  11.456
 TER
-HETATM    8  UNK L9  T   8       0.203  -0.476  13.607
+HETATM    8  UNK L9  T   8       6.330  -6.514  11.057
 TER
-HETATM    9  UNK L9  T   9       0.544  -0.682  13.859
-TER
-HETATM   10  UNK L9  T  10       0.808  -0.934  14.200
-TER
-HETATM   11  UNK L9  T  11       1.090  -1.257  14.433
-TER
-HETATM   12  UNK L9  T  12       1.384  -1.630  14.588
-TER
-HETATM   13  UNK A9  T  13       0.734  -1.053  14.070
+HETATM    9  UNK A9  T   9       7.106  -6.554  11.107
 END

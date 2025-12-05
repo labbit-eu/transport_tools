@@ -1,20 +1,14 @@
-HETATM    0  UNK L7  T   0       3.350  -9.230   3.216
+HETATM    0  UNK L7  T   0       1.178  -8.533   5.361
 TER
-HETATM    1  UNK L7  T   1       3.825  -9.382   3.190
+HETATM    1  UNK L7  T   1       1.453  -8.926   5.233
 TER
-HETATM    2  UNK L7  T   2       4.301  -9.535   3.163
+HETATM    2  UNK L7  T   2       1.838  -8.981   5.512
 TER
-HETATM    3  UNK L7  T   3       4.744  -9.573   3.319
+HETATM    3  UNK L7  T   3       2.215  -9.049   5.823
 TER
-HETATM    4  UNK L7  T   4       5.167  -9.560   3.579
+HETATM    4  UNK L7  T   4       2.516  -9.256   6.164
 TER
-HETATM    5  UNK L7  T   5       5.365  -9.408   3.912
+HETATM    5  UNK L7  T   5       2.817  -9.462   6.506
 TER
-HETATM    6  UNK L7  T   6       5.494  -9.194   4.345
-TER
-HETATM    7  UNK L7  T   7       5.879  -9.022   4.563
-TER
-HETATM    8  UNK L7  T   8       6.325  -8.882   4.740
-TER
-HETATM    9  UNK A7  T   9       4.939  -9.310   3.781
+HETATM    6  UNK A7  T   6       2.003  -9.035   5.767
 END

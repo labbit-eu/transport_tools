@@ -1,30 +1,48 @@
-HETATM    0  UNK L8  T   0       2.784  -2.731  11.797
+HETATM    0  UNK L8  T   0       7.519  -5.656   8.082
 TER
-HETATM    1  UNK L8  T   1       2.893  -2.948  12.232
+HETATM    1  UNK L8  T   1       7.941  -5.876   8.236
 TER
-HETATM    2  UNK L8  T   2       2.894  -3.599  11.343
+HETATM    2  UNK L8  T   2       7.575  -5.642   7.755
 TER
-HETATM    3  UNK L8  T   3       3.218  -3.794  11.631
+HETATM    3  UNK L8  T   3       8.017  -5.771   7.940
 TER
-HETATM    4  UNK L8  T   4       3.553  -4.143  11.729
+HETATM    4  UNK L8  T   4       7.816  -4.685   8.364
 TER
-HETATM    5  UNK L8  T   5       3.200  -3.819  11.040
+HETATM    5  UNK L8  T   5       7.954  -5.061   8.322
 TER
-HETATM    6  UNK L8  T   6       3.470  -3.937  11.444
+HETATM    6  UNK L8  T   6       8.097  -5.360   8.547
 TER
-HETATM    7  UNK L8  T   7       3.239  -4.123  10.811
+HETATM    7  UNK L8  T   7       7.791  -4.715   8.099
 TER
-HETATM    8  UNK L8  T   8       3.563  -3.849  10.976
+HETATM    8  UNK L8  T   8       8.067  -4.728   8.514
 TER
-HETATM    9  UNK L8  T   9       3.928  -4.153  11.083
+HETATM    9  UNK L8  T   9       7.597  -5.338   8.104
 TER
-HETATM   10  UNK L8  T  10       4.212  -4.359  10.899
+HETATM   10  UNK L8  T  10       8.066  -5.430   8.249
 TER
-HETATM   11  UNK L8  T  11       4.317  -4.470  10.422
+HETATM   11  UNK L8  T  11       6.782  -5.412   8.439
 TER
-HETATM   12  UNK L8  T  12       3.924  -3.715  11.573
+HETATM   12  UNK L8  T  12       7.243  -5.410   8.631
 TER
-HETATM   13  UNK L8  T  13       3.707  -3.781  11.139
+HETATM   13  UNK L8  T  13       7.705  -5.408   8.823
 TER
-HETATM   14  UNK A8  T  14       3.493  -3.816  11.294
+HETATM   14  UNK L8  T  14       7.690  -4.587   8.163
+TER
+HETATM   15  UNK L8  T  15       7.856  -5.053   8.231
+TER
+HETATM   16  UNK L8  T  16       8.030  -5.515   8.313
+TER
+HETATM   17  UNK L8  T  17       7.403  -5.111   8.377
+TER
+HETATM   18  UNK L8  T  18       7.776  -5.227   8.642
+TER
+HETATM   19  UNK L8  T  19       7.647  -5.076   8.243
+TER
+HETATM   20  UNK L8  T  20       7.931  -5.311   8.539
+TER
+HETATM   21  UNK L8  T  21       7.675  -5.121   8.320
+TER
+HETATM   22  UNK L8  T  22       8.088  -5.309   8.530
+TER
+HETATM   23  UNK A8  T  23       7.751  -5.252   8.324
 END

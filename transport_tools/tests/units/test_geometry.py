@@ -397,7 +397,7 @@ class TestLayers(unittest.TestCase):
         self.assertSequenceEqual([0], [*self.layer1.clusters.keys()])
         self.assertSequenceEqual([0], [*self.layer2.clusters.keys()])
         self.assertSequenceEqual([0, 1], [*self.layer3.clusters.keys()])
-        self.assertSequenceEqual([1, 2, 3], [*self.layer4.clusters.keys()])
+        self.assertSequenceEqual([0, 1, 2], [*self.layer4.clusters.keys()])
 
         self.assertTrue(np.allclose(np.array([0.100437294,  0.152349308,  0.355136331]),
                                     self.layer1.clusters[0].average, atol=1e-3))
@@ -409,11 +409,11 @@ class TestLayers(unittest.TestCase):
                                     self.layer3.clusters[1].average, atol=1e-3))
         # Spatial sorting changed cluster IDs: sorted by z, y, x coordinates
         self.assertTrue(np.allclose(np.array([-0.834558695,  8.588890506,  6.174215682]),
-                                    self.layer4.clusters[1].average, atol=1e-3))
+                                    self.layer4.clusters[0].average, atol=1e-3))
         self.assertTrue(np.allclose(np.array([0.282124062,  1.284429191, 11.041600659]),
-                                    self.layer4.clusters[2].average, atol=1e-3))
+                                    self.layer4.clusters[1].average, atol=1e-3))
         self.assertTrue(np.allclose(np.array([4.711509259, -2.706210238,  8.762292707]),
-                                    self.layer4.clusters[3].average, atol=1e-3))
+                                    self.layer4.clusters[2].average, atol=1e-3))
 
     def test__cluster_data(self):
         from transport_tools.tests.units.data.data_geometry import test_layers_points_mat1, test_layers_points_mat2, \
@@ -510,8 +510,6 @@ class TestLayeredRepresentation(unittest.TestCase):
         self.assertEqual(test_layered_repre_str4, str(self.repre4.find_representative_paths(self.transform_mat,
                                                                                             self.sp)))
         self.assertEqual(test_layered_repre_str5, str(self.repre5.find_representative_paths(self.transform_mat, None)))
-        print(str(self.merged_repre.find_representative_paths(self.transform_mat, self.sp)))
-        print(len(test_layered_repre_str6), len(str(self.merged_repre.find_representative_paths(self.transform_mat, self.sp))))
         self.assertEqual(test_layered_repre_str6, str(self.merged_repre.find_representative_paths(self.transform_mat,
                                                                                                   self.sp)))
 

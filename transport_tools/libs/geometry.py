@@ -1360,12 +1360,21 @@ class Layer:
         :param end_point: if the cluster is of end point type
         """
 
+        cluster_objects = []
         for cls_id in np.unique(clustering):
             if cls_id == -1:
                 continue
             cluster_data = points_mat[clustering == cls_id, :]
-            self.add_cluster(ClusterInLayer(cluster_data, self.thickness, self.parameters["tunnel_properties_quantile"],
-                                            end_point=end_point))
+            cluster = ClusterInLayer(cluster_data, self.thickness,
+                                     self.parameters["tunnel_properties_quantile"],
+                                     end_point=end_point)
+            cluster_objects.append(cluster)
+        
+        #Sort clusters by their average coordinates (z, y, x for stability)
+        cluster_objects.sort(key=lambda c: (c.average[2], c.average[1], c.average[0]))        
+        
+        for cluster in cluster_objects:
+             self.add_cluster(cluster)
 
     def _make_layered_clusters(self, points_mat: np.array):
         raise NotImplementedError("Provide implementation of this method.")
