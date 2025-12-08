@@ -507,3 +507,191 @@ def path_loader_string(path: str) -> str:
         all_parts.append("'{}'".format(path_segment))
 
     return "os.path.join({})".format(", ".join(all_parts))
+
+def prep_test_config(root: str, output_dir: str):
+    """
+    Prepare a test configuration file by updating paths in the template.
+
+    Reads tmp_config.ini from the test data directory and creates a new config.ini
+    in the test output directory with absolute paths to simulation data.
+
+    Parameters
+    ----------
+    root : str
+        Path to the test data directory containing tmp_config.ini and simulations folder
+    output_dir : str
+        Path to the test output directory where config.ini will be created
+    """
+    in_config_file = os.path.join(root, "tmp_config.ini")
+    out_config_file = os.path.join(output_dir, "config.ini")
+    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
+    with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
+        for line in in_stream.readlines():
+            for param in update_parameters:
+                if param in line:
+                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
+            out_stream.write(line)
+
+
+ # Test utilities for file/folder comparisons
+
+def focus_pdbfile(file_lines: List[str]) -> List[str]:
+    """
+    Focus PDB file comparison on atom lines only, skipping version-dependent formatting.
+
+    :param file_lines: list of lines from PDB file
+    :return: list of focused lines
+    """
+    focused_filelines = list()
+    for file_line in file_lines:
+        # skip over version dependent formating of PDB
+        if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
+            continue
+        # make chain id blank to avoid their version dependent treatment
+        if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
+            file_line = file_line[:21] + " " + file_line[22:]
+        if file_line.startswith("TER") and len(file_line) > 21:
+            file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
+        focused_filelines.append(file_line.split())
+
+    return focused_filelines
+
+# TODO complete and thest implementation of following functions, -> use in tests
+def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool = True,
+                      pdb_truncate_chain: bool = False) -> None:
+    """
+    Compare two files for testing purposes with support for various file types.
+
+    Supports:
+    - Pickled files (.dump, .dump.gz)
+    - Gzipped text files (.gz)
+    - NumPy arrays (.npy)
+    - PDB files (.pdb) with version-independent comparison
+    - CSV files (.csv) with numeric tolerance
+    - Plain text files
+
+    :param out_file: path to output file from test
+    :param res_file: path to reference/expected file
+    :param test_case: unittest.TestCase instance for assertions
+    :param handle_csv: if True, handle CSV files specially with per-field comparison
+    :param pdb_truncate_chain: if True, truncate PDB lines after chain ID for comparison
+    """
+    import pickle
+    import gzip
+    from sys import maxsize
+
+    np.set_printoptions(threshold=maxsize)
+
+    res_lines = out_lines = None
+    out_mat = res_mat = None
+
+    # Load files based on type
+    if res_file.endswith(".dump.gz"):
+        with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
+            res_lines = pickle.load(res_in)
+            out_lines = pickle.load(out_in)
+    elif ".dump" in res_file:
+        with open(res_file, "rb") as res_in, open(out_file, "rb") as out_in:
+            res_lines = pickle.load(res_in)
+            out_lines = pickle.load(out_in)
+    elif ".gz" in res_file:
+        # Try text mode first (rt), fall back to binary (r) for compatibility
+        try:
+            with gzip.open(res_file, 'rt') as res_in, gzip.open(out_file, 'rt') as out_in:
+                res_lines = res_in.readlines()
+                out_lines = out_in.readlines()
+        except:
+            with gzip.open(res_file, 'r') as res_in, gzip.open(out_file, 'r') as out_in:
+                res_lines = res_in.readlines()
+                out_lines = out_in.readlines()
+    elif ".npy" in res_file:
+        res_mat = np.load(res_file)
+        out_mat = np.load(out_file)
+    else:
+        with open(res_file, "r") as res_in, open(out_file, "r") as out_in:
+            res_lines = res_in.readlines()
+            out_lines = out_in.readlines()
+
+    # For pdb files, focus comparison on atoms only
+    if ".pdb" in res_file:
+        res_lines = focus_pdbfile(res_lines, truncate_chain=pdb_truncate_chain)
+        out_lines = focus_pdbfile(out_lines, truncate_chain=pdb_truncate_chain)
+
+    # Compare content
+    if res_lines is not None:
+        if isinstance(res_lines, np.ndarray):
+            test_case.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
+                               msg="In files '{}' and '{}':".format(out_file, res_file))
+        else:
+            test_case.assertTrue(len(res_lines) == len(out_lines),
+                               msg="Different length of files '{}' and '{}':".format(out_file, res_file))
+            for res_line, out_line in zip(res_lines, out_lines):
+                if isinstance(res_line, list) or isinstance(res_line, tuple):
+                    test_case.assertTrue(len(res_line) == len(out_line),
+                                       msg="Different length of lists {} and {}\n "
+                                           "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
+                    for res_item, out_item in zip(res_line, out_line):
+                        try:
+                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=3,
+                                                      msg="In files '{}' and '{}':".format(out_file, res_file))
+                        except (ValueError, TypeError):
+                            test_case.assertEqual(out_item, res_item,
+                                                msg="In files '{}' and '{}':".format(out_file, res_file))
+                elif handle_csv and ".csv" in res_file:
+                    # Handle CSV files with field-by-field comparison
+                    for out_item, res_item in zip(out_line.split(","), res_line.split(",")):
+                        try:
+                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=3,
+                                                      msg="In files '{}' and '{}':".format(out_file, res_file))
+                        except ValueError:
+                            test_case.assertEqual(out_item, res_item,
+                                                msg="In files '{}' and '{}':".format(out_file, res_file))
+                else:
+                    try:
+                        test_case.assertAlmostEqual(float(out_line), float(res_line), places=3,
+                                                  msg="In files '{}' and '{}':".format(out_file, res_file))
+                    except (ValueError, TypeError):
+                        test_case.assertEqual(out_line, res_line,
+                                            msg="In files '{}' and '{}':".format(out_file, res_file))
+    else:
+        test_case.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
+                           msg="In files '{}' and '{}':".format(out_file, res_file))
+
+
+def compare_test_folders(saved_outputs_dir: str, results_dir: str, test_case,
+                        pattern: str = None, **compare_kwargs) -> None:
+    """
+    Compare contents of two folders recursively for testing purposes.
+
+    :param saved_outputs_dir: path to reference/expected output directory
+    :param results_dir: path to test output directory
+    :param test_case: unittest.TestCase instance for assertions
+    :param pattern: optional regex pattern to filter files (default: match all)
+    :param compare_kwargs: additional keyword arguments to pass to compare_test_files
+    """
+    if pattern:
+        from re import search
+        out_files = list()
+        results_files = list()
+
+        for _file in sorted(os.listdir(results_dir)):
+            if not search(pattern, _file):
+                continue
+            results_files.append(_file)
+
+        for _file in sorted(os.listdir(saved_outputs_dir)):
+            if not search(pattern, _file):
+                continue
+            out_files.append(_file)
+    else:
+        results_files = sorted(os.listdir(results_dir))
+        out_files = sorted(os.listdir(saved_outputs_dir))
+
+    test_case.assertEqual(out_files, results_files,
+                        msg="In folders '{}' and '{}':".format(saved_outputs_dir, results_dir))
+
+    for res_file, out_file in zip(results_files, out_files):
+        res_file = os.path.join(results_dir, res_file)
+        out_file = os.path.join(saved_outputs_dir, out_file)
+        if os.path.isfile(res_file) and os.path.isfile(out_file):
+            compare_test_files(out_file, res_file, test_case, **compare_kwargs)

@@ -545,7 +545,7 @@ class TransportProcesses:
         """
         Removes output folder
         :param overwrite: if to perform the cleaning of non empty folder
-        :param output_folders: which folders to be cleaned out, if not specified, all are removed
+        :param output_folders: which folders/files to be cleaned out, if not specified, all are removed
         """
 
         from shutil import rmtree
@@ -558,13 +558,21 @@ class TransportProcesses:
             folders2remove = output_folders
 
         for output_path in folders2remove:
-            logger.debug("Cleaning content of results folder '{}'".format(output_path))
-            if not overwrite and os.path.exists(output_path) and os.listdir(output_path):
-                raise RuntimeError("Error output folder '{}' exists and is not empty. Specify different name in "
-                                   "'output_path' parameter or enable overwrite option by using '--overwrite' option "
-                                   "or setting 'overwrite' parameter to True".format(output_path))
-            else:
-                rmtree(output_path, True)
+            if not os.path.exists(output_path):
+                continue
+
+            logger.debug("Cleaning '{}'".format(output_path))
+            if os.path.isfile(output_path):
+                # Handle files
+                os.remove(output_path)
+            elif os.path.isdir(output_path):
+                # Handle directories            
+                if not overwrite and os.path.exists(output_path) and os.listdir(output_path):
+                    raise RuntimeError("Error output folder '{}' exists and is not empty. Specify different name in "
+                                    "'output_path' parameter or enable overwrite option by using '--overwrite' option "
+                                    "or setting 'overwrite' parameter to True".format(output_path))
+                else:
+                    rmtree(output_path, True)
 
     def _save_distance_matrix(self, distance_matrix: np.array, cluster_specifications: List[Tuple[str, int]],
                               cluster_characteristics: Dict[Tuple[str, int], Tuple[float, int]]):
@@ -689,10 +697,18 @@ class TransportProcesses:
 
         # clean data produced by previous merging, if any are present
         folders2remove = list()
-        for folder_key in ["visualization_folder", "statistics_folder"]:
-            folders2remove.append(self.parameters[folder_key])
+        folders2remove.append(self.parameters["statistics_folder"])
         folders2remove.append(os.path.join(self.parameters["internal_folder"], "super_cluster_pathsets"))
         folders2remove.append(os.path.join(self.parameters["internal_folder"], "super_cluster_profiles"))
+
+        # Only remove specific visualization outputs, preserve sources generated before merging stage, except for superclusters CGOs
+        if os.path.exists(self.parameters["visualization_folder"]):
+            for item in os.listdir(self.parameters["visualization_folder"]):
+                if item != "sources":  # Preserve the sources folder
+                    folders2remove.append(os.path.join(self.parameters["visualization_folder"], item))
+        folders2remove.append(os.path.join(self.parameters["visualization_folder"], "sources",
+                                           "super_cluster_CGOs"))
+                    
         if os.path.exists(self.parameters["data_folder"]):
             for folder in os.listdir(self.parameters["data_folder"]):
                 if folder != "clustering":  # since this contains data from previous stage

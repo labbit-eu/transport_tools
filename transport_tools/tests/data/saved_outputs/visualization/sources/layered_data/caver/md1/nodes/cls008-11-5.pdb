@@ -12,9 +12,5 @@ HETATM    5  UNK L11 T   5       1.728  14.078  -7.867
 TER
 HETATM    6  UNK L11 T   6       2.023  14.736  -9.264
 TER
-HETATM    7  UNK L11 T   7       2.269  14.068  -8.132
-TER
-HETATM    8  UNK L11 T   8       2.774  13.620  -8.703
-TER
-HETATM    9  UNK A11 T   9       2.181  14.106  -8.310
+HETATM    7  UNK A11 T   7       2.083  14.181  -8.279
 END

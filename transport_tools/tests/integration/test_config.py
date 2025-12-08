@@ -22,29 +22,22 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 from transport_tools.libs.config import *
-from transport_tools.libs.utils import set_paths_from_package_root
-
-def prep_config(root: str):
-    in_config_file = os.path.join(root, "tmp_config.ini")
-    out_config_file = os.path.join(root, "config.ini")
-    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
-    with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
-        for line in in_stream.readlines():
-            for param in update_parameters:
-                if param in line:
-                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
-            out_stream.write(line)
-
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config
 
 class TestConfig(unittest.TestCase):
     def setUp(self):
         self.maxDiff = None
         from transport_tools.libs.config import AnalysisConfig
-        self.results = "test_results"
         self.root = set_paths_from_package_root("tests", "data")
-        prep_config(self.root)
-        self.config = AnalysisConfig(os.path.join(self.root, "config.ini"), logging=False)
-        self.saved_data = os.path.join(self.root, "saved_outputs")
+        self.out_path = set_paths_from_package_root("tests", "test_results", "TestConfig")
+        os.makedirs(self.out_path, exist_ok=True)
+        prep_test_config(self.root, self.out_path)
+        self.config = AnalysisConfig(os.path.join(self.out_path, "config.ini"), logging=False)
+
+    def tearDown(self):
+        from shutil import rmtree
+        rmtree(self.out_path)
+
 
     def test__get_filenames_by_pattern(self):
 

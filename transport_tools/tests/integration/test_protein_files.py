@@ -23,19 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import os
 import pytest
-from transport_tools.libs.utils import set_paths_from_package_root
-
-def prep_config(root: str):
-    in_config_file = os.path.join(root, "tmp_config.ini")
-    out_config_file = os.path.join(root, "config.ini")
-    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
-    with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
-        for line in in_stream.readlines():
-            for param in update_parameters:
-                if param in line:
-                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
-            out_stream.write(line)
-
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config
 
 class TestProteinFiles(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -123,11 +111,12 @@ class TestProteinFiles(unittest.TestCase):
         from transport_tools.libs.config import AnalysisConfig
 
         self.root = set_paths_from_package_root("tests", "data")
-        prep_config(self.root)
+        
         self.out_path = set_paths_from_package_root("tests", "test_results", "TestProteinFiles")
         self.saved_data = os.path.join(self.root, "saved_outputs")
         os.makedirs(self.out_path, exist_ok=True)
-        configuration = AnalysisConfig(os.path.join(self.root, "config.ini"), logging=False)
+        prep_test_config(self.root, self.out_path)
+        configuration = AnalysisConfig(os.path.join(self.out_path, "config.ini"), logging=False)
         configuration.set_parameter("transformation_folder", os.path.join(self.root, "saved_outputs",
                                                                           "_internal", "transformations"))
         self.parameters = configuration.get_parameters()

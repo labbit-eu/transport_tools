@@ -34,30 +34,25 @@ with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC06_m
 cmd.load_cgo(pathset, 'cluster_006')
 cmd.set('cgo_line_width', 5, 'cluster_006')
 
-with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC09_md1_pathset1.dump.gz'), 'rb') as in_stream:
+with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC08_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
-cmd.load_cgo(pathset, 'cluster_009')
-cmd.set('cgo_line_width', 5, 'cluster_009')
+cmd.load_cgo(pathset, 'cluster_008')
+cmd.set('cgo_line_width', 5, 'cluster_008')
 
 with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC07_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
 cmd.load_cgo(pathset, 'cluster_007')
 cmd.set('cgo_line_width', 5, 'cluster_007')
 
-with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC08_md1_pathset1.dump.gz'), 'rb') as in_stream:
-    pathset = pickle.load(in_stream)
-cmd.load_cgo(pathset, 'cluster_008')
-cmd.set('cgo_line_width', 5, 'cluster_008')
-
 with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC10_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
 cmd.load_cgo(pathset, 'cluster_010')
 cmd.set('cgo_line_width', 5, 'cluster_010')
 
-with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC12_md1_pathset1.dump.gz'), 'rb') as in_stream:
+with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC09_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
-cmd.load_cgo(pathset, 'cluster_012')
-cmd.set('cgo_line_width', 5, 'cluster_012')
+cmd.load_cgo(pathset, 'cluster_009')
+cmd.set('cgo_line_width', 5, 'cluster_009')
 
 with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC11_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
@@ -68,6 +63,11 @@ with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC13_m
     pathset = pickle.load(in_stream)
 cmd.load_cgo(pathset, 'cluster_013')
 cmd.set('cgo_line_width', 5, 'cluster_013')
+
+with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC12_md1_pathset1.dump.gz'), 'rb') as in_stream:
+    pathset = pickle.load(in_stream)
+cmd.load_cgo(pathset, 'cluster_012')
+cmd.set('cgo_line_width', 5, 'cluster_012')
 
 with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC14_md1_pathset1.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
@@ -138,6 +138,11 @@ with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC27_m
     pathset = pickle.load(in_stream)
 cmd.load_cgo(pathset, 'cluster_027')
 cmd.set('cgo_line_width', 5, 'cluster_027')
+
+with gzip.open(os.path.join('..', '..', 'sources', 'super_cluster_CGOs', 'SC28_md1_pathset1.dump.gz'), 'rb') as in_stream:
+    pathset = pickle.load(in_stream)
+cmd.load_cgo(pathset, 'cluster_028')
+cmd.set('cgo_line_width', 5, 'cluster_028')
 
 cmd.do('set all_states, 1')
 cmd.show('cgo')

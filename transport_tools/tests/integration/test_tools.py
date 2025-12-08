@@ -23,19 +23,8 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import os
 import pytest
-from transport_tools.libs.utils import set_paths_from_package_root
-
-def prep_config(root: str):
-    in_config_file = os.path.join(root, "tmp_config.ini")
-    out_config_file = os.path.join(root, "config.ini")
-    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
-    with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
-        for line in in_stream.readlines():
-            for param in update_parameters:
-                if param in line:
-                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
-            out_stream.write(line)
-
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, focus_pdbfile
+from transport_tools.libs.tools import load_checkpoint, define_filters, TransportProcesses, save_checkpoint
 
 class TestTransportProcesses(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -51,11 +40,13 @@ class TestTransportProcesses(unittest.TestCase):
         cls.maxDiff = None
         cls.results = "test_results"
         cls.root = set_paths_from_package_root("tests", "data")
-        prep_config(cls.root)
-        cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
+        cls.out_path = set_paths_from_package_root("tests", "test_results", "TestTransportProcesses")
+        os.makedirs(cls.out_path, exist_ok=True)
+        prep_test_config(cls.root, cls.out_path)
+        
+        cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
         print(cls.config)
-        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestTransportProcesses"))
-        cls.out_path = cls.config.get_parameter("output_path")
+        cls.config.set_parameter("output_path", cls.out_path)
         os.makedirs(os.path.join(cls.out_path, "temp"), exist_ok=True)
 
     @classmethod
@@ -64,8 +55,8 @@ class TestTransportProcesses(unittest.TestCase):
         # Check if any test failed and keep results
         if cls._test_failed:
             return
-        
-        os.remove(os.path.join(cls.root, "config.ini"))
+
+        # Config file is now in the output directory, so it's removed with rmtree
         rmtree(cls.out_path)
 
     def tearDown(self):
@@ -97,20 +88,6 @@ class TestTransportProcesses(unittest.TestCase):
         return os.path.join(self.out_path, "temp", "mol_system_{}.dump".format(stage))
 
     def _compare_files(self, out_file: str, res_file: str,):
-        def focus_pdbfile(file_lines: list) -> list:
-            focused_filelines = list()
-            for file_line in file_lines:
-                # skip over version dependent formating of PDB
-                if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
-                    continue
-                # make chain id blank to avoid version dependent treatment
-                if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
-                    file_line =  file_line[:21] + " " + file_line[22:29]
-                if file_line.startswith("TER") and len(file_line) > 21:
-                    file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
-                focused_filelines.append(file_line.split())
-            return focused_filelines  
-
         import pickle
         import gzip
         import numpy as np
@@ -181,7 +158,7 @@ class TestTransportProcesses(unittest.TestCase):
 
         else:
             self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
-                            msg="In files '{}' and '{}':".format(out_file, res_file))
+                            msg="{}\n{}\nIn files '{}' and '{}':".format(out_mat, res_mat,out_file, res_file))
 
     def _compare_folders(self, saved_outputs_dir: str, results_dir: str, pattern: str = ".+"):
         from re import search
@@ -208,7 +185,6 @@ class TestTransportProcesses(unittest.TestCase):
                 self._compare_files(out_file, res_file)
 
     def test_01compute_transformations(self):
-        from transport_tools.libs.tools import save_checkpoint, TransportProcesses
         mol_system = TransportProcesses(TestTransportProcesses.config)
         mol_system.compute_transformations()
         self._compare_folders(os.path.join(self.saved_data, "_internal", "transformations"),
@@ -220,8 +196,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(1), overwrite=True)
 
     def test_02process_tunnel_networks(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(1))
         except FileNotFoundError:
@@ -232,8 +206,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(2), overwrite=True)
 
     def test_03create_layered_description4tunnel_networks(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(2))
         except FileNotFoundError:
@@ -255,8 +227,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(3), overwrite=True)
 
     def test_04merge_tunnel_clusters2super_clusters(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(3))
         except FileNotFoundError:
@@ -271,8 +241,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(4), overwrite=True)
 
     def test_05create_super_cluster_profiles(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(4))
         except FileNotFoundError:
@@ -290,8 +258,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(5), overwrite=True)
 
     def test_06generate_super_cluster_summary(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(5))
         except FileNotFoundError:
@@ -325,8 +291,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(6), overwrite=True)
 
     def test_07save_super_clusters_visualization(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(6))
         except FileNotFoundError:
@@ -345,8 +309,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(7), overwrite=True)
 
     def test_08filter_super_cluster_profiles(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(7))
         except FileNotFoundError:
@@ -401,8 +363,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(8), overwrite=True)
 
     def test_09process_aquaduct_networks(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(8))
         except FileNotFoundError:
@@ -417,8 +377,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(9), overwrite=True)
 
     def test_10create_layered_description4aquaduct_networks(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(9))
         except FileNotFoundError:
@@ -443,8 +401,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(10), overwrite=True)
 
     def test_11assign_transport_events(self):
-        from transport_tools.libs.tools import load_checkpoint, save_checkpoint
-
         try:
             mol_system = load_checkpoint(self._get_dumpfile(10))
         except FileNotFoundError:
@@ -553,7 +509,6 @@ class TestTransportProcesses(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(11), overwrite=True)
 
     def test_12custom_analyses(self):
-        from transport_tools.libs.tools import load_checkpoint, define_filters
         from numpy import save
 
         try:
@@ -581,8 +536,8 @@ class TestTransportProcesses(unittest.TestCase):
         super_cluster_id = None
         parameter = "bottleneck_radius"
         dataset = mol_system.get_property_time_evolution_data(parameter, active_filters=filters, sc_id=super_cluster_id)
-        self.assertListEqual([27, 13, 11, 10, 26, 12, 25, 9, 24, 23, 3, 4, 17, 22, 21, 20, 2, 19, 6, 18, 8, 16, 15, 14,
-                              7, 1, 5], [*dataset.keys()])
+        self.assertListEqual([28, 14, 12, 10, 27, 13, 26, 8, 25, 24, 3, 4, 18, 23, 22, 21, 2, 20, 6, 19, 9, 17, 16, 15, 7, 11, 1, 5],
+                              [*dataset.keys()])
         save(os.path.join(self.out_path, "customs", "time_evolution_dataset.npy"), dataset[1]["md1"])
         self._compare_files(os.path.join(self.saved_data, "customs", "time_evolution_dataset.npy"),
                             os.path.join(self.out_path, "customs", "time_evolution_dataset.npy"))

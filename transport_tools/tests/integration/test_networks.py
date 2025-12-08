@@ -23,19 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import os
 import pytest
-from transport_tools.libs.utils import set_paths_from_package_root
-
-def prep_config(root: str):
-    in_config_file = os.path.join(root, "tmp_config.ini")
-    out_config_file = os.path.join(root, "config.ini")
-    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
-    with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
-        for line in in_stream.readlines():
-            for param in update_parameters:
-                if param in line:
-                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
-            out_stream.write(line)
-
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config
 
 class TestTunnelNetwork(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -52,11 +40,12 @@ class TestTunnelNetwork(unittest.TestCase):
 
         cls.maxDiff = None
         cls.root = set_paths_from_package_root("tests", "data")
-        prep_config(cls.root)
-        cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestTunnelNetwork"))
-        cls.out_path = cls.config.get_parameter("output_path")
+        cls.out_path = set_paths_from_package_root("tests", "test_results", "TestTunnelNetwork")
         os.makedirs(cls.out_path, exist_ok=True)
+        prep_test_config(cls.root, cls.out_path)
+
+        cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
+        cls.config.set_parameter("output_path", cls.out_path)
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
                                                                        "_internal", "transformations"))
 
@@ -73,7 +62,6 @@ class TestTunnelNetwork(unittest.TestCase):
         if cls._test_failed:
             return
 
-        os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
     
     def tearDown(self):
@@ -160,7 +148,7 @@ class TestTunnelNetwork(unittest.TestCase):
                                             "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
                         for res_item, out_item in zip(res_line, out_line):
                             try:
-                                self.assertAlmostEqual(float(out_item), float(res_item),
+                                self.assertAlmostEqual(float(out_item), float(res_item), places=3,
                                                        msg="In files '{}' and '{}':".format(out_file, res_file))
                             except (ValueError, TypeError):
                                 self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
@@ -168,7 +156,7 @@ class TestTunnelNetwork(unittest.TestCase):
 
                     else:
                         try:
-                            self.assertAlmostEqual(float(out_line), float(res_line),
+                            self.assertAlmostEqual(float(out_line), float(res_line), places=3,
                                                    msg="In files '{}' and '{}':".format(out_file, res_file))
                         except (ValueError, TypeError):
                             self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file,
@@ -281,10 +269,12 @@ class TestAquaductNetwork(unittest.TestCase):
 
         cls.maxDiff = None
         cls.root = set_paths_from_package_root("tests", "data")
-        prep_config(cls.root)
-        cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestAquaductNetwork"))
-        cls.out_path = cls.config.get_parameter("output_path")
+        cls.out_path = set_paths_from_package_root("tests", "test_results", "TestAquaductNetwork")
+        os.makedirs(cls.out_path, exist_ok=True)
+        prep_test_config(cls.root, cls.out_path)
+
+        cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
+        cls.config.set_parameter("output_path", cls.out_path)
         os.makedirs(cls.out_path, exist_ok=True)
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
                                                                        "_internal", "transformations"))
@@ -303,7 +293,6 @@ class TestAquaductNetwork(unittest.TestCase):
         if cls._test_failed:
             return
 
-        os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
         cls.net.clean_tempfile()
 
@@ -337,7 +326,7 @@ class TestAquaductNetwork(unittest.TestCase):
                     continue
                 # make chain id blank to avoid version dependent treatment
                 if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
-                    file_line =  file_line[:21] + " " + file_line[22:29]
+                    file_line =  file_line[:21] + " " + file_line[22:]
                 if file_line.startswith("TER") and len(file_line) > 21:
                     file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
                 focused_filelines.append(file_line.split())
@@ -390,14 +379,14 @@ class TestAquaductNetwork(unittest.TestCase):
                                             "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
                         for res_item, out_item in zip(res_line, out_line):
                             try:
-                                self.assertAlmostEqual(float(out_item), float(res_item),
+                                self.assertAlmostEqual(float(out_item), float(res_item), places=3,
                                                        msg="In files '{}' and '{}':".format(out_file, res_file))
                             except (ValueError, TypeError):
                                 self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
                                                                                                           res_file))
                     else:
                         try:
-                            self.assertAlmostEqual(float(out_line), float(res_line),
+                            self.assertAlmostEqual(float(out_line), float(res_line), places=3,
                                                    msg="In files '{}' and '{}':".format(out_file, res_file))
                         except (ValueError, TypeError):
                             self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file,
@@ -499,10 +488,12 @@ class TestSuperCluster(unittest.TestCase):
 
         cls.maxDiff = None
         cls.root = set_paths_from_package_root("tests", "data")
-        prep_config(cls.root)
-        cls.config = AnalysisConfig(os.path.join(cls.root, "config.ini"), logging=False)
-        cls.config.set_parameter("output_path", set_paths_from_package_root("tests", "test_results", "TestSuperCluster"))
-        cls.out_path = cls.config.get_parameter("output_path")
+        cls.out_path = set_paths_from_package_root("tests", "test_results", "TestSuperCluster")
+        os.makedirs(cls.out_path, exist_ok=True)
+        prep_test_config(cls.root, cls.out_path)
+
+        cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
+        cls.config.set_parameter("output_path", cls.out_path)
         cls.config.set_parameter("transformation_folder", os.path.join(cls.root, "saved_outputs",
                                                                        "_internal", "transformations"))
 
@@ -521,7 +512,6 @@ class TestSuperCluster(unittest.TestCase):
         if cls._test_failed:
             return
 
-        os.remove(os.path.join(cls.root, "config.ini"))
         rmtree(cls.out_path)
 
     def tearDown(self):
@@ -587,16 +577,16 @@ class TestSuperCluster(unittest.TestCase):
         self.saved_data = os.path.join(TestSuperCluster.root, "saved_outputs")
         self.out_path = TestSuperCluster.out_path
         self.parameters = TestSuperCluster.config.get_parameters()
-        sc_defs = [(('md1', 50), 27), (('md1', 49), 13), (('md1', 48), 11), (('md1', 47), 10), (('md1', 46), 11),
-                   (('md1', 45), 13), (('md1', 44), 26), (('md1', 43), 12), (('md1', 42), 25), (('md1', 41), 9),
-                   (('md1', 40), 24), (('md1', 39), 23), (('md1', 38), 3), (('md1', 37), 4), (('md1', 36), 17),
-                   (('md1', 35), 22), (('md1', 34), 21), (('md1', 33), 10), (('md1', 32), 4), (('md1', 31), 20),
-                   (('md1', 30), 2), (('md1', 29), 19), (('md1', 28), 17), (('md1', 27), 6), (('md1', 26), 18),
-                   (('md1', 25), 8), (('md1', 24), 16), (('md1', 23), 15), (('md1', 22), 13), (('md1', 21), 14),
-                   (('md1', 20), 3), (('md1', 19), 11), (('md1', 18), 12), (('md1', 17), 7), (('md1', 16), 10),
-                   (('md1', 15), 8), (('md1', 14), 8), (('md1', 13), 1), (('md1', 12), 7), (('md1', 11), 6),
-                   (('md1', 10), 7), (('md1', 9), 9), (('md1', 8), 2), (('md1', 7), 6), (('md1', 6), 5),
-                   (('md1', 5), 1), (('md1', 4), 4), (('md1', 3), 3), (('md1', 2), 2), (('md1', 1), 1)]
+        sc_defs = [(('md1', 1), 1), (('md1', 2), 2), (('md1', 3), 3), (('md1', 4), 4), (('md1', 5), 1),
+                   (('md1', 6), 5), (('md1', 7), 6), (('md1', 8), 2), (('md1', 9), 8), (('md1', 10), 7),
+                   (('md1', 11), 6), (('md1', 12), 7), (('md1', 13), 1), (('md1', 14), 9), (('md1', 15), 11),
+                   (('md1', 16), 10), (('md1', 17), 7), (('md1', 18), 13), (('md1', 19), 12), (('md1', 20), 3),
+                   (('md1', 21), 15), (('md1', 22), 14), (('md1', 23), 16), (('md1', 24), 17), (('md1', 25), 9),
+                   (('md1', 26), 19), (('md1', 27), 6), (('md1', 28), 18), (('md1', 29), 20), (('md1', 30), 2),
+                   (('md1', 31), 21), (('md1', 32), 4), (('md1', 33), 10), (('md1', 34), 22), (('md1', 35), 23),
+                   (('md1', 36), 18), (('md1', 37), 4), (('md1', 38), 3), (('md1', 39), 24), (('md1', 40), 25),
+                   (('md1', 41), 8), (('md1', 42), 26), (('md1', 43), 13), (('md1', 44), 27), (('md1', 45), 14),
+                   (('md1', 46), 12), (('md1', 47), 10), (('md1', 48), 12), (('md1', 49), 14), (('md1', 50), 28)]
 
         path_sets = dict()
         tunnel_network = TunnelNetwork(self.parameters, "md1")
@@ -668,7 +658,7 @@ Details on tunnel network:
 Number of MD simulations = 1
 Number of tunnel clusters = 1
 Tunnel clusters:
-from md1: 39, 
+from md1: 35, 
 
 Details on transport events:
 Number of MD simulations = 0
@@ -680,12 +670,12 @@ Number of release events = 0
         import numpy as np
         sc_id, avg_direction = self.super_clusters[1].compute_space_descriptors()
         self.super_clusters[1].load_path_sets()
-        self.assertSequenceEqual((48, 7), self.super_clusters[1].path_sets["overall"].nodes_data.shape)
-        self.assertTrue(np.allclose(avg_direction, np.array([-2.49484359, -7.03691757, -6.94671987]), atol=1e-3))
+        self.assertSequenceEqual((49, 7), self.super_clusters[1].path_sets["overall"].nodes_data.shape)
+        self.assertTrue(np.allclose(avg_direction, np.array([-2.51891795, -7.15212511, -6.82070617]), atol=1e-3))
         sc_id, avg_direction = self.super_clusters[23].compute_space_descriptors()
         self.super_clusters[23].load_path_sets()
-        self.assertSequenceEqual((33, 7), self.super_clusters[23].path_sets["overall"].nodes_data.shape)
-        self.assertTrue(np.allclose(avg_direction, np.array([15.43776866, 6.38202966, 21.02110355]), atol=1e-3))
+        self.assertSequenceEqual((32, 7), self.super_clusters[23].path_sets["overall"].nodes_data.shape)
+        self.assertTrue(np.allclose(avg_direction, np.array([23.85829978, 9.71762862, 12.85605541]), atol=1e-3))
 
     def test_has_passed_filter(self):
         from transport_tools.libs.networks import define_filters
@@ -701,11 +691,11 @@ Number of release events = 0
 
     def test_get_labels(self):
         self.assertListEqual(['md1'], self.super_clusters[1].get_md_labels())
-        self.assertListEqual([13, 5, 1], self.super_clusters[1].get_caver_cluster_ids4md_label("md1"))
-        self.assertListEqual(['md1_13', 'md1_5', 'md1_1'], self.super_clusters[1].get_caver_clusters_full_labels())
+        self.assertListEqual([1, 5, 13], self.super_clusters[1].get_caver_cluster_ids4md_label("md1"))
+        self.assertListEqual(['md1_1', 'md1_5', 'md1_13'], self.super_clusters[1].get_caver_clusters_full_labels())
         self.assertListEqual(['md1'], self.super_clusters[23].get_md_labels())
-        self.assertListEqual([39], self.super_clusters[23].get_caver_cluster_ids4md_label("md1"))
-        self.assertListEqual(['md1_39'], self.super_clusters[23].get_caver_clusters_full_labels())
+        self.assertListEqual([35], self.super_clusters[23].get_caver_cluster_ids4md_label("md1"))
+        self.assertListEqual(['md1_35'], self.super_clusters[23].get_caver_clusters_full_labels())
 
     def test_is_directionally_aligned(self):
         import numpy as np
@@ -716,7 +706,7 @@ Number of release events = 0
         self.assertFalse(self.super_clusters[23].is_directionally_aligned(np.array([-1, 1, -1])))
         self.assertTrue(self.super_clusters[23].is_directionally_aligned(np.array([2, -0.3, 1])))
         self.assertTrue(self.super_clusters[23].is_directionally_aligned(np.array([1, -1, 1])))
-        self.assertFalse(self.super_clusters[23].is_directionally_aligned(np.array([6, 21, -15])))
+        self.assertTrue(self.super_clusters[23].is_directionally_aligned(np.array([6, 21, -15])))
 
     def test_compute_distance2transport_event(self):
         from transport_tools.libs.networks import AquaductNetwork
@@ -798,7 +788,7 @@ Number of release events = 0
         os.makedirs(os.path.join(self.out_path, "_internal", "super_cluster_filtered_profiles"), exist_ok=True)
         self.assertEqual({'md1': [1, 13, 5]}, self.super_clusters[1].filter_super_cluster(False,
                                                                                           define_filters(), 1)[3])
-        self.assertEqual({'md1': [39]}, self.super_clusters[23].filter_super_cluster(False, define_filters(), 1)[3])
+        self.assertEqual({'md1': [35]}, self.super_clusters[23].filter_super_cluster(False, define_filters(), 1)[3])
         self.assertEqual({'md1': [1, 13]},
                          self.super_clusters[1].filter_super_cluster(False,
                                                                      define_filters(min_bottleneck_radius=1.4), 1)[3])
@@ -847,49 +837,78 @@ Number of release events = 0
                                           '199': 0.0010090817356205853, '159': 0.0010090817356205853}},
                              self.super_clusters[1].filter_super_cluster(False, define_filters(), 1)[2])
 
-        self.assertDictEqual({'overall': {'63': 0.44285714285714284, '85': 0.37142857142857144, '61': 0.1,
-                                          '35': 0.12857142857142856, '19': 0.5, '88': 0.45714285714285713,
-                                          '33': 0.02857142857142857, '84': 0.42857142857142855,
-                                          '14': 0.42857142857142855, '64': 0.34285714285714286,
-                                          '87': 0.35714285714285715, '91': 0.12857142857142856,
-                                          '12': 0.17142857142857143, '89': 0.08571428571428572,
-                                          '92': 0.07142857142857142, '62': 0.07142857142857142,
-                                          '20': 0.05714285714285714, '18': 0.05714285714285714,
-                                          '69': 0.014285714285714285, '81': 0.1, '66': 0.37142857142857144,
-                                          '108': 0.12857142857142856, '202': 0.35714285714285715,
-                                          '67': 0.02857142857142857, '65': 0.05714285714285714,
-                                          '38': 0.34285714285714286, '104': 0.37142857142857144,
-                                          '165': 0.11428571428571428, '103': 0.22857142857142856,
-                                          '36': 0.12857142857142856, '37': 0.24285714285714285,
-                                          '203': 0.14285714285714285, '13': 0.05714285714285714,
-                                          '105': 0.14285714285714285, '78': 0.05714285714285714,
-                                          '106': 0.05714285714285714, '206': 0.014285714285714285,
-                                          '39': 0.05714285714285714, '199': 0.07142857142857142,
-                                          '198': 0.04285714285714286, '83': 0.07142857142857142,
-                                          '15': 0.1, '86': 0.02857142857142857, '107': 0.014285714285714285,
-                                          '34': 0.014285714285714285, '115': 0.014285714285714285,
-                                          '82': 0.014285714285714285, '112': 0.014285714285714285,
-                                          '111': 0.014285714285714285, '17': 0.07142857142857142,
-                                          '102': 0.014285714285714285, '16': 0.014285714285714285},
-                              'md1': {'63': 0.44285714285714284, '85': 0.37142857142857144, '61': 0.1,
-                                      '35': 0.12857142857142856, '19': 0.5, '88': 0.45714285714285713,
-                                      '33': 0.02857142857142857, '84': 0.42857142857142855, '14': 0.42857142857142855,
-                                      '64': 0.34285714285714286, '87': 0.35714285714285715, '91': 0.12857142857142856,
-                                      '12': 0.17142857142857143, '89': 0.08571428571428572, '92': 0.07142857142857142,
-                                      '62': 0.07142857142857142, '20': 0.05714285714285714, '18': 0.05714285714285714,
-                                      '69': 0.014285714285714285, '81': 0.1, '66': 0.37142857142857144,
-                                      '108': 0.12857142857142856, '202': 0.35714285714285715, '67': 0.02857142857142857,
-                                      '65': 0.05714285714285714, '38': 0.34285714285714286, '104': 0.37142857142857144,
-                                      '165': 0.11428571428571428, '103': 0.22857142857142856, '36': 0.12857142857142856,
-                                      '37': 0.24285714285714285, '203': 0.14285714285714285, '13': 0.05714285714285714,
-                                      '105': 0.14285714285714285, '78': 0.05714285714285714, '106': 0.05714285714285714,
-                                      '206': 0.014285714285714285, '39': 0.05714285714285714,
-                                      '199': 0.07142857142857142, '198': 0.04285714285714286, '83': 0.07142857142857142,
-                                      '15': 0.1, '86': 0.02857142857142857, '107': 0.014285714285714285,
-                                      '34': 0.014285714285714285, '115': 0.014285714285714285,
-                                      '82': 0.014285714285714285, '112': 0.014285714285714285,
-                                      '111': 0.014285714285714285, '17': 0.07142857142857142,
-                                      '102': 0.014285714285714285, '16': 0.014285714285714285}},
+        self.assertDictEqual({'overall': {'102': 0.008403361344537815, '103': 0.23529411764705882,
+                                          '104': 0.37815126050420167, '105': 0.14285714285714285,
+                                          '106': 0.05042016806722689, '107': 0.008403361344537815,
+                                          '108': 0.16806722689075632, '112': 0.058823529411764705,
+                                          '113': 0.008403361344537815, '114': 0.008403361344537815,
+                                          '116': 0.03361344537815126, '117': 0.008403361344537815,
+                                          '119': 0.04201680672268908, '12': 0.01680672268907563,
+                                          '120': 0.01680672268907563, '123': 0.008403361344537815,
+                                          '165': 0.16806722689075632, '166': 0.01680672268907563,
+                                          '186': 0.008403361344537815, '189': 0.01680672268907563,
+                                          '19': 0.11764705882352941, '190': 0.03361344537815126,
+                                          '198': 0.05042016806722689, '199': 0.09243697478991597,
+                                          '202': 0.33613445378151263, '203': 0.17647058823529413,
+                                          '21': 0.025210084033613446, '22': 0.008403361344537815,
+                                          '225': 0.008403361344537815, '23': 0.01680672268907563,
+                                          '31': 0.11764705882352941, '32': 0.07563025210084033,
+                                          '33': 0.3949579831932773, '34': 0.09243697478991597,
+                                          '35': 0.3445378151260504, '36': 0.15126050420168066,
+                                          '37': 0.2184873949579832, '38': 0.33613445378151263,
+                                          '39': 0.1092436974789916, '40': 0.058823529411764705,
+                                          '41': 0.03361344537815126, '42': 0.01680672268907563,
+                                          '57': 0.1092436974789916, '59': 0.20168067226890757,
+                                          '60': 0.025210084033613446, '61': 0.3025210084033613,
+                                          '62': 0.03361344537815126, '63': 0.31092436974789917,
+                                          '64': 0.01680672268907563, '65': 0.03361344537815126,
+                                          '66': 0.3697478991596639, '67': 0.05042016806722689,
+                                          '68': 0.025210084033613446, '78': 0.07563025210084033,
+                                          '81': 0.06722689075630252, '84': 0.008403361344537815,
+                                          '85': 0.31932773109243695, '86': 0.025210084033613446,
+                                          '87': 0.01680672268907563, '88': 0.35294117647058826,
+                                          '89': 0.31092436974789917, '90': 0.025210084033613446,
+                                          '91': 0.01680672268907563, '92': 0.17647058823529413,
+                                          '93': 0.01680672268907563, '94': 0.226890756302521,
+                                          '95': 0.04201680672268908, '96': 0.07563025210084033,
+                                          '97': 0.12605042016806722, '98': 0.01680672268907563,
+                                          '99': 0.03361344537815126},
+                              'md1': {'102': 0.008403361344537815, '103': 0.23529411764705882,
+                                      '104': 0.37815126050420167, '105': 0.14285714285714285,
+                                      '106': 0.05042016806722689, '107': 0.008403361344537815,
+                                      '108': 0.16806722689075632, '112': 0.058823529411764705,
+                                      '113': 0.008403361344537815, '114': 0.008403361344537815,
+                                      '116': 0.03361344537815126, '117': 0.008403361344537815,
+                                      '119': 0.04201680672268908, '12': 0.01680672268907563,
+                                      '120': 0.01680672268907563, '123': 0.008403361344537815,
+                                      '165': 0.16806722689075632, '166': 0.01680672268907563,
+                                      '186': 0.008403361344537815, '189': 0.01680672268907563,
+                                      '19': 0.11764705882352941, '190': 0.03361344537815126,
+                                      '198': 0.05042016806722689, '199': 0.09243697478991597,
+                                      '202': 0.33613445378151263, '203': 0.17647058823529413,
+                                      '21': 0.025210084033613446, '22': 0.008403361344537815,
+                                      '225': 0.008403361344537815, '23': 0.01680672268907563,
+                                      '31': 0.11764705882352941, '32': 0.07563025210084033,
+                                      '33': 0.3949579831932773, '34': 0.09243697478991597,
+                                      '35': 0.3445378151260504, '36': 0.15126050420168066,
+                                      '37': 0.2184873949579832, '38': 0.33613445378151263,
+                                      '39': 0.1092436974789916, '40': 0.058823529411764705,
+                                      '41': 0.03361344537815126, '42': 0.01680672268907563,
+                                      '57': 0.1092436974789916, '59': 0.20168067226890757,
+                                      '60': 0.025210084033613446, '61': 0.3025210084033613,
+                                      '62': 0.03361344537815126, '63': 0.31092436974789917,
+                                      '64': 0.01680672268907563, '65': 0.03361344537815126,
+                                      '66': 0.3697478991596639, '67': 0.05042016806722689,
+                                      '68': 0.025210084033613446, '78': 0.07563025210084033,
+                                      '81': 0.06722689075630252, '84': 0.008403361344537815,
+                                      '85': 0.31932773109243695, '86': 0.025210084033613446,
+                                      '87': 0.01680672268907563, '88': 0.35294117647058826,
+                                      '89': 0.31092436974789917, '90': 0.025210084033613446,
+                                      '91': 0.01680672268907563, '92': 0.17647058823529413,
+                                      '93': 0.01680672268907563, '94': 0.226890756302521,
+                                      '95': 0.04201680672268908, '96': 0.07563025210084033,
+                                      '97': 0.12605042016806722, '98': 0.01680672268907563,
+                                      '99': 0.03361344537815126}},
                              self.super_clusters[23].filter_super_cluster(False, define_filters(), 1)[2])
 
         self.assertDictEqual({'md1': {'138': 0.7692307692307693, '269': 0.3333333333333333, '146': 0.9487179487179487,

@@ -8,5 +8,7 @@ HETATM    3  UNK L15 T   3      20.510  -4.738   7.794
 TER
 HETATM    4  UNK L15 T   4      20.554  -5.216   7.933
 TER
-HETATM    5  UNK A15 T   5      20.516  -4.495   7.368
+HETATM    5  UNK L15 T   5      20.598  -5.695   8.073
+TER
+HETATM    6  UNK A15 T   6      20.529  -4.695   7.486
 END

@@ -386,10 +386,11 @@ class LayeredPathSet:
             self.nodes_data[0, 0:3] = np.array([0., 0., 0.])
             self.nodes_data[0, 3] = -1.
 
-    def is_same(self, other: LayeredPathSet) -> bool:
+    def is_same(self, other: LayeredPathSet, precision: int=0.1) -> bool:
         """
         Test if the pathset is same as the other pathset
         :param other: other pathset to compare with
+        :precision: tolerated deviation when comparing data 
         :return: are two pathset same?
         """
 
@@ -445,7 +446,7 @@ class LayeredPathSet:
             # - Numerical precision in averaging cluster coordinates
             # - Different cluster ID assignment order leading to slightly different cluster memberships
             # - Small variations in pathfinding that select nearby but not identical clusters
-            if best_match is None or best_dist > 0.1:  # No close match found
+            if best_match is None or best_dist > precision:  # No close match found
                 print(f"no matching node found for {self_label} in other pathset")
                 print(f"  coords: {self_coords}, layer_id: {self_layer_id}, best_dist: {best_dist}")
                 return False
@@ -467,7 +468,7 @@ class LayeredPathSet:
             other_idx = other.node_labels.index(other_label)
 
             # Compare node data with relaxed tolerances to handle small variations from cluster reordering
-            if not np.allclose(self.nodes_data[self_idx], other.nodes_data[other_idx], rtol=0.1, atol=0.1):
+            if not np.allclose(self.nodes_data[self_idx], other.nodes_data[other_idx], rtol=precision, atol=precision):
                 print(f"node data not matching for {self_label} vs {other_label}")
                 print(f"  self data: {self.nodes_data[self_idx]}")
                 print(f"  other data: {other.nodes_data[other_idx]}")
@@ -1736,7 +1737,7 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
             for cluster in layer.clusters.values():
                 distance2origin = einsum_dist(cluster.average, starting_point_coords)
                 global_layer = int(assign_layer_from_distances([distance2origin],
-                                                               self.parameters["layer_thickness"])[1])
+                                                               self.parameters["layer_thickness"])[1][0])
                 if cluster.layer_id != global_layer and len(self.layers[cluster.layer_id].clusters.keys()) > 1:
                     # mismatch, need to move cluster to different layer, which we can do without emptying whole layer
                     clusters2reassign.append((cluster.get_node_label(), global_layer))

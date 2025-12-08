@@ -318,9 +318,7 @@ class VizAtom:
 
 
 def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
-                        moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.PairwiseAlignment:
-# def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
-#                         moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.Alignment:
+                        moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.Alignment:
     """
     Performs a sequence alignment of two proteins loaded previously with Bio.PDB.Structure.
     :param target_structure: target structure to which we align
@@ -345,8 +343,7 @@ def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
     return alignments[0]
 
 
-# def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.PDB.Structure.Structure,
-def _get_atoms2superpose(alignment: Bio.Align.PairwiseAlignment, target_structure: Bio.PDB.Structure.Structure,
+def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.PDB.Structure.Structure,
                          moved_structure: Bio.PDB.Structure.Structure) -> Tuple[Dict[int, Bio.PDB.Atom.Atom],
                                                                                 Dict[int, Bio.PDB.Atom.Atom]]:
     """
