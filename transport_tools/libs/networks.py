@@ -51,26 +51,26 @@ class Network:
 
         self.parameters: dict = parameters.copy()
         self.md_label: str = md_label
-        self.transform_mat: Optional[np.array] = None
-        self.layered_entities: Dict[Union[str, int], LayeredPathSet] = dict()
-        self.entity_pymol_abbreviation: Union[str, None] = None
-        self.transformed_pdb_file_name: Union[str, None] = None
-        self.orig_entities: List[Union[TunnelCluster, AquaductPath]] = list()
-        self.starting_point_coords: Optional[np.array] = None
+        self.transform_mat: np.ndarray | None = None
+        self.layered_entities: Dict[str | int, LayeredPathSet] = dict()
+        self.entity_pymol_abbreviation: str | None = None
+        self.transformed_pdb_file_name: str | None = None
+        self.orig_entities: List[TunnelCluster | AquaductPath] = list()
+        self.starting_point_coords: np.ndarray | None = None
         # newly added parameter to dict that is passed down to LayeredRepresentation:
         self.parameters["md_label"] = md_label
 
         # input paths
-        self.pdb_file: Union[bytes, str, None] = None
+        self.pdb_file: bytes | str | None = None
 
         # output paths
-        self.transformation_folder: Union[bytes, str, None] = None
-        self.orig_viz_path: Union[bytes, str, None] = None
-        self.orig_dump_file: Union[bytes, str, None] = None
-        self.layered_dump_file: Union[bytes, str, None] = None
-        self.layered_viz_path: Union[bytes, str, None] = None
+        self.transformation_folder: bytes | str | None = None
+        self.orig_viz_path: bytes | str | None = None
+        self.orig_dump_file: bytes | str | None = None
+        self.layered_dump_file: bytes | str | None = None
+        self.layered_viz_path: bytes | str | None = None
 
-    def add_layered_entity(self, entity_id: Union[int, str], layered_pathset: LayeredPathSet):
+    def add_layered_entity(self, entity_id: int | str, layered_pathset: LayeredPathSet):
         """
         Add layered entity to the network
         :param entity_id: ID of layered entity
@@ -79,7 +79,7 @@ class Network:
 
         self.layered_entities[entity_id] = layered_pathset
 
-    def is_layering_complete(self, entity_ids: List[Union[int, str]]) -> bool:
+    def is_layering_complete(self, entity_ids: List[int | str]) -> bool:
         """
         Tests is all original entities to verify existence of their layered counterparts
         :param entity_ids: list of IDs of original entities
@@ -110,7 +110,7 @@ class Network:
 
         mat_file = os.path.join(self.transformation_folder, self.md_label + "-transform_mat.dump")
         with open(mat_file, "rb") as in_stream:
-            self.transform_mat: np.array = pickle.load(in_stream)
+            self.transform_mat = pickle.load(in_stream)
 
     def load_orig_network(self):
         """
@@ -217,7 +217,7 @@ class Network:
 
 # --- CAVER tunnels related classes
 class Tunnel:
-    def __init__(self, parameters: dict, transform_mat: np.array):
+    def __init__(self, parameters: dict, transform_mat: np.ndarray):
         """
         Class for processing of tunnels from CAVER - an elemental unit carrying info on a tunnel
         :param parameters: job configuration parameters
@@ -235,14 +235,16 @@ class Tunnel:
         self.cost = -1.0
         self.tunnel_id = -1
         self.filters_passed = False
-        self.spheres_data: Optional[np.array] = None
-        self.layer_membership: Optional[np.array] = None
+        self.spheres_data: Optional[np.ndarray] = None
+        self.layer_membership: Optional[np.ndarray] = None
         self.bottleneck_residues = list()
-        self.bottleneck_xyz: Optional[np.array] = None
+        self.bottleneck_xyz: Optional[np.ndarray] = None
         self.weight = 1.0
 
     def __str__(self):
         output = ""
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         for sphere in self.spheres_data:
             output = output + "(x, y, z, distance, radius, length) = " \
@@ -252,10 +254,12 @@ class Tunnel:
                                                                                                sphere[5])
         return output
 
-    def get_center_line(self) -> np.array:
+    def get_center_line(self) -> np.ndarray:
         """
         Returns coordinates of spheres centers forming the tunnel
         """
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         return self.spheres_data[:, :3]
 
@@ -273,11 +277,14 @@ class Tunnel:
             raise RuntimeError("snapshot ID not present at position {} after splitting with {}".format(id_position,
                                                                                                        delimiter))
 
-    def get_points_data(self) -> np.array:
+    def get_points_data(self) -> np.ndarray:
         """
         Convert data of points forming this tunnel, adding info on order of points and identifying the tunnel end point
         :return: augmented data for this tunnel suitable for LayeredRepresentation.load_points() method
         """
+
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         num_points = self.spheres_data.shape[0]
         # store info on points order in the sixth column (id = 5)
@@ -311,6 +318,9 @@ class Tunnel:
         line5 = temp + "length"
         line6 = temp + "R"
         line7 = temp + "Upper limit of R overestimation"
+        
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         for sphere in self.spheres_data:
             line1 += ", {}".format(sphere[0])
@@ -409,7 +419,7 @@ class Tunnel:
             return False
         return True
 
-    def fill_bottleneck_data(self, bottleneck_data: List[str], transform_mat: np.array = None):
+    def fill_bottleneck_data(self, bottleneck_data: List[str], transform_mat: Optional[np.ndarray] = None):
         """
         Process line from bottlenecks.csv produced by CAVER to fill in data about Tunnel bottleneck
         :param bottleneck_data: line of data from bottlenecks.csv corresponding to bottleneck residues of this tunnel
@@ -474,7 +484,7 @@ class Tunnel:
                                                                         np.array([0., 0., 0.])),
                                                             self.parameters["layer_thickness"])[1]
 
-    def get_closest_sphere2coords(self, xyz: np.array) ->  Union[Tuple[float, np.array], Tuple[None, None]]:
+    def get_closest_sphere2coords(self, xyz: np.ndarray) ->  Tuple[float, np.ndarray] | Tuple[None, None]:
         """
         Identifies closest sphere from this tunnel to given coordinates, using spherical grid for efficiency.
         :param xyz: coordinates of point to which the distance is computed
@@ -527,6 +537,9 @@ class Tunnel:
                                                  self.layer_membership == min_closest_layer,
                                                  self.layer_membership == max_closest_layer,
                                                  self.layer_membership == max_closest_layer + 1))
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
+
 
         adjacent_spheres = self.spheres_data[np.nonzero(selector)[0]]
 
@@ -565,6 +578,8 @@ class Tunnel:
         Converts tunnel points to Pymol compiled graphics object(CGO) for visualization
         :return: CGO of tunnel points
         """
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         return utils.convert_coords2cgo(self.spheres_data[:, 0:3], color_id=self.caver_cluster_id - 1)
 
@@ -573,6 +588,8 @@ class Tunnel:
         Saves tunnel points as PDB file according to CAVER format
         :return
         """
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         out_lines = list()
         sphere = self.spheres_data[0]
@@ -586,7 +603,7 @@ class Tunnel:
 
 
 class TunnelCluster:
-    def __init__(self, cluster_id: int, parameters: dict,  transform_mat: np.array, starting_point_coords: np.array):
+    def __init__(self, cluster_id: int, parameters: dict,  transform_mat: np.ndarray, starting_point_coords: np.ndarray):
         """
         Class for processing of tunnel clusters from CAVER, containing tunnels
         :param cluster_id: ID of the cluster from CAVER
@@ -642,8 +659,8 @@ class TunnelCluster:
 
         return len(self.tunnels.keys())
 
-    def get_closest_tunnel_sphere_in_frame2coords(self, xyz: np.array, snap_id: int) \
-            -> Union[Tuple[float, np.array], Tuple[None, None]]:
+    def get_closest_tunnel_sphere_in_frame2coords(self, xyz: np.ndarray, snap_id: int) \
+            -> Tuple[float, np.ndarray] | Tuple[None, None]:
         """
         Identifies closest sphere from a tunnel in the investigated snapshot to given coordinates
         :param xyz: coordinates of point to which the distance is computed
@@ -688,7 +705,7 @@ class TunnelCluster:
 
         return subcluster
 
-    def get_property(self, property_name: str, active_filters: dict) -> np.array:
+    def get_property(self, property_name: str, active_filters: dict) -> np.ndarray:
         """
         Returns array containing all values of given property for all tunnels in cluster that fulfill active filters
         :param property_name: name of property to extract
@@ -1003,7 +1020,7 @@ class AquaductNetwork(Network):
     @staticmethod
     def _process_single_raw_path(path_label: str, parameters: dict, traced_residue: Tuple[str, int, Tuple[int, int],
                                                                                           Tuple[int, int]],
-                                 transform_mat: np.array, md_label: str, cgo_obj: list) -> AquaductPath:
+                                 transform_mat: np.ndarray, md_label: str, cgo_obj: list) -> AquaductPath:
         """
         Creation of AquaductPath object from a single raw_path for parallel processing
         :param path_label: the name of the path derived from AQUA-DUCT raw paths names
@@ -1099,7 +1116,7 @@ class AquaductNetwork(Network):
 
 class TransportEvent:
     def __init__(self, event_type: str, path_label: str, parameters: dict, md_label: str,
-                 traced_residue: Tuple[str, int, Tuple[int, int], Tuple[int, int]], transform_mat: np.array):
+                 traced_residue: Tuple[str, int, Tuple[int, int], Tuple[int, int]], transform_mat: np.ndarray):
         """
         Creates TransportEvent object - an elemental unit carrying info on a single transport event
         :param event_type: AQUA-DUCT type of events: "inside", "entry", "release", "outside"
@@ -1118,7 +1135,7 @@ class TransportEvent:
         self.entity_label = "{}_{}".format(path_label.split("_")[-1], self.type)
         self.entity_pymol_abbreviation = "wat_{}".format(self.entity_label)
         self.points: List[Point] = list()
-        self.points_data: Optional[np.array] = None
+        self.points_data: Optional[np.ndarray] = None
         self.parameters = parameters
         self.traced_residue = traced_residue
         self.min_dist2starting_point: Optional[float] = None
@@ -1221,7 +1238,7 @@ class TransportEvent:
 
         return np.min(distances)
 
-    def get_points_data(self) -> np.array:
+    def get_points_data(self) -> np.ndarray:
         """
         Convert data of points forming this event, adding info on order of points and identifying the event end point
         :return: augmented data for this event suitable for LayeredRepresentation.load_points() method

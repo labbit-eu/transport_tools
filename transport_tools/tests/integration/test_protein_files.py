@@ -23,7 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import os
 import pytest
-from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_files
 
 class TestProteinFiles(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -52,9 +52,9 @@ class TestProteinFiles(unittest.TestCase):
         # Works with both unittest and pytest
         if hasattr(self, '_outcome'):
             # For unittest (Python 3.11+)
-            if hasattr(self._outcome, 'result'):
-                result_errors = getattr(self._outcome.result, 'errors', [])
-                result_failures = getattr(self._outcome.result, 'failures', [])
+            if hasattr(self._outcome, 'result'):  # type: ignore[attr-defined]
+                result_errors = getattr(self._outcome.result, 'errors', [])  # type: ignore[attr-defined]
+                result_failures = getattr(self._outcome.result, 'failures', [])  # type: ignore[attr-defined]
                 if result_errors or result_failures:
                     self.__class__._test_failed = True
 
@@ -64,48 +64,6 @@ class TestProteinFiles(unittest.TestCase):
             # Check if this test or any previous test in the session has failed
             if self._request.session.testsfailed > 0:
                 self.__class__._test_failed = True
-            
-    def _compare_files(self, out_file: str, res_file: str,):
-        def focus_pdbfile(file_lines: list) -> list:
-            focused_filelines = list()
-            for file_line in file_lines:
-                # skip over version dependent formating of PDB
-                if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
-                    continue
-                # make chain id blank to avoid version dependent treatment
-                if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
-                    file_line =  file_line[:21] + " " + file_line[22:]
-                if file_line.startswith("TER") and len(file_line) > 21:
-                    file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
-                focused_filelines.append(file_line.split())
-            return focused_filelines        
-        
-        import gzip
-        import pickle
-
-        if res_file.endswith(".dump.gz"):
-            with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
-                res_lines = pickle.load(res_in)
-                out_lines = pickle.load(out_in)
-        elif ".gz" in res_file:
-            with gzip.open(res_file, 'r') as res_in, gzip.open(out_file, 'r') as out_in:
-                res_lines = res_in.readlines()
-                out_lines = out_in.readlines()
-        else:
-            with open(res_file, "r") as res_in, open(out_file, "r") as out_in:
-                res_lines = res_in.readlines()
-                out_lines = out_in.readlines()
-
-        #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
-        if ".pdb" in res_file:
-            res_lines = focus_pdbfile(res_lines)
-            out_lines = focus_pdbfile(out_lines)
-
-        self.assertTrue(len(res_lines) == len(out_lines),
-                        msg="Different length of files '{}' and '{}':".format(out_file, res_file))
-    
-        for res_line, out_line in zip(res_lines, out_lines):
-            self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file, res_file))
 
     def setUp(self):
         from transport_tools.libs.config import AnalysisConfig
@@ -129,15 +87,15 @@ class TestProteinFiles(unittest.TestCase):
         coords1 = traj1.get_coords(1, 10)
         self.assertTrue(np.allclose([18.325684, -12.265163, -7.21877], coords1[1, 0, :], atol=1e-3))
         traj1.write_frames(1, 10, os.path.join(self.out_path, "traj1.pdb"))
-        self._compare_files(os.path.join(self.saved_data, "trajs", "traj1.pdb"),
-                            os.path.join(self.out_path, "traj1.pdb"))
+        compare_test_files(os.path.join(self.saved_data, "trajs", "traj1.pdb"),
+                            os.path.join(self.out_path, "traj1.pdb"), self)
 
         traj2 = TrajectoryFactory(self.parameters, "md1", superpose_mask="name CA")
         coords2 = traj2.get_coords(1, 10)
         self.assertTrue(np.allclose([18.393047, -12.21746, -7.220956], coords2[1, 0, :], atol=1e-3))
         traj2.write_frames(1, 10, os.path.join(self.out_path, "traj2.pdb"), keep_mask="protein")
-        self._compare_files(os.path.join(self.saved_data, "trajs", "traj2.pdb"),
-                            os.path.join(self.out_path, "traj2.pdb"))
+        compare_test_files(os.path.join(self.saved_data, "trajs", "traj2.pdb"),
+                            os.path.join(self.out_path, "traj2.pdb"), self)
 
     def test_AtomFromPDB(self):
         from transport_tools.libs.protein_files import AtomFromPDB
@@ -188,8 +146,8 @@ class TestProteinFiles(unittest.TestCase):
                                       os.path.join(self.saved_data, "pdbs", "file1.pdb"))[0]
         transform_pdb_file(os.path.join(self.saved_data, "pdbs", "file2.pdb"),
                            os.path.join(self.out_path, "transformed_file2.pdb"), matrix)
-        self._compare_files(os.path.join(self.saved_data, "pdbs", "transformed_file2.pdb"),
-                            os.path.join(self.out_path, "transformed_file2.pdb"))
+        compare_test_files(os.path.join(self.saved_data, "pdbs", "transformed_file2.pdb"),
+                            os.path.join(self.out_path, "transformed_file2.pdb"), self)
 
     def test_get_general_rot_mat_from_2_ca_atoms(self):
         from transport_tools.libs.protein_files import get_general_rot_mat_from_2_ca_atoms

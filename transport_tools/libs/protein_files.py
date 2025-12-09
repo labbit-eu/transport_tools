@@ -46,7 +46,7 @@ THREE2ONE_CODES_MAP = {
 }
 
 
-def TrajectoryFactory(parameters: dict, md_label: str, superpose_mask: str = None):
+def TrajectoryFactory(parameters: dict, md_label: str, superpose_mask: str | None = None):
     if parameters["trajectory_engine"] == "mdtraj":
         if superpose_mask is not None:
             return TrajectoryMdtraj(parameters, md_label, superpose_mask)
@@ -97,8 +97,8 @@ class TrajectoryTT:
     def _get_ref_frame_from_caver_ref(self):
         raise NotImplementedError("Provide implementation of this method.")
 
-    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
-                   out_file: Optional[str] = None) -> np.array:
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: str | None = None,
+                   out_file: str | None = None) -> np.ndarray:
         """
         Get coordinates of system across specified frames, potentially after removing some of its parts. And if
         out_file is provided, the resulting structure is saved too
@@ -111,7 +111,7 @@ class TrajectoryTT:
 
         raise NotImplementedError("Provide implementation of this method.")
 
-    def write_frames(self, start_frame: int, end_frame: int, out_file: str, keep_mask: Optional[str] = None):
+    def write_frames(self, start_frame: int, end_frame: int, out_file: str, keep_mask: str | None = None):
         """
         Write specified frames to MULTIMODEL PDB file
         :param start_frame: start frame to consider
@@ -148,8 +148,8 @@ class TrajectoryMdtraj(TrajectoryTT):
                                           ref_atom_indices=caver_pdb.topology.select(self.superpose_mask),
                                           parallel=False)
 
-    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
-                   out_file: Optional[str] = None) -> np.array:
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: str | None = None,
+                   out_file: str | None = None) -> np.ndarray:
         """
         Get coordinates of system across specified frames, potentially after removing some of its parts
         :param start_frame: start frame to consider
@@ -217,7 +217,7 @@ class TrajectoryPytraj(TrajectoryTT):
         """
 
         try:
-            import pytraj as pt
+            import pytraj as pt  # type: ignore[import-untyped]
         except ModuleNotFoundError:
             raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
                                "imported. Please check that it is properly installed in the current environment.")
@@ -226,8 +226,8 @@ class TrajectoryPytraj(TrajectoryTT):
         frame1 = pt.iterload(self.traj, self.top, frame_slice=(0, 1))
         self.ref_frame = frame1.superpose(mask=self.superpose_mask, ref=caver_pdb, ref_mask=self.superpose_mask)
 
-    def get_coords(self, start_frame: int, end_frame: int, keep_mask: Optional[str] = None,
-                   out_file: Optional[str] = None) -> np.array:
+    def get_coords(self, start_frame: int, end_frame: int, keep_mask: str | None = None,
+                   out_file: str | None = None) -> np.ndarray:
 
         """
         Get coordinates of system across specified frames, potentially after removing some of its parts
@@ -239,7 +239,7 @@ class TrajectoryPytraj(TrajectoryTT):
         """
 
         try:
-            import pytraj as pt
+            import pytraj as pt  # type: ignore[import-untyped]
         except ModuleNotFoundError:
             raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
                                "imported. Please check that it is properly installed in the current environment.")
@@ -405,7 +405,7 @@ def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.P
 
 
 def _superpose_moved2target(target_atoms: Dict[int, Bio.PDB.Atom.Atom],
-                            moved_atoms: Dict[int, Bio.PDB.Atom.Atom]) -> Tuple[float, np.array]:
+                            moved_atoms: Dict[int, Bio.PDB.Atom.Atom]) -> Tuple[float, np.ndarray]:
     """
     Superposition of the structure to the target.
     :param target_atoms: dictionary of residues' alpha Carbons of the target structure
@@ -424,7 +424,7 @@ def _superpose_moved2target(target_atoms: Dict[int, Bio.PDB.Atom.Atom],
 
 
 def _get_atom_rmsds(target_atoms: Dict[int, Bio.PDB.Atom.Atom], moved_atoms: Dict[int, Bio.PDB.Atom.Atom],
-                    transform_mat: np.array) -> np.array:
+                    transform_mat: np.ndarray) -> np.ndarray:
     """
     Modifies the coordinates of the atoms from the moved protein using defined transformation matrix and
     computes the distance corresponding target atoms.
@@ -444,7 +444,7 @@ def _get_atom_rmsds(target_atoms: Dict[int, Bio.PDB.Atom.Atom], moved_atoms: Dic
     return np.sqrt((diff*diff).sum(axis=1)/3)
 
 
-def _update_atoms(rmsds: np.array, target_atoms: dict, moved_atoms: dict,
+def _update_atoms(rmsds: np.ndarray, target_atoms: dict, moved_atoms: dict,
                   outlier_cutoff: float = 2.0) -> Tuple[Dict[int, Bio.PDB.Atom.Atom], Dict[int, Bio.PDB.Atom.Atom]]:
     """
     Sorts atoms depending on their RMSD and then removes outliers with too high RMSD.
@@ -469,7 +469,7 @@ def _update_atoms(rmsds: np.array, target_atoms: dict, moved_atoms: dict,
 
 
 def get_transform_matrix(moved_protein: str, target_protein: str, md_label: str = "", max_iter: int = 5,
-                         rmsd_cutoff: float = 0.1) -> Tuple[np.array, str]:
+                         rmsd_cutoff: float = 0.1) -> Tuple[np.ndarray, str]:
     """
     Performs a sequence alignment of the target and moved proteins, then tries to reduce the RMSD by a series of
     iterations removing the atoms with the higher difference before and after alignment.
@@ -504,7 +504,7 @@ def get_transform_matrix(moved_protein: str, target_protein: str, md_label: str 
     return rotran_mat.T, md_label
 
 
-def transform_pdb_file(in_pdb_file: str, out_pdb_file: str, transform_mat: np.array):
+def transform_pdb_file(in_pdb_file: str, out_pdb_file: str, transform_mat: np.ndarray):
     """
     Translates and rotates atoms in PDB file by transformation matrix
     :param in_pdb_file: input pdb file path
@@ -521,7 +521,7 @@ def transform_pdb_file(in_pdb_file: str, out_pdb_file: str, transform_mat: np.ar
     to_move.save_pdb(out_pdb_file)
 
 
-def save_caver_starting_points(out_pdb_file: str, coords: np.array, transform_mat: Optional[np.array] = None):
+def save_caver_starting_points(out_pdb_file: str, coords: np.ndarray, transform_mat: np.ndarray | None = None):
     """
     Translates and rotates atoms in PDB file by transformation matrix
     :param out_pdb_file: path to the transformed pdb file
@@ -540,7 +540,7 @@ def save_caver_starting_points(out_pdb_file: str, coords: np.array, transform_ma
             out_stream.write("ENDMDL\n".format(i + 1))
 
 
-def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.array:
+def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.ndarray:
     """
     Arbitrary selects Calpha atoms from 1/4 and 3/4 of sequence and orients the 1st one along z-axis,
     and 2nd one into yz-plane
@@ -589,7 +589,7 @@ def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.array:
 
 
 def transform_aquaduct(md_label: str, tar_file: str, aquaduct_results_pdb_filename: str,
-                       reference_pdb_file: str) -> Tuple[np.array, str, int]:
+                       reference_pdb_file: str) -> Tuple[np.ndarray, str, int]:
     """
     Prepares temporary files from AQUA-DUCT data and gets transformation matrix
     :param md_label: name of folder with the source MD simulation data

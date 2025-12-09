@@ -208,9 +208,9 @@ class ClusterInLayer:
         self.cls_id = cls_id
         self.layer_id = layer_id
         self.matrix = PointMatrix(points_mat)
-        self.average = None
-        self.rmsf = None
-        self.radius = None
+        self.average: np.ndarray | None = None
+        self.rmsf: float | None = None
+        self.radius: float | None = None
         self.end_point = end_point
         self.start_point = False
         self.num_end_points = 0
@@ -238,7 +238,7 @@ class ClusterInLayer:
         return "{}_{}".format(self.layer_id, self.cls_id)
 
     def resolve_avg_failures(self, random_seed: int, num_new_clusters: int = 0,
-                             max_new_clusters: Optional[int] = None, tolerance: float = 0) -> List[ClusterInLayer]:
+                             max_new_clusters: int | None = None, tolerance: float = 0) -> List[ClusterInLayer]:
         """
         Keep splitting this cluster to two, until all created clusters represents well their points or the maximum
         number of new clusters is created
@@ -284,8 +284,9 @@ class ClusterInLayer:
         :param tolerance: additional tolerance
         """
 
-        assert self.average is not None and self.rmsf is not None and self.radius is not None, \
-            "Cannot check representativeness before computing averages"
+        if self.average is None or self.radius is None or self.rmsf is None:
+            raise ValueError(f"Cluster {self} properties must be computed before checking representativeness of data ")
+
         distances = einsum_dist(self.get_coords(), self.average)
         dist2closest_point = np.min(distances)
         dist2furthest_point = np.max(distances)
@@ -352,7 +353,7 @@ class LayeredPathSet:
         self.parameters = parameters
         self.traced_event: Optional[Tuple[str, Tuple[int, int]]] = None
         self.node_depths: Dict[str, float] = dict()
-        self.characteristics = None
+        self.characteristics: Tuple[float, int] | None = None
 
         # nodes_data = np.array of cluster.average, cluster.layer_id, cluster.end_point, cluster.radius, cluster.rmsf
         if starting_point_coords is not None:  # include overall SP as the first node
@@ -826,6 +827,8 @@ class LayeredPathSet:
 
             in_layer_id, in_cls_id = node_labels_split(in_node_label)
             in_cluster = layers[in_layer_id].clusters[in_cls_id]
+            if in_cluster.average is None or in_cluster.radius is None or in_cluster.rmsf is None:
+                raise ValueError(f"Cluster properties must be computed before generating node data for node {in_node_label}")
 
             return np.append(in_cluster.average, np.array([in_cluster.layer_id, in_cluster.end_point, in_cluster.radius,
                                                           in_cluster.rmsf]).astype(float), axis=0).reshape(1, -1)
@@ -836,6 +839,8 @@ class LayeredPathSet:
 
             layer_id, cls_id = node_labels_split(node_path[0])
             cluster = layers[layer_id].clusters[cls_id]
+            if cluster.average is None or cluster.radius is None or cluster.rmsf is None:
+                raise ValueError(f"Cluster properties must be computed before generating node data for node {node_path[0]}")
             self.nodes_data = np.append(cluster.average,
                                         np.array([cluster.layer_id, cluster.end_point, cluster.radius,
                                                   cluster.rmsf]).astype(float), axis=0).reshape(1, -1)
@@ -865,6 +870,9 @@ class LayeredPathSet:
         :param query_first_terminal_layer: ID of the first layer with terminal node in the query pathset
         :return: array with labels and data of adjacent nodes
         """
+
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
 
         query_layer_id = query_node_data[3]
         is_last_layer = query_last_layer_id == query_layer_id
@@ -955,6 +963,8 @@ class LayeredPathSet:
         Find layer of terminal node closest to the starting point
         :return: id of the layer
         """
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
 
         selector = (self.nodes_data[:, 4] == 1)
         terminal_nodes = self.nodes_data[np.nonzero(selector)[0], :]
@@ -969,6 +979,8 @@ class LayeredPathSet:
         :param consider_rmsf: if the RMSF correction should be computed
         :return: node2node distance matrix and its inverted form
         """
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
 
         dist_mat = dict()
         last_layer = np.max(self.nodes_data[:, 3])
@@ -995,6 +1007,8 @@ class LayeredPathSet:
         """
         Return array with labels of terminal nodes in this pathset
         """
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
 
         nodes = np.array(self.node_labels).astype(np.str_)
         return nodes[np.nonzero(self.nodes_data[:, 4] == 1)]
@@ -1080,6 +1094,8 @@ class LayeredPathSet:
         :param other_set: other set in which the buriedness is calculated
         :return: buriedness, and maximal depth towards SP
         """
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
 
         dist_mat, inverted_dist_mat = self._pre_compute_distance_matrices(other_set,
                                                                           self.parameters["use_cluster_spread"])
@@ -1270,6 +1286,8 @@ class Layer:
                     last = i
                 last += 1
 
+                if cluster.average is None:
+                    raise ValueError(f"Cluster average must be computed before transformation")
                 data4transform = np.append(cluster.average, np.array([1.]))
                 new_xyz = transform_mat.dot(data4transform)[0:3]
                 out.write(str(Point(new_xyz).convert2viz_atom(atom_id=last, res_id=last,
@@ -1426,11 +1444,9 @@ class Layer:
             out_coords = out_mat[:, :3]
             with parallel_backend('loky', n_jobs=1):
                 try:
-                    cluster_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="average",
-                                                            distance_threshold=2)
+                    cluster_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="average", distance_threshold=2)
                 except TypeError:
-                    cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average",
-                                                            distance_threshold=2)
+                    cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average", distance_threshold=2)   # type: ignore[attr-defined]
                     
                 clustering = cluster_method.fit_predict(out_coords)
 
@@ -1515,11 +1531,9 @@ class LayeredRepresentation:
                     values = np.concatenate((values, cluster.average.reshape(1, 3)), axis=0)
 
                 try:
-                    clustering_method = AgglomerativeClustering(n_clusters=None, metric="euclidean",
-                                                                linkage="complete", distance_threshold=2)
+                    clustering_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="complete", distance_threshold=2)
                 except TypeError:
-                    clustering_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean",
-                                                                linkage="complete", distance_threshold=2)
+                    clustering_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="complete", distance_threshold=2)  # type: ignore[attr-defined]
 
                 clustering = clustering_method.fit_predict(values)
                 ids = np.array(ids).astype(int)
@@ -1858,12 +1872,12 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
 
         self._merge_duplicate_clusters()
 
-    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coords: np.ndarray = None,
+    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coords: np.ndarray | None = None,
                                   visualize: bool = False) -> LayeredPathSet:
         """
         Find representative paths leading from starting point to terminal clusters (nodes)
         :param transform_mat: transformation matrix to transform output pathset
-        :param starting_point_coords: NOT USED
+        :param starting_point_coords: NOT USED HERE
         :param visualize: should the layered representation be prepared for visualization
         :return: set of representative paths
         """
@@ -1966,7 +1980,7 @@ def get_redundant_path_ids(all_paths: Dict[int, List[str]]) -> Set[int]:
     return redundant_path_ids
 
 
-def remove_loops_from_path(node_path: List[str]) -> Optional[List[str]]:
+def remove_loops_from_path(node_path: List[str]) -> List[str] | None:
     """
     Removes loops (repetitively visited nodes) from the node path while guaranteeing the largest span of layers
     :param node_path: analyzed node path = list of node labels
