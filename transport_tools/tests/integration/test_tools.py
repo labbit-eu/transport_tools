@@ -23,7 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import os
 import pytest
-from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, focus_pdbfile
+from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_folders, compare_test_files
 from transport_tools.libs.tools import load_checkpoint, define_filters, TransportProcesses, save_checkpoint
 
 class TestTransportProcesses(unittest.TestCase):
@@ -67,9 +67,9 @@ class TestTransportProcesses(unittest.TestCase):
         # Works with both unittest and pytest
         if hasattr(self, '_outcome'):
             # For unittest (Python 3.11+)
-            if hasattr(self._outcome, 'result'):
-                result_errors = getattr(self._outcome.result, 'errors', [])
-                result_failures = getattr(self._outcome.result, 'failures', [])
+            if hasattr(self._outcome, 'result'):  # type: ignore[attr-defined]
+                result_errors = getattr(self._outcome.result, 'errors', [])  # type: ignore[attr-defined]
+                result_failures = getattr(self._outcome.result, 'failures', [])  # type: ignore[attr-defined]
                 if result_errors or result_failures:
                     self.__class__._test_failed = True
 
@@ -87,112 +87,15 @@ class TestTransportProcesses(unittest.TestCase):
     def _get_dumpfile(self, stage: int) -> str:
         return os.path.join(self.out_path, "temp", "mol_system_{}.dump".format(stage))
 
-    def _compare_files(self, out_file: str, res_file: str,):
-        import pickle
-        import gzip
-        import numpy as np
-        from sys import maxsize
-        np.set_printoptions(threshold=maxsize)
-
-        res_lines = out_lines = None
-        out_mat = res_mat = None
-        if res_file.endswith(".dump.gz"):
-            with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
-                res_lines = pickle.load(res_in)
-                out_lines = pickle.load(out_in)
-        elif ".dump" in res_file:
-            with open(res_file, "rb") as res_in, open(out_file, "rb") as out_in:
-                res_lines = pickle.load(res_in)
-                out_lines = pickle.load(out_in)
-        elif ".gz" in res_file:
-            with gzip.open(res_file, 'rt') as res_in, gzip.open(out_file, 'rt') as out_in:
-                res_lines = res_in.readlines()
-                out_lines = out_in.readlines()
-        elif ".npy" in res_file:
-            res_mat = np.load(res_file)
-            out_mat = np.load(out_file)
-        else:
-            with open(res_file, "r") as res_in, open(out_file, "r") as out_in:
-                res_lines = res_in.readlines()
-                out_lines = out_in.readlines()
-
-        #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
-        if ".pdb" in res_file:
-            res_lines = focus_pdbfile(res_lines)
-            out_lines = focus_pdbfile(out_lines)
-
-        if res_lines is not None:
-            if isinstance(res_lines, np.ndarray):
-                self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
-                                msg="{} not {} In files '{}' and '{}':".format(out_lines, res_lines, out_file, res_file))
-            else:
-                self.assertTrue(len(res_lines) == len(out_lines),
-                                msg="Different length of files '{}' and '{}':".format(out_file, res_file))
-                for res_line, out_line in zip(res_lines, out_lines):
-                    if isinstance(res_line, list) or isinstance(res_line, tuple):
-                        self.assertTrue(len(res_line) == len(out_line),
-                                        msg="Different length of lists {} and {}\n "
-                                            "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
-                        for res_item, out_item in zip(res_line, out_line):
-                            try:
-                                self.assertAlmostEqual(float(out_item), float(res_item), places=3,
-                                                       msg="In files '{}' and '{}':".format(out_file, res_file))
-                            except (ValueError, TypeError):
-                                self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
-                                                                                                          res_file))
-                    elif ".csv" in res_file:
-                        for out_item, res_item in zip(out_line.split(","), res_line.split(",")):
-                            try:
-                                self.assertAlmostEqual(float(out_item), float(res_item), places=3,
-                                                       msg="In files '{}' and '{}':".format(out_file, res_file))
-                            except ValueError:
-                                self.assertEqual(out_item, res_item, 
-                                                 msg="In files '{}' and '{}':".format(out_file, res_file))
-                    else:
-                        try:
-                            self.assertAlmostEqual(float(out_line), float(res_line), places=3,
-                                                   msg="In files '{}' and '{}':".format(out_file, res_file))
-                        except (ValueError, TypeError):
-                            self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file,
-                                                                                                      res_file))
-
-        else:
-            self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
-                            msg="{}\n{}\nIn files '{}' and '{}':".format(out_mat, res_mat,out_file, res_file))
-
-    def _compare_folders(self, saved_outputs_dir: str, results_dir: str, pattern: str = ".+"):
-        from re import search
-        out_files = list()
-        results_files = list()
-
-        for _file in sorted(os.listdir(results_dir)):
-            if not search(pattern, _file):
-                continue
-            results_files.append(_file)
-
-        for _file in sorted(os.listdir(saved_outputs_dir)):
-            if not search(pattern, _file):
-                continue
-            out_files.append(_file)
-
-        self.assertEqual(out_files, results_files, msg="In folders '{}' and '{}':".format(saved_outputs_dir,
-                                                                                          results_dir))
-
-        for res_file, out_file in zip(results_files, out_files):
-            res_file = os.path.join(results_dir, res_file)
-            out_file = os.path.join(saved_outputs_dir, out_file)
-            if os.path.isfile(res_file) and os.path.isfile(out_file):
-                self._compare_files(out_file, res_file)
-
     def test_01compute_transformations(self):
         mol_system = TransportProcesses(TestTransportProcesses.config)
         mol_system.compute_transformations()
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "transformations"),
-                              os.path.join(self.out_path, "_internal", "transformations"))
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "transformations", "aquaduct"),
-                              os.path.join(self.out_path, "_internal", "transformations", "aquaduct"))
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "transformations", "caver"),
-                              os.path.join(self.out_path, "_internal", "transformations", "caver"))
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "transformations"),
+                              os.path.join(self.out_path, "_internal", "transformations"), self)
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "transformations", "aquaduct"),
+                              os.path.join(self.out_path, "_internal", "transformations", "aquaduct"), self)
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "transformations", "caver"),
+                              os.path.join(self.out_path, "_internal", "transformations", "caver"), self)
         save_checkpoint(mol_system, self._get_dumpfile(1), overwrite=True)
 
     def test_02process_tunnel_networks(self):
@@ -201,8 +104,8 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
         mol_system.process_tunnel_networks()
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
-                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"))
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
         save_checkpoint(mol_system, self._get_dumpfile(2), overwrite=True)
 
     def test_03create_layered_description4tunnel_networks(self):
@@ -212,18 +115,18 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.create_layered_description4tunnel_networks()
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "layered_data", "caver"),
-                              os.path.join(self.out_path, "_internal", "layered_data", "caver"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1"),
-                              os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "caver"),
+                              os.path.join(self.out_path, "_internal", "layered_data", "caver"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
                                            "nodes"),
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1",
-                                           "nodes"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
+                                           "nodes"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
                                            "paths"),
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1",
-                                           "paths"))
+                                           "paths"), self)
         save_checkpoint(mol_system, self._get_dumpfile(3), overwrite=True)
 
     def test_04merge_tunnel_clusters2super_clusters(self):
@@ -234,10 +137,10 @@ class TestTransportProcesses(unittest.TestCase):
 
         mol_system.compute_tunnel_clusters_distances()
         mol_system.merge_tunnel_clusters2super_clusters()
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "clustering"),
-                              os.path.join(self.out_path, "_internal", "clustering"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "clustering"),
-                              os.path.join(self.out_path, "data", "clustering"))
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "clustering"),
+                              os.path.join(self.out_path, "_internal", "clustering"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "clustering"),
+                              os.path.join(self.out_path, "data", "clustering"), self)
         save_checkpoint(mol_system, self._get_dumpfile(4), overwrite=True)
 
     def test_05create_super_cluster_profiles(self):
@@ -247,14 +150,14 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.create_super_cluster_profiles()
-        self._compare_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
+        compare_test_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
                                          "initial_super_cluster_details.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
-                                         "initial_super_cluster_details.txt"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "initial"),
-                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "initial"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "initial"),
-                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "initial"))
+                                         "initial_super_cluster_details.txt"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "initial"),
+                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "initial"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "initial"),
+                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "initial"), self)
         save_checkpoint(mol_system, self._get_dumpfile(5), overwrite=True)
 
     def test_06generate_super_cluster_summary(self):
@@ -264,29 +167,29 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.generate_super_cluster_summary(out_filename="1-initial_tunnels_summary.txt")
-        self._compare_files(os.path.join(self.saved_data, "statistics", "1-initial_tunnels_summary.txt"),
-                            os.path.join(self.out_path, "statistics", "1-initial_tunnels_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+        compare_test_files(os.path.join(self.saved_data, "statistics", "1-initial_tunnels_summary.txt"),
+                            os.path.join(self.out_path, "statistics", "1-initial_tunnels_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "1-initial_tunnels_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "1-initial_tunnels_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "1-initial_tunnels_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "1-initial_tunnels_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "1-initial_tunnels_summary.txt"))
+                                         "1-initial_tunnels_summary.txt"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "statistics",
+        compare_test_files(os.path.join(self.saved_data, "statistics",
                                          "1-initial_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics",
-                                         "1-initial_tunnels_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+                                         "1-initial_tunnels_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "1-initial_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "1-initial_tunnels_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "1-initial_tunnels_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "1-initial_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "1-initial_tunnels_summary_bottleneck_residues.txt"))
+                                         "1-initial_tunnels_summary_bottleneck_residues.txt"), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(6), overwrite=True)
 
@@ -297,15 +200,15 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.save_super_clusters_visualization(script_name="visualize_tunnels.py")
-        self._compare_files(os.path.join(self.saved_data, "visualization", "visualize_tunnels.py"),
-                            os.path.join(self.out_path, "visualization", "visualize_tunnels.py"))
-        self._compare_files(os.path.join(self.saved_data, "visualization", "comparative_analysis", "md1",
+        compare_test_files(os.path.join(self.saved_data, "visualization", "visualize_tunnels.py"),
+                            os.path.join(self.out_path, "visualization", "visualize_tunnels.py"), self)
+        compare_test_files(os.path.join(self.saved_data, "visualization", "comparative_analysis", "md1",
                                          "visualize_tunnels.py"),
                             os.path.join(self.out_path, "visualization", "comparative_analysis", "md1",
-                                         "visualize_tunnels.py"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "super_cluster_CGOs"),
-                              os.path.join(self.out_path, "visualization", "sources", "super_cluster_CGOs"),
-                              r'.+pathset_1\.dump')
+                                         "visualize_tunnels.py"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "super_cluster_CGOs"),
+                              os.path.join(self.out_path, "visualization", "sources", "super_cluster_CGOs"), self,
+                              pattern=r'.+pathset_1\.dump')
         save_checkpoint(mol_system, self._get_dumpfile(7), overwrite=True)
 
     def test_08filter_super_cluster_profiles(self):
@@ -317,49 +220,49 @@ class TestTransportProcesses(unittest.TestCase):
                                                  min_sims_num=-1)
         mol_system.generate_super_cluster_summary(out_filename="2-filtered_tunnels_summary.txt")
         mol_system.save_super_clusters_visualization(script_name="visualize_tunnels_filtered.py")
-        self._compare_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
+        compare_test_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
                                          "filtered_super_cluster_details1.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
-                                         "filtered_super_cluster_details1.txt"))
+                                         "filtered_super_cluster_details1.txt"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "visualization", "comparative_analysis", "md1",
+        compare_test_files(os.path.join(self.saved_data, "visualization", "comparative_analysis", "md1",
                                          "visualize_tunnels_filtered.py"),
                             os.path.join(self.out_path, "visualization", "comparative_analysis", "md1",
-                                         "visualize_tunnels_filtered.py"))
-        self._compare_files(os.path.join(self.saved_data, "visualization", "visualize_tunnels_filtered.py"),
-                            os.path.join(self.out_path, "visualization", "visualize_tunnels_filtered.py"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "super_cluster_CGOs"),
-                              os.path.join(self.out_path, "visualization", "sources", "super_cluster_CGOs"),
-                              r'.+pathset_2\.dump')
+                                         "visualize_tunnels_filtered.py"), self)
+        compare_test_files(os.path.join(self.saved_data, "visualization", "visualize_tunnels_filtered.py"),
+                            os.path.join(self.out_path, "visualization", "visualize_tunnels_filtered.py"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "super_cluster_CGOs"),
+                              os.path.join(self.out_path, "visualization", "sources", "super_cluster_CGOs"), self,
+                              pattern=r'.+pathset_2\.dump')
 
-        self._compare_files(os.path.join(self.saved_data, "statistics", "2-filtered_tunnels_summary.txt"),
-                            os.path.join(self.out_path, "statistics", "2-filtered_tunnels_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+        compare_test_files(os.path.join(self.saved_data, "statistics", "2-filtered_tunnels_summary.txt"),
+                            os.path.join(self.out_path, "statistics", "2-filtered_tunnels_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "2-filtered_tunnels_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "2-filtered_tunnels_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "2-filtered_tunnels_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "2-filtered_tunnels_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "2-filtered_tunnels_summary.txt"))
+                                         "2-filtered_tunnels_summary.txt"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "statistics",
+        compare_test_files(os.path.join(self.saved_data, "statistics",
                                          "2-filtered_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics",
-                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "2-filtered_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "2-filtered_tunnels_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"))
+                                         "2-filtered_tunnels_summary_bottleneck_residues.txt"), self)
 
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "filtered01"),
-                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "filtered01"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "filtered01"),
-                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "filtered01"))
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "filtered01"),
+                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "filtered01"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "filtered01"),
+                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "filtered01"), self)
         save_checkpoint(mol_system, self._get_dumpfile(8), overwrite=True)
 
     def test_09process_aquaduct_networks(self):
@@ -369,10 +272,10 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.process_aquaduct_networks()
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
                                            "md1"),
                               os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct",
-                                           "md1"))
+                                           "md1"), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(9), overwrite=True)
 
@@ -383,20 +286,20 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.create_layered_description4aquaduct_networks()
-        self._compare_folders(os.path.join(self.saved_data, "_internal", "layered_data", "aquaduct"),
-                              os.path.join(self.out_path, "_internal", "layered_data", "aquaduct"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "aquaduct"),
+                              os.path.join(self.out_path, "_internal", "layered_data", "aquaduct"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
                                            "md1"),
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "aquaduct",
-                                           "md1"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
+                                           "md1"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
                                            "md1", "nodes"),
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "aquaduct", "md1",
-                                           "nodes"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
+                                           "nodes"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
                                            "md1", "paths"),
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "aquaduct", "md1",
-                                           "paths"))
+                                           "paths"), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(10), overwrite=True)
 
@@ -414,97 +317,97 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.save_super_clusters_visualization(script_name="visualize_events_filtered.py")
         mol_system.generate_super_cluster_summary(out_filename="4-filtered_events_summary.txt")
 
-        self._compare_files(os.path.join(self.saved_data, "visualization", "visualize_events.py"),
-                            os.path.join(self.out_path, "visualization", "visualize_events.py"))
-        self._compare_files(os.path.join(self.saved_data, "visualization",  "comparative_analysis", "md1",
+        compare_test_files(os.path.join(self.saved_data, "visualization", "visualize_events.py"),
+                            os.path.join(self.out_path, "visualization", "visualize_events.py"),self)
+        compare_test_files(os.path.join(self.saved_data, "visualization",  "comparative_analysis", "md1",
                                          "visualize_events.py"),
                             os.path.join(self.out_path, "visualization",  "comparative_analysis", "md1",
-                                         "visualize_events.py"))
-        self._compare_files(os.path.join(self.saved_data, "visualization", "visualize_events_filtered.py"),
-                            os.path.join(self.out_path, "visualization", "visualize_events_filtered.py"))
-        self._compare_files(os.path.join(self.saved_data, "visualization",  "comparative_analysis", "md1",
+                                         "visualize_events.py"), self)
+        compare_test_files(os.path.join(self.saved_data, "visualization", "visualize_events_filtered.py"),
+                            os.path.join(self.out_path, "visualization", "visualize_events_filtered.py"),self)
+        compare_test_files(os.path.join(self.saved_data, "visualization",  "comparative_analysis", "md1",
                                          "visualize_events_filtered.py"),
                             os.path.join(self.out_path, "visualization",  "comparative_analysis", "md1",
-                                         "visualize_events_filtered.py"))
+                                         "visualize_events_filtered.py"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "statistics", "3-initial_events_summary.txt"),
-                            os.path.join(self.out_path, "statistics", "3-initial_events_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+        compare_test_files(os.path.join(self.saved_data, "statistics", "3-initial_events_summary.txt"),
+                            os.path.join(self.out_path, "statistics", "3-initial_events_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "3-initial_events_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "3-initial_events_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "3-initial_events_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "3-initial_events_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "3-initial_events_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "4-filtered_events_summary.txt"),
-                            os.path.join(self.out_path, "statistics", "4-filtered_events_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+                                         "3-initial_events_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "4-filtered_events_summary.txt"),
+                            os.path.join(self.out_path, "statistics", "4-filtered_events_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "4-filtered_events_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "4-filtered_events_summary.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "4-filtered_events_summary.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "4-filtered_events_summary.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "4-filtered_events_summary.txt"))
+                                         "4-filtered_events_summary.txt"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "statistics",
+        compare_test_files(os.path.join(self.saved_data, "statistics",
                                          "3-initial_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics",
-                                         "3-initial_events_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+                                         "3-initial_events_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "3-initial_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "3-initial_events_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "3-initial_events_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "3-initial_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "3-initial_events_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics",
+                                         "3-initial_events_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics",
                                          "4-filtered_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics",
-                                         "4-filtered_events_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
+                                         "4-filtered_events_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis",
                                          "4-filtered_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis",
-                                         "4-filtered_events_summary_bottleneck_residues.txt"))
-        self._compare_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
+                                         "4-filtered_events_summary_bottleneck_residues.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "statistics", "comparative_analysis", "md1",
                                          "4-filtered_events_summary_bottleneck_residues.txt"),
                             os.path.join(self.out_path, "statistics", "comparative_analysis", "md1",
-                                         "4-filtered_events_summary_bottleneck_residues.txt"))
+                                         "4-filtered_events_summary_bottleneck_residues.txt"), self)
 
-        self._compare_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
+        compare_test_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
                                          "initial_super_cluster_events_details.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
-                                         "initial_super_cluster_events_details.txt"))
-        self._compare_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
+                                         "initial_super_cluster_events_details.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
                                          "outlier_transport_events_details.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
-                                         "outlier_transport_events_details.txt"))
-        self._compare_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
+                                         "outlier_transport_events_details.txt"), self)
+        compare_test_files(os.path.join(self.saved_data, "data", "super_clusters", "details",
                                          "filtered_super_cluster_details2.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
-                                         "filtered_super_cluster_details2.txt"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "exact_matching_analysis", "md1"),
-                              os.path.join(self.out_path, "data", "exact_matching_analysis", "md1"))
+                                         "filtered_super_cluster_details2.txt"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "exact_matching_analysis", "md1"),
+                              os.path.join(self.out_path, "data", "exact_matching_analysis", "md1"), self)
 
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
                                            "1_entry_sc2"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_entry_sc2"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
+                                           "1_entry_sc2"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
                                            "1_release_sc3"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc3"))
-        self._compare_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
+                                           "1_release_sc3"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
                                            "1_release_sc2"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc2"))
+                                           "1_release_sc2"), self)
 
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "filtered02"),
-                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "filtered02"))
-        self._compare_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "filtered02"),
-                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "filtered02"))
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "filtered02"),
+                              os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "filtered02"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "bottlenecks", "filtered02"),
+                              os.path.join(self.out_path, "data", "super_clusters", "bottlenecks", "filtered02"), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(11), overwrite=True)
 
@@ -522,15 +425,15 @@ class TestTransportProcesses(unittest.TestCase):
         visualization_output_folder = os.path.join(self.out_path, "customs", "static")
         mol_system.show_tunnels_passing_filter(super_cluster_id, filters, visualization_output_folder,
                                                start_snapshot=1, end_snapshot=100, trajectory=False)
-        self._compare_folders(os.path.join(self.saved_data, "customs", "static"),
-                              os.path.join(self.out_path, "customs", "static"))
+        compare_test_folders(os.path.join(self.saved_data, "customs", "static"),
+                              os.path.join(self.out_path, "customs", "static"), self)
 
         visualization_output_folder = os.path.join(self.out_path, "customs", "dynamics")
         md_labels = ["md1"]
         mol_system.show_tunnels_passing_filter(super_cluster_id, filters, visualization_output_folder,
                                                md_labels=md_labels, start_snapshot=1, end_snapshot=100, trajectory=True)
-        self._compare_folders(os.path.join(self.saved_data, "customs", "dynamics"),
-                              os.path.join(self.out_path, "customs", "dynamics"))
+        compare_test_folders(os.path.join(self.saved_data, "customs", "dynamics"),
+                              os.path.join(self.out_path, "customs", "dynamics"), self)
 
         filters = define_filters(min_length=10)
         super_cluster_id = None
@@ -539,8 +442,8 @@ class TestTransportProcesses(unittest.TestCase):
         self.assertListEqual([28, 14, 12, 10, 27, 13, 26, 8, 25, 24, 3, 4, 18, 23, 22, 21, 2, 20, 6, 19, 9, 17, 16, 15, 7, 11, 1, 5],
                               [*dataset.keys()])
         save(os.path.join(self.out_path, "customs", "time_evolution_dataset.npy"), dataset[1]["md1"])
-        self._compare_files(os.path.join(self.saved_data, "customs", "time_evolution_dataset.npy"),
-                            os.path.join(self.out_path, "customs", "time_evolution_dataset.npy"))
+        compare_test_files(os.path.join(self.saved_data, "customs", "time_evolution_dataset.npy"),
+                            os.path.join(self.out_path, "customs", "time_evolution_dataset.npy"), self)
 
 
 if __name__ == "__main__":

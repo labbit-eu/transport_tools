@@ -23,7 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import numpy as np
 import os
 from pathlib import Path
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
 from logging import getLogger
 
 logger = getLogger(__name__)
@@ -560,9 +560,8 @@ def focus_pdbfile(file_lines: List[str]) -> List[str]:
 
     return focused_filelines
 
-# TODO complete and thest implementation of following functions, -> use in tests
-def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool = True,
-                      pdb_truncate_chain: bool = False) -> None:
+# TODO complete and test implementation of following functions, -> use in tests
+def compare_test_files(out_file: str, res_file: str, test_case, precision_places: int = 3) -> None:
     """
     Compare two files for testing purposes with support for various file types.
 
@@ -577,8 +576,7 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
     :param out_file: path to output file from test
     :param res_file: path to reference/expected file
     :param test_case: unittest.TestCase instance for assertions
-    :param handle_csv: if True, handle CSV files specially with per-field comparison
-    :param pdb_truncate_chain: if True, truncate PDB lines after chain ID for comparison
+    :param precision_places: how many decimals to use for comparisons
     """
     import pickle
     import gzip
@@ -627,7 +625,7 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
     if res_lines is not None:
         assert out_lines is not None, "out_lines should not be None when res_lines is not None"
         if isinstance(res_lines, np.ndarray):
-            test_case.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
+            test_case.assertTrue(np.allclose(out_lines, res_lines, atol=10**(-precision_places)),
                                msg="In files '{}' and '{}':".format(out_file, res_file))
         else:
             test_case.assertTrue(len(res_lines) == len(out_lines),
@@ -639,35 +637,35 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
                                            "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
                     for res_item, out_item in zip(res_line, out_line):
                         try:
-                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=3,
+                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=precision_places,
                                                       msg="In files '{}' and '{}':".format(out_file, res_file))
                         except (ValueError, TypeError):
                             test_case.assertEqual(out_item, res_item,
                                                 msg="In files '{}' and '{}':".format(out_file, res_file))
-                elif handle_csv and ".csv" in res_file:
+                elif ".csv" in res_file:
                     # Handle CSV files with field-by-field comparison
                     for out_item, res_item in zip(out_line.split(","), res_line.split(",")):
                         try:
-                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=3,
+                            test_case.assertAlmostEqual(float(out_item), float(res_item), places=precision_places,
                                                       msg="In files '{}' and '{}':".format(out_file, res_file))
                         except ValueError:
                             test_case.assertEqual(out_item, res_item,
                                                 msg="In files '{}' and '{}':".format(out_file, res_file))
                 else:
                     try:
-                        test_case.assertAlmostEqual(float(out_line), float(res_line), places=3,
+                        test_case.assertAlmostEqual(float(out_line), float(res_line), places=precision_places,
                                                   msg="In files '{}' and '{}':".format(out_file, res_file))
                     except (ValueError, TypeError):
                         test_case.assertEqual(out_line, res_line,
                                             msg="In files '{}' and '{}':".format(out_file, res_file))
     else:
         assert res_mat is not None and out_mat is not None, "Matrices should not be None"
-        test_case.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
+        test_case.assertTrue(np.allclose(out_mat, res_mat, atol=10**(-precision_places)),
                            msg="In files '{}' and '{}':".format(out_file, res_file))
 
 
 def compare_test_folders(saved_outputs_dir: str, results_dir: str, test_case,
-                        pattern: Union[str, None] = None, **compare_kwargs) -> None:
+                        pattern: str = ".+", **compare_kwargs) -> None:
     """
     Compare contents of two folders recursively for testing purposes.
 
@@ -677,23 +675,19 @@ def compare_test_folders(saved_outputs_dir: str, results_dir: str, test_case,
     :param pattern: optional regex pattern to filter files (default: match all)
     :param compare_kwargs: additional keyword arguments to pass to compare_test_files
     """
-    if pattern:
-        from re import search
-        out_files = list()
-        results_files = list()
+    from re import search
+    out_files = list()
+    results_files = list()
+    
+    for _file in sorted(os.listdir(results_dir)):
+        if not search(pattern, _file):
+            continue
+        results_files.append(_file)
 
-        for _file in sorted(os.listdir(results_dir)):
-            if not search(pattern, _file):
-                continue
-            results_files.append(_file)
-
-        for _file in sorted(os.listdir(saved_outputs_dir)):
-            if not search(pattern, _file):
-                continue
-            out_files.append(_file)
-    else:
-        results_files = sorted(os.listdir(results_dir))
-        out_files = sorted(os.listdir(saved_outputs_dir))
+    for _file in sorted(os.listdir(saved_outputs_dir)):
+        if not search(pattern, _file):
+            continue
+        out_files.append(_file)
 
     test_case.assertEqual(out_files, results_files,
                         msg="In folders '{}' and '{}':".format(saved_outputs_dir, results_dir))
