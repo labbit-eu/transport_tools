@@ -246,7 +246,7 @@ def get_caver_color(color_id: Union[int, None]) -> List[float]:
     return colors[color_id]
 
 
-def convert_coords2cgo(coords: np.array, color_id: Union[int, None]) -> List[float]:
+def convert_coords2cgo(coords: np.ndarray, color_id: Union[int, None]) -> List[float]:
     """
     Converts xyz-coordinates of sequence of points such as trace and tunnel to Pymol compiled graphics object(CGO)
     :param coords: xyz-coordinates of points
@@ -270,7 +270,7 @@ def convert_coords2cgo(coords: np.array, color_id: Union[int, None]) -> List[flo
     return cgo
 
 
-def _get_boundaries(spheres: List[Tuple[np.array, float]]) -> Tuple[Tuple[float, float], Tuple[float, float],
+def _get_boundaries(spheres: List[Tuple[np.ndarray, float]]) -> Tuple[Tuple[float, float], Tuple[float, float],
                                                                     Tuple[float, float]]:
     """
     Calculates the boundaries for the box enclosing the set of spheres
@@ -312,8 +312,8 @@ def _get_boundaries(spheres: List[Tuple[np.array, float]]) -> Tuple[Tuple[float,
             (min_z - max_r - 0.1, max_z + max_r))
 
 
-def _build_grid(spheres: List[Tuple[np.array, float]], x_points: np.array, y_points: np.array
-                , z_points: np.array) -> np.array:
+def _build_grid(spheres: List[Tuple[np.ndarray, float]], x_points: np.ndarray, y_points: np.ndarray
+                , z_points: np.ndarray) -> np.ndarray:
     """
     For each point in the grid we check if is inside the sphere and if so, store the data in the grid
     :param spheres: list of spheres to generate their grid
@@ -340,8 +340,8 @@ def _build_grid(spheres: List[Tuple[np.array, float]], x_points: np.array, y_poi
     return grid
 
 
-def _get_mesh(grid: np.array, x_points: np.array, y_points: np.array, z_points: np.array,
-              isolevel: float = 0.5) -> Tuple[np.array, np.array, np.array]:
+def _get_mesh(grid: np.ndarray, x_points: np.ndarray, y_points: np.ndarray, z_points: np.ndarray,
+              isolevel: float = 0.5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Use marching cubes to get the triangles and coordinates of the surface.
     :param grid: grid of points inside spheres
@@ -352,7 +352,11 @@ def _get_mesh(grid: np.array, x_points: np.array, y_points: np.array, z_points: 
     :return: arrays of vertices, normals and triangles for the mesh
     """
 
-    import mcubes
+    try:
+        import mcubes  # type: ignore[import-untyped]
+    except ImportError:
+        raise ImportError("PyMCubes is required for mesh generation. Install it with: pip install PyMCubes")
+
     grid_vertices, triangles = mcubes.marching_cubes(grid, isolevel)
     grid_vertices = grid_vertices.astype(int)
     vertices = np.zeros(grid_vertices.shape, dtype=float)
@@ -373,7 +377,7 @@ def _get_mesh(grid: np.array, x_points: np.array, y_points: np.array, z_points: 
     return vertices, normals, triangles
 
 
-def convert_spheres2cgo_surface(spheres: List[Tuple[np.array, float]], color_id: Union[int, None],
+def convert_spheres2cgo_surface(spheres: List[Tuple[np.ndarray, float]], color_id: Union[int, None],
                                 resolution: float = 0.5) -> List[float]:
     """
     Converts spheres (tuples that contain XYZ coords and radius) to surface complied graphics object for Pymol.
@@ -601,9 +605,9 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
                 res_lines = res_in.readlines()
                 out_lines = out_in.readlines()
         except:
-            with gzip.open(res_file, 'r') as res_in, gzip.open(out_file, 'r') as out_in:
-                res_lines = res_in.readlines()
-                out_lines = out_in.readlines()
+            with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
+                res_lines = [line.decode('utf-8') for line in res_in.readlines()]
+                out_lines = [line.decode('utf-8') for line in out_in.readlines()]
     elif ".npy" in res_file:
         res_mat = np.load(res_file)
         out_mat = np.load(out_file)
@@ -614,11 +618,14 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
 
     # For pdb files, focus comparison on atoms only
     if ".pdb" in res_file:
-        res_lines = focus_pdbfile(res_lines, truncate_chain=pdb_truncate_chain)
-        out_lines = focus_pdbfile(out_lines, truncate_chain=pdb_truncate_chain)
+        if res_lines is not None and isinstance(res_lines, list):
+            res_lines = focus_pdbfile(res_lines)
+        if out_lines is not None and isinstance(out_lines, list):
+            out_lines = focus_pdbfile(out_lines)
 
     # Compare content
     if res_lines is not None:
+        assert out_lines is not None, "out_lines should not be None when res_lines is not None"
         if isinstance(res_lines, np.ndarray):
             test_case.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
                                msg="In files '{}' and '{}':".format(out_file, res_file))
@@ -654,12 +661,13 @@ def compare_test_files(out_file: str, res_file: str, test_case, handle_csv: bool
                         test_case.assertEqual(out_line, res_line,
                                             msg="In files '{}' and '{}':".format(out_file, res_file))
     else:
+        assert res_mat is not None and out_mat is not None, "Matrices should not be None"
         test_case.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
                            msg="In files '{}' and '{}':".format(out_file, res_file))
 
 
 def compare_test_folders(saved_outputs_dir: str, results_dir: str, test_case,
-                        pattern: str = None, **compare_kwargs) -> None:
+                        pattern: Union[str, None] = None, **compare_kwargs) -> None:
     """
     Compare contents of two folders recursively for testing purposes.
 

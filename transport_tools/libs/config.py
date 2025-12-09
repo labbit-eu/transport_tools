@@ -331,6 +331,10 @@ class AnalysisConfig:
                     forbid_autoactivation.append(param_name)
 
                 if param_name == "output_path":  # update also dependent paths
+                    if param_value is None or param_value == "":
+                        raise ValueError("\nParameter 'output_path' must be defined and cannot be empty")
+                    if not isinstance(param_value, str):
+                        raise TypeError("\nParameter 'output_path' must be a string")
                     self._set_output_paths(param_value)
 
                 config_dictionary[param_name] = param_value
@@ -347,7 +351,7 @@ class AnalysisConfig:
                 "visualize_super_cluster_volumes" not in overridden_parameters \
                 and self.advanced_settings["msms"] is None:
             try:
-                import mcubes
+                import mcubes # type: ignore[import-untyped]
             except ModuleNotFoundError:
                 pass
             else:
@@ -358,7 +362,7 @@ class AnalysisConfig:
 
         if self.advanced_settings["trajectory_engine"] != "pytraj" and "trajectory_engine" not in overridden_parameters:
             try:
-                import pytraj
+                import pytraj # type: ignore[import-untyped]
             except ModuleNotFoundError:
                 pass
             else:
@@ -749,10 +753,12 @@ class AnalysisConfig:
         """
 
         cpu_os = os.cpu_count()
-        if cpu_os > 4:
+        if cpu_os is None:
+            # Cannot detect CPU count, default to 1
+            self.parameters["num_cpus"] = 1
+        elif cpu_os > 4:
             # many cpus => keep 2 for system
             self.parameters["num_cpus"] = cpu_os - 2
-
         elif cpu_os >= 2:
             self.parameters["num_cpus"] = cpu_os - 1
             # 2-4 cpus => keep 1 for system
@@ -766,15 +772,14 @@ class AnalysisConfig:
         Reads info on number of snapshots/frames in simulations and if same in all simulations,
         set the number of snapshots
         """
+        import mdtraj
 
         if self.parameters["trajectory_engine"] == "pytraj":
             try:
-                import pytraj
+                import pytraj # type: ignore[import-untyped]
             except ModuleNotFoundError:
                 raise RuntimeError("Requested to use 'pytaj' as 'trajectory_engine' but pytraj package cannot be "
                                    "imported. Please check that it is properly installed in the current environment.")
-        else:
-            import mdtraj
 
         folders_trajectory = Path(self.parameters["trajectory_path"]).glob(self.parameters["trajectory_folder_pattern"])
         n_frames = set()
@@ -785,7 +790,7 @@ class AnalysisConfig:
             topname = get_filepath(folder_path.as_posix(), self.input_paths["topology_relative_file"])
 
             if self.parameters["trajectory_engine"] == "pytraj":
-                md_traj = pytraj.iterload(trajname, topname)
+                md_traj = pytraj.iterload(trajname, topname) # type: ignore[import-untyped]
                 n_frames.add(md_traj.n_frames)
 
             else:
@@ -931,7 +936,7 @@ class AnalysisConfig:
 
         if self.parameters["trajectory_engine"] == "pytraj":
             try:
-                import pytraj
+                import pytraj # type: ignore[import-untyped]
                 msg += "pytraj {}\n".format(version('pytraj'))
                 msg += "cpptraj {}\n".format(pytraj.__cpptraj_internal_version__)
             except (PackageNotFoundError, ModuleNotFoundError):

@@ -517,7 +517,10 @@ Data:
 
 test_merged_pathset_str = """LayeredPathSet: data merged-unique of various cls
 Paths: 
- 0: ['merged-SP_1', 'merged-0_1', 'merged-1_1', 'merged-2_1', 'merged-3_1', 'merged-4_1', 'merged-5_1', 'merged-6_1', 'merged-7_1', 'merged-8_1', 'merged-8_2', 'merged-7_2', 'merged-6_2', 'merged-5_2', 'merged-5_3', 'merged-6_3', 'merged-7_3', 'merged-7_4', 'merged-8_3', 'merged-9_1']
+ 0: ['merged-SP_1' 'merged-0_1' 'merged-1_1' 'merged-2_1' 'merged-3_1'
+ 'merged-4_1' 'merged-5_1' 'merged-6_1' 'merged-7_1' 'merged-8_1'
+ 'merged-8_2' 'merged-7_2' 'merged-6_2' 'merged-5_2' 'merged-5_3'
+ 'merged-6_3' 'merged-7_3' 'merged-7_4' 'merged-8_3' 'merged-9_1']
 num nodes = 20
 Labels 20:
 ['merged-SP_1', 'merged-0_1', 'merged-1_1', 'merged-2_1', 'merged-3_1', 'merged-4_1', 'merged-5_1', 'merged-6_1', 'merged-7_1', 'merged-8_1', 'merged-8_2', 'merged-7_2', 'merged-6_2', 'merged-5_2', 'merged-5_3', 'merged-6_3', 'merged-7_3', 'merged-7_4', 'merged-8_3', 'merged-9_1']

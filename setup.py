@@ -26,7 +26,7 @@ install_requires = ['numpy>=1.17.3',
                     'hdbscan>=0.8.24',
                     'mdtraj',
                     'threadpoolctl',
-                    'joblib<1.2.0'
+                    'joblib'
                     ]
 
 with open('./README.md', 'r') as fh:

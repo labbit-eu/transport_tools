@@ -263,7 +263,7 @@ class TransportProcesses:
 
     def _compute_intercluster_distances(self, cluster_specifications: List[Tuple[str, int]],
                                         path_sets: Dict[Tuple[str, int], LayeredPathSet],
-                                        precision: int = 4) -> np.array:
+                                        precision: int = 4) -> np.ndarray:
         """
         Computes inter-cluster distance matrix
         :param cluster_specifications: definition of clusters
@@ -541,7 +541,7 @@ class TransportProcesses:
             if self._outlier_transport_events.exist():
                 self._outlier_transport_events.report_events_details("outlier_transport_events_details.txt")
 
-    def clear_results(self, overwrite: bool = False, output_folders: List[str] = None):
+    def clear_results(self, overwrite: bool = False, output_folders: Union[List[str], None] = None):
         """
         Removes output folder
         :param overwrite: if to perform the cleaning of non empty folder
@@ -574,7 +574,7 @@ class TransportProcesses:
                 else:
                     rmtree(output_path, True)
 
-    def _save_distance_matrix(self, distance_matrix: np.array, cluster_specifications: List[Tuple[str, int]],
+    def _save_distance_matrix(self, distance_matrix: np.ndarray, cluster_specifications: List[Tuple[str, int]],
                               cluster_characteristics: Dict[Tuple[str, int], Tuple[float, int]]):
         """
         Save pair-wise cluster distance matrix and cluster specifications to files
@@ -639,7 +639,7 @@ class TransportProcesses:
                                                              label_length=(label_length1 + label_length2))
                     out_stream.write(line)
 
-    def _load_distance_matrix(self) -> Tuple[np.array, List[Tuple[str, int]], Dict[Tuple[str, int], Tuple[float, int]]]:
+    def _load_distance_matrix(self) -> Tuple[np.ndarray, List[Tuple[str, int]], Dict[Tuple[str, int], Tuple[float, int]]]:
         """
         Loads distance matrix and cluster_specifications from files
         :return: distance matrix, cluster_specifications, cluster_characteristics
@@ -1417,7 +1417,7 @@ class TransportProcesses:
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict,
                                          sc_id: Optional[int] = None,
-                                         missing_value_default: float = 0) -> Dict[int, Dict[str, np.array]]:
+                                         missing_value_default: float = 0) -> Dict[int, Dict[str, np.ndarray]]:
         """
         For each MD simulation in specified supercluster, return array containing values of given tunnel property
         for each simulation frame
@@ -1572,7 +1572,7 @@ class EventAssigner:
 
         return list(directionally_fitting_super_clusters)
 
-    def perform_assignment(self) -> Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], np.array, float, float]:
+    def perform_assignment(self) -> Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], np.ndarray, float, float]:
         """
         Identifies most likely supercluster (SC) through which a single evaluated transport event occurred
         :return: event specification, array with IDs of SC to which the event is assigned, maximal buriedness and
@@ -1673,7 +1673,7 @@ class EventAssigner:
 
         return self.event_specification, buried_sc_ids, max_buriedness, max_depth
 
-    def _exact_event_tunnel_matching(self, considered_sc_ids: np.array) -> Dict[str, Dict[int, float]]:
+    def _exact_event_tunnel_matching(self, considered_sc_ids: np.ndarray) -> Dict[str, Dict[int, float]]:
         """
         Performs exact analyses of event with respect to tunnel clusters in frames during the event occurrence
         originating directly from the simulation sampling the event

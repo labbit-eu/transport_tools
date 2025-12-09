@@ -90,7 +90,7 @@ class Point:
 
 
 class PointMatrix:
-    def __init__(self, points_mat: np.array):
+    def __init__(self, points_mat: np.ndarray):
         """
         Class to handle points data
         :param points_mat: input points data
@@ -132,14 +132,14 @@ class PointMatrix:
 
         return self.points_mat.shape[0]
 
-    def get_whole_matrix(self) -> np.array:
+    def get_whole_matrix(self) -> np.ndarray:
         """
         Return numpy representation of this matrix
         """
 
         return self.points_mat
 
-    def alter_coords(self, new_xyz: np.array) -> np.array:
+    def alter_coords(self, new_xyz: np.ndarray) -> None:
         """
         Updates current coordinates of points with new set of coordinates
         :param new_xyz: new coordinates use
@@ -147,42 +147,42 @@ class PointMatrix:
 
         self.points_mat[:, :3] = new_xyz
 
-    def get_coords(self) -> np.array:
+    def get_coords(self) -> np.ndarray:
         """
         Return coordinates of all points in Matrix
         """
 
         return self.points_mat[:, :3]
 
-    def get_radii(self) -> np.array:
+    def get_radii(self) -> np.ndarray:
         """
         Return radii of all points in Matrix
         """
 
         return self.points_mat[:, self.radii_column]
 
-    def get_start_points_indexing(self) -> np.array:
+    def get_start_points_indexing(self) -> np.ndarray:
         """
         Return indices of points representing start of tunnels or events
         """
 
         return self.points_mat[:, self.points_ids_column] == 0
 
-    def get_end_points_indexing(self) -> np.array:
+    def get_end_points_indexing(self) -> np.ndarray:
         """
         Return indices of points representing end of tunnels or events
         """
 
         return self.points_mat[:, self.points_ids_column] < 0
 
-    def get_tunnels_ids(self) -> np.array:
+    def get_tunnels_ids(self) -> np.ndarray:
         """
         Return IDs of all tunnels(events) in Matrix
         """
 
         return self.points_mat[:, self.tunnel_ids_column].astype(int)
 
-    def get_points_ids4tunnel(self, tunnel_id: int) -> np.array:
+    def get_points_ids4tunnel(self, tunnel_id: int) -> np.ndarray:
         """
         Return IDs of points for particular tunnel(event)
         :param tunnel_id: ID of query tunnel
@@ -193,7 +193,7 @@ class PointMatrix:
 
 
 class ClusterInLayer:
-    def __init__(self, points_mat: np.array, thickness: float, quantile: float, end_point: bool = False,
+    def __init__(self, points_mat: np.ndarray, thickness: float, quantile: float, end_point: bool = False,
                  cls_id: int = -1, layer_id: int = -1):
         """
         Clusters representing original points in layers
@@ -221,10 +221,12 @@ class ClusterInLayer:
         if self.num_points > 0:
             self.compute_averages()
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "L{}".format(self.get_node_label())
 
-    def __eq__(self, other: ClusterInLayer):
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ClusterInLayer):
+           return False # differnt object
         return self.layer_id == other.layer_id and self.cls_id == other.cls_id
 
     def get_node_label(self) -> str:
@@ -282,6 +284,8 @@ class ClusterInLayer:
         :param tolerance: additional tolerance
         """
 
+        assert self.average is not None and self.rmsf is not None and self.radius is not None, \
+            "Cannot check representativeness before computing averages"
         distances = einsum_dist(self.get_coords(), self.average)
         dist2closest_point = np.min(distances)
         dist2furthest_point = np.max(distances)
@@ -308,7 +312,7 @@ class ClusterInLayer:
         self.matrix += other_cluster.matrix
         self.end_point = self.end_point or other_cluster.end_point
 
-    def get_coords(self) -> np.array:
+    def get_coords(self) -> np.ndarray:
         """
         Return coordinates of all points in this cluster
         """
@@ -331,7 +335,7 @@ class ClusterInLayer:
 
 
 class LayeredPathSet:
-    def __init__(self, entity_label: str, md_label: str, parameters: dict, starting_point_coords: np.matrix = None):
+    def __init__(self, entity_label: str, md_label: str, parameters: dict, starting_point_coords: Optional[np.matrix] = None):
         """
         Class for manipulation and analyses of simplified set of paths designed to represent original tunnel
          clusters or transport events
@@ -343,7 +347,7 @@ class LayeredPathSet:
 
         self.entity_label = entity_label
         self.md_label = md_label
-        self.node_paths: List[np.array] = list()
+        self.node_paths: List[np.ndarray] = list()
         self.starting_point_coords = starting_point_coords
         self.parameters = parameters
         self.traced_event: Optional[Tuple[str, Tuple[int, int]]] = None
@@ -351,13 +355,13 @@ class LayeredPathSet:
         self.characteristics = None
 
         # nodes_data = np.array of cluster.average, cluster.layer_id, cluster.end_point, cluster.radius, cluster.rmsf
-        if self.starting_point_coords is not None:  # include overall SP as the first node
+        if starting_point_coords is not None:  # include overall SP as the first node
             self.node_labels: List[str] = ["SP"]
             self.nodes_data = np.append(starting_point_coords,
                                         np.array([-1, 0, self.parameters["sp_radius"], 0.5])).reshape(1, -1)
         else:
             self.node_labels: List[str] = list()
-            self.nodes_data: Optional[np.array] = None
+            self.nodes_data: Optional[np.ndarray] = None
 
     def is_empty(self) -> bool:
         """
@@ -366,11 +370,14 @@ class LayeredPathSet:
 
         return len(self.node_paths) == 0
 
-    def transform_coordinates(self, transform_mat: np.array):
+    def transform_coordinates(self, transform_mat: np.ndarray):
         """
         Transform nodes coordinates forming this pathset according to the transformation matrix
         :param transform_mat: transformation matrix to be applied on the nodes coordinates
         """
+
+        if self.nodes_data is None: #should not be called from empty pahtset but to be safe
+            return  # Nothing to transform for empty pathset
 
         data4transform = np.append(self.nodes_data[:, 0:3],
                                    np.full((self.nodes_data[:, 0:3].shape[0], 1), 1.), axis=1).T
@@ -386,13 +393,17 @@ class LayeredPathSet:
             self.nodes_data[0, 0:3] = np.array([0., 0., 0.])
             self.nodes_data[0, 3] = -1.
 
-    def is_same(self, other: LayeredPathSet, precision: int=0.1) -> bool:
+    def is_same(self, other: LayeredPathSet, precision: float=0.1) -> bool:
         """
         Test if the pathset is same as the other pathset
         :param other: other pathset to compare with
-        :precision: tolerated deviation when comparing data 
+        :precision: tolerated deviation when comparing data
         :return: are two pathset same?
         """
+
+        # Handle empty pathsets
+        if self.nodes_data is None or other.nodes_data is None:
+            return self.nodes_data is None and other.nodes_data is None
 
         # compare basic structure
         if self.nodes_data.shape != other.nodes_data.shape:
@@ -488,17 +499,19 @@ class LayeredPathSet:
 
         event_type = self.entity_label.split("_")[1]
         if event_type == "entry":  # which frame ranges to report
-            frames_pos = 2
+            frame_range = traced_residue[2]
         else:
-            frames_pos = 3
+            frame_range = traced_residue[3]
 
-        self.traced_event = ("{}:{}".format(traced_residue[0], traced_residue[1]), traced_residue[frames_pos])
+        self.traced_event = ("{}:{}".format(traced_residue[0], traced_residue[1]), frame_range)
 
-    def _get_direction(self) -> np.array:
+    def _get_direction(self) -> np.ndarray:
         """
         Return average direction of path end-points in this set
         """
 
+        if self.nodes_data is None:
+            return np.array([0., 0., 0.])  # Return zero vector for empty pathset
         return np.average(self.nodes_data[self.nodes_data[:, 4] == 1, :3], axis=0)
 
     def _get_extended_labels4paths(self) -> List[List[str]]:
@@ -508,7 +521,7 @@ class LayeredPathSet:
         """
 
         if "data merged" in self.entity_label:  # to avoid extending names of already extended names
-            return self.node_paths
+            return [path.tolist() if isinstance(path, np.ndarray) else path for path in self.node_paths]
 
         node_paths = list()
         for path in self.node_paths:
@@ -632,6 +645,9 @@ class LayeredPathSet:
         if "data merged" not in self.entity_label:
             raise RuntimeError("This functionality is meant for merged pathset only")
 
+        if self.nodes_data is None:
+            return  # Nothing to deduplicate for empty pathset
+
         self.entity_label += "-unique"
         ids_for_removal = np.array([])
         labels = np.array(self.node_labels).astype(np.str_)
@@ -683,7 +699,7 @@ class LayeredPathSet:
 
                 # update labels in paths
                 for i, path in enumerate(self.node_paths):
-                    self.node_paths[i] = [combined_label if label in layer_dupes_labels else label for label in path]
+                    self.node_paths[i] = np.array([combined_label if label in layer_dupes_labels else label for label in path]).astype(np.str_)
 
         # removing duplicate data and labels
         self.nodes_data = np.delete(self.nodes_data, ids_for_removal, 0)
@@ -691,7 +707,7 @@ class LayeredPathSet:
         self.node_labels.extend(labels2add)
 
         # remove redundant paths created due to merging of duplicate clusters
-        redundant_path_ids = get_redundant_path_ids(dict(enumerate(self.node_paths)))
+        redundant_path_ids = get_redundant_path_ids({i: path.tolist() if isinstance(path, np.ndarray) else path for i, path in enumerate(self.node_paths)})
 
         unique_paths = list()
         for path_id, path in enumerate(self.node_paths):
@@ -705,10 +721,15 @@ class LayeredPathSet:
                 or self.starting_point_coords is not None and other_set.starting_point_coords is None:
             raise RuntimeError("Joining LayeredPathSet for tunnels and events is not possible")
 
+        #TODO unclear if we should not be able to merge one correct with one empty pathset
+        if self.nodes_data is None or other_set.nodes_data is None:
+            raise RuntimeError("Cannot merge pathsets with empty nodes_data")
+
         new_set = LayeredPathSet("data merged", "various cls", self.parameters, self.starting_point_coords)
         new_set.nodes_data = np.concatenate((self.nodes_data, other_set.nodes_data))
         new_set.node_labels = self._get_extended_labels4nodes() + other_set._get_extended_labels4nodes()
-        new_set.node_paths = self._get_extended_labels4paths() + other_set._get_extended_labels4paths()
+        new_set.node_paths = [np.array(path).astype(np.str_) for path in
+                              self._get_extended_labels4paths() + other_set._get_extended_labels4paths()]
 
         return new_set
 
@@ -781,8 +802,11 @@ class LayeredPathSet:
         msg = "LayeredPathSet: {} of {}\nPaths: \n".format(self.entity_label, self.md_label)
         for i, path in enumerate(self.node_paths):
             msg += "{:2d}: {}\n".format(i, path)
-        msg += "num nodes = {}\nLabels {}:\n{}\nData:\n{}".format(self.nodes_data.shape[0], len(self.node_labels),
-                                                                  self.node_labels, self.nodes_data)
+        if self.nodes_data is not None:
+            msg += "num nodes = {}\nLabels {}:\n{}\nData:\n{}".format(self.nodes_data.shape[0], len(self.node_labels),
+                                                                      self.node_labels, self.nodes_data)
+        else:
+            msg += "num nodes = 0\nLabels {}:\n{}\nData:\nNone".format(len(self.node_labels), self.node_labels)
         return msg
 
     def add_node_path(self, node_path: List[str], layers: Dict[int, Layer]):
@@ -793,7 +817,7 @@ class LayeredPathSet:
         :param layers: layers containing processed clusters
         """
 
-        def _generate_node_data(in_node_label) -> np.array:
+        def _generate_node_data(in_node_label) -> np.ndarray:
             """
             Generates data for the input node
             :param in_node_label: label of the node to process
@@ -832,8 +856,8 @@ class LayeredPathSet:
 
         self.node_paths.append(np.array(node_path).astype(np.str_))
 
-    def _get_adjacent_nodes_data(self, query_node_data: np.array, query_last_layer_id: float,
-                                 query_first_terminal_layer: float) -> Tuple[np.array, np.array]:
+    def _get_adjacent_nodes_data(self, query_node_data: np.ndarray, query_last_layer_id: float,
+                                 query_first_terminal_layer: float) -> Tuple[np.ndarray, np.ndarray]:
         """
         Get information on the nodes from this PathSet located in the same and surrounding layers as the query node
         :param query_node_data: data of the query node
@@ -869,9 +893,9 @@ class LayeredPathSet:
         return adjacent_nodes, adjacent_data
 
     @staticmethod
-    def _compute_distances(node_data: np.array, last_layer: float, first_terminal_layer: float,
+    def _compute_distances(node_data: np.ndarray, last_layer: float, first_terminal_layer: float,
                            eval_pathset: LayeredPathSet,
-                           consider_rmsf: bool = False) -> Iterable[Tuple[np.array, np.array, np.array, np.array]]:
+                           consider_rmsf: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
         """
         Computes three types of distances between considerd node and nodes in adjacent layers from evalulated pathset:
         Types of distances:
@@ -967,7 +991,7 @@ class LayeredPathSet:
 
         return dist_mat, inverted_dist_mat
 
-    def _get_terminal_node_labels(self) -> np.array:
+    def _get_terminal_node_labels(self) -> np.ndarray:
         """
         Return array with labels of terminal nodes in this pathset
         """
@@ -1004,7 +1028,7 @@ class LayeredPathSet:
 
         return min_dist, min_label
 
-    def _get_path_fragments(self, path: np.array, dividing_nodes: set) -> List[List[str]]:
+    def _get_path_fragments(self, path: np.ndarray, dividing_nodes: set) -> List[List[str]]:
         """
         Returns fragment of two paths from starting point to each of their terminal nodes
         :param path: evaluated path
@@ -1203,7 +1227,7 @@ class Layer:
         self.entity_label = entity_label
         self.md_label = md_label
 
-    def save_points(self, out_folder: str, save_points_prefix: str, transform_mat: np.array) -> List[str]:
+    def save_points(self, out_folder: str, save_points_prefix: str, transform_mat: np.ndarray) -> List[str]:
         """
         Save clusters (nodes) and their constituent points for visualization
         :param out_folder: folder to which PDB files with nodes will be saved
@@ -1212,7 +1236,7 @@ class Layer:
         :return: list of names of created PDB files
         """
 
-        def _subsample_points(in_cluster: ClusterInLayer, random_seed: int, max_points: int) -> np.array:
+        def _subsample_points(in_cluster: ClusterInLayer, random_seed: int, max_points: int) -> np.ndarray:
             """
             Randomly selects coordinates of limited number of points from a cluster
             :param in_cluster: evaluated cluster
@@ -1254,7 +1278,7 @@ class Layer:
 
         return filenames
 
-    def _out_filtering(self, points_coords: np.array) -> np.array:
+    def _out_filtering(self, points_coords: np.ndarray) -> np.ndarray:
         """
         Filters out outlying points from this layer based on their coordinates
         :param points_coords: cartesian coordinates of points for outlier filtering
@@ -1274,7 +1298,7 @@ class Layer:
         else:
             return clustering
 
-    def _cluster_data(self, points_coords: np.array) -> np.array:
+    def _cluster_data(self, points_coords: np.ndarray) -> np.ndarray:
         """
         Perform clustering/outlier filtering of points from this layer based on their coordinates
         :param points_coords: cartesian coordinates of points for data clustering
@@ -1352,7 +1376,7 @@ class Layer:
 
         return new_cluster_id
 
-    def _generate_clusters_from_data(self, points_mat: np.array, clustering: np.array, end_point: bool = False):
+    def _generate_clusters_from_data(self, points_mat: np.ndarray, clustering: np.ndarray, end_point: bool = False):
         """
         Based on clustering of points, creates clusters of points in this layer.
         Clusters are added in spatially sorted order to ensure stable, deterministic labeling.
@@ -1377,10 +1401,10 @@ class Layer:
         for cluster in cluster_objects:
              self.add_cluster(cluster)
 
-    def _make_layered_clusters(self, points_mat: np.array):
+    def _make_layered_clusters(self, points_mat: np.ndarray):
         raise NotImplementedError("Provide implementation of this method.")
 
-    def _assure_end_points(self, end_points_mat: np.array):
+    def _assure_end_points(self, end_points_mat: np.ndarray):
         """
         Creates layered clusters from points that represent ends of layered entities (tunnel clusters or events)
         :param end_points_mat: data of end-points
@@ -1420,7 +1444,7 @@ class Layer:
 
         return self.num_points > 0
 
-    def cluster_data(self, points_mat: np.array):
+    def cluster_data(self, points_mat: np.ndarray):
         """
         Perform clustering of data of points assigned to this layer, separately for common points and end points,
         finally representativeness of formed clusters is enforced
@@ -1463,7 +1487,7 @@ class LayeredRepresentation:
 
         self.entity_label = entity_label
         self.parameters = parameters
-        self.points_mat: Optional[np.array] = None
+        self.points_mat: Optional[np.ndarray] = None
         self.layer_thickness = self.parameters["layer_thickness"]
         self.layers: Optional[Dict[int, Layer]] = None
         self.save_points_folder: Optional[str] = None
@@ -1526,7 +1550,7 @@ class LayeredRepresentation:
                             self.layers[layer_id].add_cluster(new_cluster)
 
     def _get_unique_pathset(self, putative_paths: Dict[int, List[str]],
-                            starting_point_coords: np.array) -> LayeredPathSet:
+                            starting_point_coords: np.ndarray) -> LayeredPathSet:
         """
         Create LayeredPathsSet object from node paths, storing only unique paths that are not subset of another path
         :param putative_paths: input node paths
@@ -1551,7 +1575,7 @@ class LayeredRepresentation:
 
         self.points_mat = source_entity.get_points_data()
 
-    def prep_visualization(self, layered_paths: List[str], transform_mat: np.array, show_original_data: bool = False):
+    def prep_visualization(self, layered_paths: List[str], transform_mat: np.ndarray, show_original_data: bool = False):
         """
         Prepare visualization of the layered representation - clusters (nodes) and representative paths
         :param layered_paths: analyzed node path = list of node labels
@@ -1627,7 +1651,7 @@ class LayeredRepresentation:
 
         return point2cluster_map
 
-    def find_representative_paths(self, transform_mat: np.array,  starting_point_coord: np.array,
+    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coord: np.ndarray,
                                   visualize: bool = False) -> LayeredPathSet:
         raise NotImplementedError("Provide implementation of this method.")
 
@@ -1721,7 +1745,7 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
         else:
             return coarse_grained_path
 
-    def find_representative_paths(self, transform_mat: np.array, starting_point_coords: np.array,
+    def find_representative_paths(self, transform_mat: np.ndarray, starting_point_coords: np.ndarray,
                                   visualize: bool = False) -> LayeredPathSet:
         """
         Find representative paths leading from starting point to terminal clusters (nodes)
@@ -1834,7 +1858,7 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
 
         self._merge_duplicate_clusters()
 
-    def find_representative_paths(self, transform_mat: np.array,  starting_point_coords: np.array = None,
+    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coords: np.ndarray = None,
                                   visualize: bool = False) -> LayeredPathSet:
         """
         Find representative paths leading from starting point to terminal clusters (nodes)
@@ -1869,7 +1893,7 @@ class Layer4Tunnels(Layer):
     def __init__(self, layer_id: int, layer_thickness: float, parameters: dict, entity_label: str, md_label: str):
         Layer.__init__(self, layer_id, layer_thickness, parameters, entity_label, md_label)
 
-    def _make_layered_clusters(self, points_mat: np.array):
+    def _make_layered_clusters(self, points_mat: np.ndarray):
         """
         Create clusters from points in this layer
         :param points_mat: points data
@@ -1883,7 +1907,7 @@ class Layer4Events(Layer):
     def __init__(self, layer_id: int, layer_thickness: float, parameters: dict, entity_label: str, md_label: str):
         Layer.__init__(self, layer_id, layer_thickness, parameters, entity_label, md_label)
 
-    def _make_layered_clusters(self, points_mat: np.array):
+    def _make_layered_clusters(self, points_mat: np.ndarray):
         """
         Create clusters from points in this layer
         :param points_mat: points data
@@ -2000,7 +2024,7 @@ def remove_loops_from_path(node_path: List[str]) -> Optional[List[str]]:
     return direct_path
 
 
-def assign_layer_from_distances(distances: np.array, layer_thickness: float) -> Tuple[np.array, np.array]:
+def assign_layer_from_distances(distances: np.ndarray, layer_thickness: float) -> Tuple[np.ndarray, np.ndarray]:
     """
     Calculate membership of points in layers based on point distance form starting point and the layer thickness
     :param distances: distance of points from starting point
@@ -2017,7 +2041,7 @@ def assign_layer_from_distances(distances: np.array, layer_thickness: float) -> 
     return np.unique(layers_membership).astype(int), layers_membership
 
 
-def get_layer_id_from_distance(distances: np.array, layer_thickness: float) -> np.array:
+def get_layer_id_from_distance(distances: np.ndarray, layer_thickness: float) -> np.ndarray:
     """
     Calculate layers for points based on their distances form starting point and the layer thickness
     :param distances: distance of points from starting point
@@ -2031,7 +2055,7 @@ def get_layer_id_from_distance(distances: np.array, layer_thickness: float) -> n
     return np.ceil(np.ceil(distances) / layer_thickness) - 1
 
 
-def read_starting_points(tunnel_origin_file: str) -> np.array:
+def read_starting_points(tunnel_origin_file: str) -> np.ndarray:
     """
     Extracts ensemble of coordinates of starting points from origin_file
     :param tunnel_origin_file: file with caver starting points
@@ -2053,7 +2077,7 @@ def read_starting_points(tunnel_origin_file: str) -> np.array:
     return starting_points[1:]
 
 
-def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> Tuple[np.array, str]:
+def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> Tuple[np.ndarray, str]:
     """
     Computes the average coordinates of starting points from origin_file
     :param tunnel_origin_file: file with caver starting points
@@ -2065,7 +2089,7 @@ def average_starting_point(tunnel_origin_file: str, md_label: str = "") -> Tuple
     return np.mean(starting_points, axis=0).reshape(4, 1), md_label
             
 
-def cart2spherical(xyz: np.array) -> np.array:
+def cart2spherical(xyz: np.ndarray) -> np.ndarray:
     """
     Converts cartesian coordinates to spherical ones
     :param xyz: cartesian coords
@@ -2080,7 +2104,7 @@ def cart2spherical(xyz: np.array) -> np.array:
     return np.array([r, theta, phi])
 
 
-def vector_angle(v1: np.array, v2: np.array) -> float:
+def vector_angle(v1: np.ndarray, v2: np.ndarray) -> float:
     """
     Returns angle between two vectors
     :param v1: input vector
@@ -2094,7 +2118,7 @@ def vector_angle(v1: np.array, v2: np.array) -> float:
     return np.arctan2(sinang, cosang)
 
 
-def einsum_dist(xyz1: np.array, xyz2: np.array):
+def einsum_dist(xyz1: np.ndarray, xyz2: np.ndarray):
     """
     Calculates distance between two points in computationally rather efficient manner
     :param xyz1: coordinates of the first point
