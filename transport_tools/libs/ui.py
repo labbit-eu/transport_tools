@@ -208,6 +208,8 @@ def set_logging_level(level: str):
         "NOTSET": logging.NOTSET,
     }
 
+    if _CONSOLE_HANDLER is None:
+        raise RuntimeError("Logging has not been initialized. Call init_logging() first.")
     _CONSOLE_HANDLER.setLevel(mapping.get(level, logging.NOTSET))
 
 

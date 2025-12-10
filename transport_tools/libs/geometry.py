@@ -34,7 +34,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.cluster import DBSCAN, KMeans, AgglomerativeClustering
 from transport_tools.libs.protein_files import VizAtom
 from transport_tools.libs.utils import node_labels_split, convert_coords2cgo, get_caver_color
-from typing import Dict, List, Optional, Set, Tuple, Union, TYPE_CHECKING, Iterable
+from typing import Dict, List, Mapping, Set, Tuple, TYPE_CHECKING, Iterable
 if TYPE_CHECKING:  # to enable type_checking without cyclic imports
     from transport_tools.libs.networks import Tunnel, TransportEvent
 
@@ -326,17 +326,17 @@ class ClusterInLayer:
         """
 
         self.average = np.average(self.get_coords(), axis=0)
-        squares = np.power(einsum_dist(self.get_coords(), self.average), 2)
+        squares = np.power(einsum_dist(self.get_coords(), self.average), 2)  # type: ignore[arg-type]
         self.rmsf = np.sqrt(np.average(squares))
 
         # to represent occupied void, we want to have quite large radius from the distribution but avoiding extremes
-        self.radius = np.quantile(self.matrix.get_radii(), self.quantile)
+        self.radius = float(np.quantile(self.matrix.get_radii(), self.quantile))
         self.num_end_points = self.matrix.get_coords()[self.matrix.get_end_points_indexing()].shape[0]
         self.start_point = self.matrix.get_start_points_indexing().any()  # contain starting points of tunnels
 
 
 class LayeredPathSet:
-    def __init__(self, entity_label: str, md_label: str, parameters: dict, starting_point_coords: Optional[np.matrix] = None):
+    def __init__(self, entity_label: str, md_label: str, parameters: dict, starting_point_coords: np.ndarray | None = None):
         """
         Class for manipulation and analyses of simplified set of paths designed to represent original tunnel
          clusters or transport events
@@ -351,7 +351,7 @@ class LayeredPathSet:
         self.node_paths: List[np.ndarray] = list()
         self.starting_point_coords = starting_point_coords
         self.parameters = parameters
-        self.traced_event: Optional[Tuple[str, Tuple[int, int]]] = None
+        self.traced_event: Tuple[str, Tuple[int, int]] | None = None
         self.node_depths: Dict[str, float] = dict()
         self.characteristics: Tuple[float, int] | None = None
 
@@ -362,7 +362,7 @@ class LayeredPathSet:
                                         np.array([-1, 0, self.parameters["sp_radius"], 0.5])).reshape(1, -1)
         else:
             self.node_labels: List[str] = list()
-            self.nodes_data: Optional[np.ndarray] = None
+            self.nodes_data: np.ndarray | None = None
 
     def is_empty(self) -> bool:
         """
@@ -722,7 +722,7 @@ class LayeredPathSet:
                 or self.starting_point_coords is not None and other_set.starting_point_coords is None:
             raise RuntimeError("Joining LayeredPathSet for tunnels and events is not possible")
 
-        #TODO unclear if we should not be able to merge one correct with one empty pathset
+        #TODO unclear if we should not be able to merge one correct with one empty pathset despite passing tests
         if self.nodes_data is None or other_set.nodes_data is None:
             raise RuntimeError("Cannot merge pathsets with empty nodes_data")
 
@@ -810,7 +810,7 @@ class LayeredPathSet:
             msg += "num nodes = 0\nLabels {}:\n{}\nData:\nNone".format(len(self.node_labels), self.node_labels)
         return msg
 
-    def add_node_path(self, node_path: List[str], layers: Dict[int, Layer]):
+    def add_node_path(self, node_path: List[str], layers: Mapping[int, Layer]):
         """
         Add path of node labels representing the original entity (tunnel cluster or transport event) and the data for
         clusters visited along the path to this pathset
@@ -948,6 +948,9 @@ class LayeredPathSet:
             missing_node: dict()
         }
 
+        if other.nodes_data is None:
+            raise ValueError(f"Empty pathset {other} should not be processed")
+
         missing_node_data = dict(zip(other.node_labels, other.nodes_data))[missing_node]
         last_layer = np.max(other.nodes_data[:, 3])
 
@@ -1015,7 +1018,7 @@ class LayeredPathSet:
 
     @staticmethod
     def _get_dist2closest_node(node_label: str, dist_mat: Dict[str, Dict[str, Tuple[float, float, float]]],
-                               dist_type: int = 1, nodes_subset: Optional[Set[str]] = None) -> Tuple[float, str]:
+                               dist_type: int = 1, nodes_subset: Set[str] | None = None) -> Tuple[float, str]:
         """
         Finds surface distance from query node to the closest node in the distance matrix
         :param node_label: label of query node
@@ -1265,7 +1268,7 @@ class Layer:
             if len(coords) > max_points:
                 random_point = coords.copy()
                 random.seed(random_seed)  # to have consistent results
-                random.shuffle(random_point)
+                random.shuffle(random_point)  # type: ignore[arg-type]
                 return random_point[:max_points]
             else:
                 return coords
@@ -1329,7 +1332,7 @@ class Layer:
                 cluster_method = AgglomerativeClustering(n_clusters=None, metric="euclidean", linkage="average",
                                                         distance_threshold=2)
             except TypeError:
-                cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average",
+                cluster_method = AgglomerativeClustering(n_clusters=None, affinity="euclidean", linkage="average",  # type: ignore[call-arg]
                                                         distance_threshold=2)
 
         elif num_points == 1:
@@ -1503,18 +1506,21 @@ class LayeredRepresentation:
 
         self.entity_label = entity_label
         self.parameters = parameters
-        self.points_mat: Optional[np.ndarray] = None
+        self.points_mat: np.ndarray | None = None
         self.layer_thickness = self.parameters["layer_thickness"]
-        self.layers: Optional[Dict[int, Layer]] = None
-        self.save_points_folder: Optional[str] = None
+        self.layers: Dict[int, Layer] | None = None
+        self.save_points_folder: str | None = None
         self.md_label = self.parameters["md_label"]
-        self.original_data_path: Optional[str] = None
-        self.visualization_prefix: Optional[str] = None
+        self.original_data_path: str | None = None
+        self.visualization_prefix: str | None = None
 
     def _merge_duplicate_clusters(self):
         """
         Merge similar clusters of points in each layer separately
         """
+
+        if self.layers is None:
+            raise ValueError(f"Layers not initialized for {self.entity_label}")
 
         # this must be limited to single layer, otherwise we can loose inter-layer connections
         for layer_id in self.layers.keys():
@@ -1522,11 +1528,16 @@ class LayeredRepresentation:
 
             if len(clusters) > 1:
                 keys = list(clusters.keys())
-                values = clusters[keys[0]].average.reshape(1, 3)  # initialize with first item
+                first_cluster = clusters[keys[0]]
+                if first_cluster.average is None:
+                    raise ValueError(f"Cluster {keys[0]} in layer {layer_id} has not computed averages")
+                values = first_cluster.average.reshape(1, 3)  # initialize with first item
                 ids = [keys[0]]
 
                 for cls_id in keys[1:]:
                     cluster = clusters[cls_id]
+                    if cluster.average is None:
+                        raise ValueError(f"Cluster {cls_id} in layer {layer_id} has not computed averages")
                     ids.append(cls_id)
                     values = np.concatenate((values, cluster.average.reshape(1, 3)), axis=0)
 
@@ -1572,6 +1583,9 @@ class LayeredRepresentation:
         :return: path set with unique node paths
         """
 
+        if self.layers is None:
+            raise ValueError(f"Layers not initialized for {self.entity_label}")
+
         unique_path_ids = set(putative_paths.keys()) - get_redundant_path_ids(putative_paths)
 
         layered_path_set = LayeredPathSet(self.entity_label, self.md_label, self.parameters, starting_point_coords)
@@ -1581,7 +1595,7 @@ class LayeredRepresentation:
 
         return layered_path_set
 
-    def load_points(self, source_entity: Union[Tunnel, TransportEvent]):
+    def load_points(self, source_entity: Tunnel | TransportEvent):
         """
         Load data of points from the original entity (tunnel cluster or transport event)
         :param source_entity: the original entity from which data is to be extracted
@@ -1589,10 +1603,10 @@ class LayeredRepresentation:
 
         self.points_mat = source_entity.get_points_data()
 
-    def prep_visualization(self, layered_paths: List[str], transform_mat: np.ndarray, show_original_data: bool = False):
+    def prep_visualization(self, layered_paths: List[np.ndarray], transform_mat: np.ndarray, show_original_data: bool = False):
         """
         Prepare visualization of the layered representation - clusters (nodes) and representative paths
-        :param layered_paths: analyzed node path = list of node labels
+        :param layered_paths: analyzed node paths = list of arrays of node labels
         :param transform_mat: transformation matrix to transform output pathset
         :param show_original_data: should original data be visualized too
         """
@@ -1605,6 +1619,9 @@ class LayeredRepresentation:
 
         if self.visualization_prefix is None:
             raise ValueError("Variable 'self.visualization_prefix' is not specified")
+
+        if self.layers is None:
+            raise ValueError(f"Layers not initialized for {self.entity_label}")
 
         out_folder = os.path.join(self.save_points_folder, "nodes")
         script_path = os.path.join(self.save_points_folder, "{}.py".format(self.entity_label))
@@ -1653,6 +1670,8 @@ class LayeredRepresentation:
         Make inverse mapping of pointsID to Clusters (nodes) to which they belong for all original entities
         :return: map of points to node label per original entity (tunnel, event)
         """
+        if self.layers is None:
+            raise ValueError(f"Layers not initialized for {self.entity_label}")
 
         point2cluster_map = dict()
         for layer in self.layers.values():
@@ -1665,7 +1684,7 @@ class LayeredRepresentation:
 
         return point2cluster_map
 
-    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coord: np.ndarray,
+    def find_representative_paths(self, transform_mat: np.ndarray,  starting_point_coords: np.ndarray,
                                   visualize: bool = False) -> LayeredPathSet:
         raise NotImplementedError("Provide implementation of this method.")
 
@@ -1679,7 +1698,7 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
         """
 
         LayeredRepresentation.__init__(self, parameters, entity_label)
-        self.layers: Dict[int, Layer4Tunnels] = dict()
+        self.layers: Dict[int, Layer4Tunnels] = dict()  # type: ignore[assignment]
         self.save_points_folder = os.path.join(self.parameters["layered_caver_vis_path"], self.md_label)
 
         cls_id = int(entity_label.split("_")[1])
@@ -1693,8 +1712,10 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
 
         new = LayeredRepresentationOfTunnels(self.parameters, self.entity_label)
 
-        if self.points_mat is not None:
+        if self.points_mat is not None and other.points_mat is not None:
             new.points_mat = np.concatenate((self.points_mat, other.points_mat))
+        elif self.points_mat is not None:
+            new.points_mat = self.points_mat
         else:
             new.points_mat = other.points_mat
 
@@ -1726,7 +1747,7 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
 
         self._merge_duplicate_clusters()
 
-    def _validate_path(self, coarse_grained_path: List[str]) -> Optional[List[str]]:
+    def _validate_path(self, coarse_grained_path: List[str]) -> List[str] | None:
         """
         Check if the node path is continuous through the layers and ends at node with actual tunnel endpoint
         :param coarse_grained_path: path consisting of node labels produced by get_coarse_grained_path()
@@ -1773,8 +1794,10 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
         clusters2reassign = list()
         for layer in self.layers.values():
             for cluster in layer.clusters.values():
+                if cluster.average is None:
+                    raise ValueError(f"Cluster {cluster.cls_id} in layer {cluster.layer_id} has not computed averages")
                 distance2origin = einsum_dist(cluster.average, starting_point_coords)
-                global_layer = int(assign_layer_from_distances([distance2origin],
+                global_layer = int(assign_layer_from_distances(np.array([distance2origin]),
                                                                self.parameters["layer_thickness"])[1][0])
                 if cluster.layer_id != global_layer and len(self.layers[cluster.layer_id].clusters.keys()) > 1:
                     # mismatch, need to move cluster to different layer, which we can do without emptying whole layer
@@ -1833,7 +1856,7 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
         """
 
         LayeredRepresentation.__init__(self, parameters, entity_label)
-        self.layers: Dict[int, Layer4Events] = dict()
+        self.layers: Dict[int, Layer4Events] = dict()  # type: ignore[assignment]
         self.save_points_folder = os.path.join(self.parameters["layered_aquaduct_vis_path"], self.md_label)
 
         event_id = int(entity_label.split("_")[0])
@@ -1848,8 +1871,10 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
 
         new = LayeredRepresentationOfEvents(self.parameters, self.entity_label)
 
-        if self.points_mat is not None:
+        if self.points_mat is not None and other.points_mat is not None:
             new.points_mat = np.concatenate((self.points_mat, other.points_mat))
+        elif self.points_mat is not None:
+            new.points_mat = self.points_mat
         else:
             new.points_mat = other.points_mat
 

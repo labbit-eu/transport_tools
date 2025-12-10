@@ -23,7 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 from logging import getLogger
 import numpy as np
 import os
-from typing import Optional, Tuple, Dict
+from typing import Tuple, Dict
 from transport_tools.libs.utils import test_file, get_filepath
 import Bio.PDB
 import Bio.Align
@@ -192,6 +192,8 @@ class TrajectoryMdtraj(TrajectoryTT):
                 fitted_traj = md_frame
             else:
                 fitted_traj = mdtraj.join((fitted_traj, md_frame), check_topology=False)
+
+        assert fitted_traj is not None
 
         if out_file is not None:
             fitted_traj.save_pdb(out_file)
@@ -607,8 +609,10 @@ def transform_aquaduct(md_label: str, tar_file: str, aquaduct_results_pdb_filena
     fd, pdb_filename_from_tar = mkstemp(suffix=".pdb")
     tar_handle = tarfile.open(tar_file, "r:gz")
     with open(pdb_filename_from_tar, "wb") as out_stream:
-        data = tar_handle.extractfile(aquaduct_results_pdb_filename).read()
-        out_stream.write(data)
+        extracted_file = tar_handle.extractfile(aquaduct_results_pdb_filename)
+        if extracted_file is None:
+           raise ValueError(f"File '{aquaduct_results_pdb_filename}' not found in tarfile '{tar_file}'")
+        out_stream.write(extracted_file.read())
     _matrix, _md_label = get_transform_matrix(pdb_filename_from_tar, reference_pdb_file, md_label)
     os.close(fd)
     os.remove(pdb_filename_from_tar)

@@ -24,7 +24,7 @@ import os
 import pickle
 import numpy as np
 import fastcluster
-from typing import List, Dict, Tuple, Union, Optional
+from typing import List, Dict, Tuple
 from scipy.cluster.hierarchy import fcluster
 from multiprocessing import Pool
 from transport_tools.libs.config import AnalysisConfig
@@ -220,7 +220,7 @@ class TransportProcesses:
         self._super_clusters: Dict[int, SuperCluster] = dict()
         self._prioritized_clusters: Dict[int, int] = dict()  # maps original and prioritized IDs of superclusters
         self._outlier_transport_events = OutlierTransportEvents(self.parameters)
-        self._active_filters: Dict[str, Union[Tuple[float, float], float, int]] = define_filters()  # none active
+        self._active_filters: Dict[str, Tuple[float, float] | float | int] = define_filters()  # none active
         self._events_assigned = False
         self.vis_flag = 0
         self.filter_flag = 0
@@ -396,9 +396,17 @@ class TransportProcesses:
         :return: string containing info on active filters and pre-filters
         """
 
-        pr_min_length, pr_max_length = self._active_filters["length"]
-        pr_min_radius, pr_max_radius = self._active_filters["radius"]
-        pr_min_curvature, pr_max_curvature = self._active_filters["curvature"]
+        length_filter = self._active_filters["length"]
+        assert isinstance(length_filter, tuple), f"Expected tuple for 'length' filter but got {type(length_filter).__name__}"
+        pr_min_length, pr_max_length = length_filter
+
+        radius_filter = self._active_filters["radius"]
+        assert isinstance(radius_filter, tuple), f"Expected tuple for 'radius' filter but got {type(radius_filter).__name__}"
+        pr_min_radius, pr_max_radius = radius_filter
+
+        curvature_filter = self._active_filters["curvature"]
+        assert isinstance(curvature_filter, tuple), f"Expected tuple for 'curvature' filter but got {type(curvature_filter).__name__}"
+        pr_min_curvature, pr_max_curvature = curvature_filter
         min_sims_num = self._active_filters["min_sims_num"]
         min_snapshots_num = self._active_filters["min_snapshots_num"]
         min_avg_snapshots_num = self._active_filters["min_avg_snapshots_num"]
@@ -450,7 +458,7 @@ class TransportProcesses:
                     del self._super_clusters[sc_id].tunnel_clusters  # remove extensive data
                     progressbar(i + 1, items2process)
 
-    def assign_transport_events(self, md_labels: Optional[List[str]] = None):
+    def assign_transport_events(self, md_labels: List[str] | None = None):
         """
         Finds superclusters (SCs) through evaluated transport event happened, and assigns remaining events as outliers;
         this changes  self._events_assigned = True, enabling consideration of transport events during filtering
@@ -541,7 +549,7 @@ class TransportProcesses:
             if self._outlier_transport_events.exist():
                 self._outlier_transport_events.report_events_details("outlier_transport_events_details.txt")
 
-    def clear_results(self, overwrite: bool = False, output_folders: Union[List[str], None] = None):
+    def clear_results(self, overwrite: bool = False, output_folders: List[str] | None = None):
         """
         Removes output folder
         :param overwrite: if to perform the cleaning of non empty folder
@@ -673,6 +681,8 @@ class TransportProcesses:
 
                 for cls_id, layered_path_set in tunnel_network.layered_entities.items():
                     cluster_specification = (md_label, cls_id)
+                    if layered_path_set.characteristics is None:
+                        raise RuntimeError(f"Variable 'characteristics' is not specified for tunnel cluster {cls_id} in {md_label}")
                     avg_throughput, num_tunnels = layered_path_set.characteristics
                     cluster_characteristics[cluster_specification] = layered_path_set.characteristics
                     importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels, md_label)
@@ -763,6 +773,7 @@ class TransportProcesses:
                 tunnel_network = TunnelNetwork(self.parameters, md_label)
                 tunnel_network.load_layered_network()
                 for cls_id, layered_path_set in tunnel_network.layered_entities.items():
+                    assert isinstance(cls_id, int), f"Expected int but got {type(cls_id).__name__}"
                     cluster_specification = (md_label, cls_id)
                     sc_id = label_order[cluster_specs2label[cluster_specification]]
                     if self._does_super_cluster_exist(sc_id):
@@ -1218,6 +1229,8 @@ class TransportProcesses:
                         labels2process -= set(md_labels)
                         num_sim[group] = len(md_labels)
 
+            cat_stream1 = None
+            cat_stream2 = None
             if self.parameters["perform_comparative_analysis"]:
                 os.makedirs(os.path.join(self.parameters["statistics_folder"], "comparative_analysis"), exist_ok=True)
                 cat_stream1 = open(os.path.join(self.parameters["statistics_folder"], "comparative_analysis",
@@ -1294,7 +1307,7 @@ class TransportProcesses:
                         output += self._outlier_transport_events.report_summary_line(out_widths, md_label)
 
                     out_stream.write(output)
-                    if "overall" not in md_label:
+                    if "overall" not in md_label and cat_stream1 is not None:
                         cat_stream1.write(output + "-" * 160 + "\n\n\n")
 
                 if self.parameters["process_bottleneck_residues"]:
@@ -1321,13 +1334,13 @@ class TransportProcesses:
                             output += "\n"
 
                         out_stream2.write(output)
-                        if "overall" not in md_label:
+                        if "overall" not in md_label and cat_stream2 is not None:
                             cat_stream2.write(output + "-" * 160 + "\n\n\n")
 
-            if self.parameters["perform_comparative_analysis"]:
+            if cat_stream1 is not None:
                 cat_stream1.close()
-                if self.parameters["process_bottleneck_residues"]:
-                    cat_stream2.close()
+            if cat_stream2 is not None:
+                cat_stream2.close()
 
     def save_super_clusters_visualization(self, script_name: str = "view_super_clusters.py"):
         """
@@ -1415,8 +1428,7 @@ class TransportProcesses:
                             p.get()
                             progressbar(i + 1, items2process)
 
-    def get_property_time_evolution_data(self, property_name: str, active_filters: dict,
-                                         sc_id: Optional[int] = None,
+    def get_property_time_evolution_data(self, property_name: str, active_filters: dict, sc_id: int | None = None,
                                          missing_value_default: float = 0) -> Dict[int, Dict[str, np.ndarray]]:
         """
         For each MD simulation in specified supercluster, return array containing values of given tunnel property
@@ -1439,9 +1451,8 @@ class TransportProcesses:
 
         return data
 
-    def show_tunnels_passing_filter(self, sc_id: int, active_filters: dict, out_folder_path: str,
-                                    md_labels: Optional[List[str]] = None,  start_snapshot: Optional[int] = None,
-                                    end_snapshot: Optional[int] = None, trajectory: bool = False):
+    def show_tunnels_passing_filter(self, sc_id: int, active_filters: dict, out_folder_path: str, md_labels: List[str] | None = None,  
+                                    start_snapshot: int | None = None, end_snapshot: int | None = None, trajectory: bool = False):
         """
         Visualize tunnels from particular supercluster that fulfill active_filters, possibly showing only particular
          snapshots, selected MD simulations and providing pdb file with corresponding protein ensemble
@@ -1454,7 +1465,7 @@ class TransportProcesses:
         :param trajectory: if we should visualize tunnels per MD simulation trajectory with protein ensembles
         """
 
-        def _save_pymol_script(_vis_inputs: List[Tuple[str, str, int]], _md_label: Optional[str] = None):
+        def _save_pymol_script(_vis_inputs: List[Tuple[str, str, int]], _md_label: str | None = None):
             """
             Prepare Pymol visualization script for given clusters, possibly limited to single MD trajectory
             :param _vis_inputs: data on clusters to visualize (filename, Pymol object label, CAVER color id)
@@ -1560,8 +1571,8 @@ class EventAssigner:
         directionally_fitting_super_clusters = set()
         # compute direction of transport_event based on its terminal node
         try:
-            event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
-        except IndexError:
+            event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])  # type: ignore[index]
+        except (IndexError, TypeError):
             logger.debug("Event {} could not be assigned\n".format(self.event.entity_label))
             return list()
 
@@ -1572,7 +1583,7 @@ class EventAssigner:
 
         return list(directionally_fitting_super_clusters)
 
-    def perform_assignment(self) -> Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], np.ndarray, float, float]:
+    def perform_assignment(self) -> Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], np.ndarray | None, float, float]:
         """
         Identifies most likely supercluster (SC) through which a single evaluated transport event occurred
         :return: event specification, array with IDs of SC to which the event is assigned, maximal buriedness and
@@ -1644,6 +1655,9 @@ class EventAssigner:
 
             if not self.parameters["perform_exact_matching_analysis"]:  # not to run this twice
                 buriedness = self._exact_event_tunnel_matching(buried_sc_ids)
+
+            if buriedness is None:
+                raise RuntimeError("Variable 'buriedness' should be set by exact matching analysis")
 
             for sc_id in buried_sc_ids:
                 msg += "Exact matching of transport event '{:s}' to " \
@@ -1741,6 +1755,7 @@ class EventAssigner:
                             cluster_id = cluster.cluster_id
                             closest_xyz = xyz
                 if closest_sphere is not None:
+                    assert closest_xyz is not None, "closest_xyz should be set when closest_sphere is set"
                     if closest_tunnels_data is None:
                         new_data = np.append(np.array([frame, min_dist2sphere, cluster_id]), closest_sphere)
                         new_data = np.insert(new_data, 1, closest_xyz)
@@ -1764,7 +1779,7 @@ class EventAssigner:
 
             if perform_exact_matching_analysis:
                 # save info on matching to files
-                details_file = os.path.join(details_path, "{}_sc{}.txt".format(self.event_specification[1], sc_id))
+                details_file = os.path.join(details_path, "{}_sc{}.txt".format(self.event_specification[1], sc_id))  # type: ignore[arg-type]
                 with open(details_file, "w") as out_stream:
                     out_stream.write("Exact matching of transport event '{:s}' to tunnels from "
                                      "Supercluster {:d} \n".format(str(self.event_specification), sc_id))
@@ -1802,11 +1817,9 @@ class EventAssigner:
         return buriedness
 
 
-def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int,
-                                end_frame: int, caver_traj_offset: int,
-                                caver_clusters: Optional[List[TunnelCluster]] = None,
-                                start_snapshot: Optional[int] = None, end_snapshot: Optional[int] = None,
-                                resids: Optional[List[int]] = None):
+def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int, end_frame: int, caver_traj_offset: int,
+                                caver_clusters: List[TunnelCluster] | None = None, start_snapshot: int | None = None, end_snapshot: int | None = None,
+                                resids: List[int] | None = None):
     """
     Visualize dynamics of tunnels and/or events in given set of frames together with biomolecule
     :param out_folder_path: output folder path
@@ -1822,14 +1835,14 @@ def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, 
 
     if start_snapshot is None and end_snapshot is None:
         snap_ids = [x + caver_traj_offset for x in range(start_frame, end_frame + 1)]
-    elif start_snapshot is None:
+    elif start_snapshot is None and end_snapshot is not None:
         start_snapshot = start_frame + caver_traj_offset
         snap_ids = [*range(start_snapshot, end_snapshot + 1)]
-    elif end_snapshot is None:
+    elif end_snapshot is None and start_snapshot is not None:
         end_snapshot = end_frame + caver_traj_offset
         snap_ids = [*range(start_snapshot, end_snapshot + 1)]
     else:
-        snap_ids = [*range(start_snapshot, end_snapshot + 1)]
+        snap_ids = [*range(start_snapshot, end_snapshot + 1)]  # type: ignore[arg-type, operator]
 
     os.makedirs(out_folder_path, exist_ok=True)
     protein_filename = os.path.join(out_folder_path, "structure.pdb.gz")
@@ -1904,7 +1917,7 @@ def save_checkpoint(object_to_save: TransportProcesses, filename: str = "checkpo
 
 
 def load_checkpoint(filename: str = "checkpoints/transport_processes.dump",
-                    update_config: Optional[AnalysisConfig] = None) -> TransportProcesses:
+                    update_config: AnalysisConfig | None = None) -> TransportProcesses:
     """
     Loads previously saved TransportProcess object, possibly updating new parameters from provided update_config object
     :param filename: input file with saved TransportProcess object

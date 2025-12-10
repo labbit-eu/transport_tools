@@ -31,7 +31,7 @@ from threadpoolctl import threadpool_limits
 from logging import getLogger
 from multiprocessing import Pool
 from re import search
-from typing import Dict, List, TextIO, Union, Optional, Set, Tuple
+from typing import Dict, List, TextIO, Set, Tuple
 from transport_tools.libs.geometry import Point, LayeredRepresentationOfTunnels, \
     LayeredRepresentationOfEvents, LayeredPathSet, vector_angle, assign_layer_from_distances, einsum_dist, \
     average_starting_point
@@ -61,14 +61,14 @@ class Network:
         self.parameters["md_label"] = md_label
 
         # input paths
-        self.pdb_file: bytes | str | None = None
+        self.pdb_file: str | None = None
 
         # output paths
-        self.transformation_folder: bytes | str | None = None
-        self.orig_viz_path: bytes | str | None = None
-        self.orig_dump_file: bytes | str | None = None
-        self.layered_dump_file: bytes | str | None = None
-        self.layered_viz_path: bytes | str | None = None
+        self.transformation_folder: str | None = None
+        self.orig_viz_path: str | None = None
+        self.orig_dump_file: str | None = None
+        self.layered_dump_file: str | None = None
+        self.layered_viz_path: str | None = None
 
     def add_layered_entity(self, entity_id: int | str, layered_pathset: LayeredPathSet):
         """
@@ -98,6 +98,12 @@ class Network:
         if self.transformed_pdb_file_name is None:
             raise ValueError("Variable 'self.transformed_pdb_file_name' is not specified")
 
+        if self.pdb_file is None:
+            raise ValueError("Variable 'self.pdb_file' is not specified")
+
+        if self.transform_mat is None:
+            raise ValueError("Variable 'self.transform_mat' is not specified")
+
         transform_pdb_file(self.pdb_file, transformed_pdb_filename, self.transform_mat)
 
     def _load_transformations(self):
@@ -117,9 +123,12 @@ class Network:
         Load pre-computed original entities (AquaductPath, TunnelCluster)
         """
 
+        if self.orig_dump_file is None:
+            raise ValueError("Variable 'self.orig_dump_file' is not specified")
+
         utils.test_file(self.orig_dump_file)
         with open(self.orig_dump_file, "rb") as in_stream:
-            self.orig_entities: List[Union[TunnelCluster, AquaductPath]] = pickle.load(in_stream)
+            self.orig_entities: List[TunnelCluster | AquaductPath] = pickle.load(in_stream)
         for entity in self.orig_entities:
             entity.parameters.update(self.parameters)
 
@@ -127,6 +136,9 @@ class Network:
         """
         Dump original entities (AquaductPath, TunnelCluster) to files for later processing
         """
+
+        if self.orig_dump_file is None:
+            raise ValueError("Variable 'self.orig_dump_file' is not specified")
 
         os.makedirs(os.path.dirname(self.orig_dump_file), exist_ok=True)
         with open(self.orig_dump_file, "wb") as out_stream:
@@ -142,7 +154,7 @@ class Network:
 
         if os.path.exists(self.layered_dump_file):
             with open(self.layered_dump_file, "rb") as in_stream:
-                self.layered_entities: Dict[Union[str, int], LayeredPathSet] = pickle.load(in_stream)
+                self.layered_entities: Dict[str | int, LayeredPathSet] = pickle.load(in_stream)
 
             for entity in self.layered_entities.values():
                 entity.parameters.update(self.parameters)
@@ -165,6 +177,12 @@ class Network:
         Saves CGO files with original entities AquaDuctPath, TunnelCluster) and PDBs of transformed protein
         structure for visualization
         """
+
+        if self.orig_viz_path is None:
+            raise ValueError("Variable 'self.orig_viz_path' is not specified")
+
+        if self.transformed_pdb_file_name is None:
+            raise ValueError("Variable 'self.transformed_pdb_file_name' is not specified")
 
         os.makedirs(self.orig_viz_path, exist_ok=True)
         self._save_transformed_pdb_file(os.path.join(self.orig_viz_path, self.transformed_pdb_file_name))
@@ -191,11 +209,11 @@ class Network:
         :param save_pdb_files: if the PDB files are to be saved
         """
 
-        try:
-            os.makedirs(self.layered_viz_path, exist_ok=True)
-        except TypeError:
+        if self.layered_viz_path is None:
             raise ValueError("Output folder for layered_visualization not correctly specified in variable "
                              "'self.layered_viz_path'")
+
+        os.makedirs(self.layered_viz_path, exist_ok=True)
 
         if self.entity_pymol_abbreviation is None:
             raise ValueError("Variable 'self.entity_pymol_abbreviation' is not specified")
@@ -203,6 +221,8 @@ class Network:
         os.makedirs(os.path.join(self.layered_viz_path, "paths"), exist_ok=True)
 
         if save_pdb_files:
+            if self.transformed_pdb_file_name is None:
+                raise ValueError("Variable 'self.transformed_pdb_file_name' is not specified")
             Point([0, 0, 0]).save_point(os.path.join(self.layered_viz_path, "origin.pdb"))
             self._save_transformed_pdb_file(os.path.join(self.layered_viz_path, self.transformed_pdb_file_name))
 
@@ -235,10 +255,10 @@ class Tunnel:
         self.cost = -1.0
         self.tunnel_id = -1
         self.filters_passed = False
-        self.spheres_data: Optional[np.ndarray] = None
-        self.layer_membership: Optional[np.ndarray] = None
+        self.spheres_data: np.ndarray | None = None
+        self.layer_membership: np.ndarray | None = None
         self.bottleneck_residues = list()
-        self.bottleneck_xyz: Optional[np.ndarray] = None
+        self.bottleneck_xyz: np.ndarray | None = None
         self.weight = 1.0
 
     def __str__(self):
@@ -419,7 +439,7 @@ class Tunnel:
             return False
         return True
 
-    def fill_bottleneck_data(self, bottleneck_data: List[str], transform_mat: Optional[np.ndarray] = None):
+    def fill_bottleneck_data(self, bottleneck_data: List[str], transform_mat: np.ndarray | None = None):
         """
         Process line from bottlenecks.csv produced by CAVER to fill in data about Tunnel bottleneck
         :param bottleneck_data: line of data from bottlenecks.csv corresponding to bottleneck residues of this tunnel
@@ -491,8 +511,11 @@ class Tunnel:
         :return: distance to the closest sphere and the closest sphere data
         """
 
+        if self.layer_membership is None:
+            raise ValueError(f"Layer membership must be computed before usage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
+
         distance2sp = np.linalg.norm(xyz, axis=0)
-        xyz_layer = int(assign_layer_from_distances([distance2sp], self.parameters["layer_thickness"])[1])
+        xyz_layer = int(assign_layer_from_distances(np.array([distance2sp]), self.parameters["layer_thickness"])[1])
         last_layer_id = np.max(self.layer_membership)
 
         # now select layers with tunnel spheres adjacent to the point
@@ -659,8 +682,7 @@ class TunnelCluster:
 
         return len(self.tunnels.keys())
 
-    def get_closest_tunnel_sphere_in_frame2coords(self, xyz: np.ndarray, snap_id: int) \
-            -> Tuple[float, np.ndarray] | Tuple[None, None]:
+    def get_closest_tunnel_sphere_in_frame2coords(self, xyz: np.ndarray, snap_id: int) -> Tuple[float, np.ndarray] | Tuple[None, None]:
         """
         Identifies closest sphere from a tunnel in the investigated snapshot to given coordinates
         :param xyz: coordinates of point to which the distance is computed
@@ -673,8 +695,7 @@ class TunnelCluster:
         else:
             return None, None
 
-    def get_subcluster(self, snap_ids: Optional[List[int]] = None, active_filters: Optional[dict] = None) \
-            -> TunnelCluster:
+    def get_subcluster(self, snap_ids: List[int] | None = None, active_filters: dict | None = None) -> TunnelCluster:
         """
         Returns subcluster with tunnels from the frames and/or all tunnels in cluster fulfilling the active filters
         :param snap_ids: list of snapshot IDs to create the subcluster from
@@ -851,6 +872,12 @@ class TunnelNetwork(Network):
         Process tunnel_profile_file from CAVER to create TunnelClusters and their Tunnels
         """
 
+        if self.transform_mat is None:
+            raise ValueError("Variable 'self.transform_mat' is not specified")
+
+        if self.starting_point_coords is None:
+            raise ValueError("Variable 'self.starting_point_coords' is not specified")
+
         utils.test_file(self.tunnel_profile_file)
         with open(self.tunnel_profile_file) as in_stream:
             data = in_stream.readlines()
@@ -863,7 +890,9 @@ class TunnelNetwork(Network):
 
                 tmp_tunnel = Tunnel(self.parameters, self.transform_mat)
                 tmp_tunnel.fill_data(data[i:i + 7])
-                self.orig_entities[current_id - 1].add_tunnel(tmp_tunnel)
+                cluster = self.orig_entities[current_id - 1]
+                assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
+                cluster.add_tunnel(tmp_tunnel)
 
         if self.parameters["process_bottleneck_residues"]:
             self._read_bottleneck_data()
@@ -878,6 +907,9 @@ class TunnelNetwork(Network):
         """
         Process bottlenecks.csv from CAVER to fill info about Tunnels' bottlenecks
         """
+
+        if self.bottleneck_file is None:
+            raise ValueError("Variable 'self.bottleneck_file' is not specified")
 
         utils.test_file(self.bottleneck_file)
         with open(self.bottleneck_file) as in_stream:
@@ -908,9 +940,12 @@ class TunnelNetwork(Network):
         if cluster_id == 0:
             raise ValueError("Cluster with required ID (={}) does not exist in the network".format(cluster_id))
         try:
-            return self.orig_entities[cluster_id - 1]
+            cluster = self.orig_entities[cluster_id - 1]
         except IndexError:
             raise ValueError("Cluster with required ID (={}) does not exist in the network".format(cluster_id))
+
+        assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
+        return cluster
 
     def cluster_exists(self, query_id: int) -> bool:
         """
@@ -934,6 +969,7 @@ class TunnelNetwork(Network):
         clusters = list()
 
         for cls_id, cluster in enumerate(reversed(self.orig_entities)):  # reversed to start processing smaller clusters
+            assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
             if 0 < cluster.count_valid_tunnels():
                 clusters.append(cluster)
             else:
@@ -983,13 +1019,24 @@ class AquaductNetwork(Network):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.close(self.fd)
-        os.remove(self.pdb_file)
+        """
+        Context manager exit - cleanup temporary PDB file and file descriptor
+        """
+        if self.fd is not None:
+            os.close(self.fd)
+        if self.pdb_file is not None:
+            os.remove(self.pdb_file)
 
     def clean_tempfile(self):
         """
         Removes tempfile
         """
+
+        if self.pdb_file is None:
+            raise ValueError("Variable 'self.pdb_file' is not specified")
+
+        if self.fd is None:
+            raise ValueError("Variable 'self.fd' is not specified")
 
         utils.test_file(self.pdb_file)
         os.close(self.fd)
@@ -1003,7 +1050,10 @@ class AquaductNetwork(Network):
         from tempfile import mkstemp
         self.fd, self.pdb_file = mkstemp(suffix=".pdb")
         with open(self.pdb_file, "wb") as out_pdb, tarfile.open(self.tar_file, "r:gz") as tar_handle:
-            out_pdb.write(tar_handle.extractfile(self.protein_pdb_filename).read())
+            extracted_file = tar_handle.extractfile(self.protein_pdb_filename)
+            if extracted_file is None:
+                raise ValueError(f"File '{self.protein_pdb_filename}' not found in tarfile '{self.tar_file}'")
+            out_pdb.write(extracted_file.read())
 
     @staticmethod
     def _path_sort(filename: str) -> int:
@@ -1044,6 +1094,9 @@ class AquaductNetwork(Network):
         :param parallel_processing: if we process the raw_paths in parallel
         """
 
+        if self.transform_mat is None:
+            raise ValueError("Variable 'self.transform_mat' is not specified")
+
         # read residue info from summary text file from AquaDuct
         with open(self.summary_file) as sum_stream:
             summary_text = sum_stream.readlines()
@@ -1079,7 +1132,10 @@ class AquaductNetwork(Network):
             if search(r'^raw_paths_\d+\.dump', filename):
                 path_label = filename.split(".")[0]
                 path_id = int(path_label.split("_")[2])
-                cgo_object = pickle.load(tar_handle.extractfile(filename))
+                extracted_file = tar_handle.extractfile(filename)
+                if extracted_file is None:
+                    raise ValueError(f"File '{filename}' not found in tarfile '{self.tar_file}'")
+                cgo_object = pickle.load(extracted_file)
                 items2process.append((path_label, traced_residues[path_id - 1], cgo_object))
         tar_handle.close()
 
@@ -1109,6 +1165,7 @@ class AquaductNetwork(Network):
 
         events = list()
         for path in self.orig_entities:
+            assert isinstance(path, AquaductPath), f"Expected AquaductPath but got {type(path).__name__}"
             events += path.get_events4layering()
 
         return events
@@ -1135,10 +1192,10 @@ class TransportEvent:
         self.entity_label = "{}_{}".format(path_label.split("_")[-1], self.type)
         self.entity_pymol_abbreviation = "wat_{}".format(self.entity_label)
         self.points: List[Point] = list()
-        self.points_data: Optional[np.ndarray] = None
+        self.points_data: np.ndarray | None = None
         self.parameters = parameters
         self.traced_residue = traced_residue
-        self.min_dist2starting_point: Optional[float] = None
+        self.min_dist2starting_point: float | None = None
         self.penetration_depth = -1
         self.path_label = path_label
         self.md_label = md_label
@@ -1335,7 +1392,7 @@ class TransportEvent:
 
 class AquaductPath:
     def __init__(self, path_label: str, parameters: dict,
-                 traced_residue: Tuple[str, int, Tuple[int, int], Tuple[int, int]], transform_mat: np.array,
+                 traced_residue: Tuple[str, int, Tuple[int, int], Tuple[int, int]], transform_mat: np.ndarray,
                  md_label: str = ""):
         """
         Class for processing of transport paths produced by AQUA-DUCT, consisting of transport events
@@ -1512,6 +1569,7 @@ class AquaductPath:
         # merge duplicates
         for i, event in enumerate(in_events):
             if prev_type:
+                assert isinstance(prev_id, int), f"Expected int but got {type(prev_id).__name__}"
                 if prev_type == event.type:
                     in_events[prev_id].merge_event(event)
                     if i == last_event_id:
@@ -1732,8 +1790,7 @@ class AquaductPath:
         return self._get_continuously_closer_points(points2consider, border_point.data[0, 3])
 
     @staticmethod
-    def _get_path(previous_nodes: Dict[Union[int, str], Union[int, str]], current_id: Union[int, str],
-                  points: List[Point]) -> List[Point]:
+    def _get_path(previous_nodes: Dict[int | str, int | str], current_id: int | str, points: List[Point]) -> List[Point]:
         """
         Convert visited point ID on the way from border point (BP) towards starting point (SP) to actual list of points
         :param previous_nodes: nodes visited on the path form BP to the point with the current ID
@@ -1755,12 +1812,13 @@ class AquaductPath:
             if "SP" == path_point_id:
                 path_points.append(Point([0, 0, 0], 0))
             else:
+                assert isinstance(path_point_id, int), f"Expected int but got {type(path_point_id).__name__}"
                 path_points.append(points[path_point_id])
 
         return path_points
 
     @staticmethod
-    def _get_distance2starting_point(node_id: Union[int, str], points: List[Point]) -> float:
+    def _get_distance2starting_point(node_id: int | str, points: List[Point]) -> float:
         """
         Get distance of evaluated point to the starting point (SP)
         :param node_id: ID of evaluated point
@@ -1771,11 +1829,11 @@ class AquaductPath:
         if node_id == "SP":
             return 0
         else:
+            assert isinstance(node_id, int), f"Expected int but got {type(node_id).__name__}"
             return points[node_id].data[0, 3]
 
     @staticmethod
-    def _get_cheapest_point(nodes2evaluate: Set[Union[str, int]],
-                            full_scores: Dict[Union[str, int], float]) -> Union[str, int]:
+    def _get_cheapest_point(nodes2evaluate: Set[str | int], full_scores: Dict[str | int, float]) -> str | int:
         """
         Selects next cheapest point according to its length cost and distance to the target == starting point (SP)
         :param nodes2evaluate: point IDs to evaluate for next stage
@@ -1793,7 +1851,7 @@ class AquaductPath:
         return min(tmp_list)[1]
 
     def _compute_network_of_overlapping_points(self, points_dataset: List[Tuple[int, Point]],
-                                               border_point: Point) -> Dict[Union[str, int], Set[Union[str, int]]]:
+                                               border_point: Point) -> Dict[str | int, Set[str | int]]:
         """
         Define connectivity between points on the basis of their potential overlaps
         :param points_dataset: points to evaluate
@@ -1844,7 +1902,7 @@ class SuperCluster:
         """
 
         self.sc_id = sc_id
-        self.prioritized_sc_id: Optional[int] = None
+        self.prioritized_sc_id: int | None = None
 
         self.parameters = parameters
         self.total_num_md_sims = total_num_md_sims
@@ -1866,7 +1924,7 @@ class SuperCluster:
 
         # average and md_label sepcific properties of the tunnel and event networks in SC from
         # TunnelProfile.get_properties()
-        self.properties: Dict[str, Dict[str, Union[float, int]]] = dict()
+        self.properties: Dict[str, Dict[str, float | int]] = dict()
 
         self.bottleneck_residue_freq: Dict[str, Dict[str, float]] = dict()
 
@@ -1874,7 +1932,7 @@ class SuperCluster:
 
         # space descriptors
         self.path_sets: Dict[str, LayeredPathSet] = dict()  # info on overall and per MD representative paths of the SC
-        self.avg_direction: Optional[np.array] = None  # overall direction of this SC based on representative path ends
+        self.avg_direction: np.ndarray | None = None  # overall direction of this SC based on representative path ends
 
     def _get_csv_file(self, subfolder: str = "initial"):
         return os.path.join(self.parameters["super_cluster_csv_folder"], subfolder,
@@ -2003,7 +2061,7 @@ class SuperCluster:
         for path_set in self.path_sets.values():
             path_set.parameters.update(self.parameters)  # to update config if needed
 
-    def compute_space_descriptors(self) -> Tuple[int, np.array]:
+    def compute_space_descriptors(self) -> Tuple[int, np.ndarray]:
         """
         Collect all unique nodes and paths from all caver clusters to a single PathSet and compute overall direction
         in which the end points of supercluster lay
@@ -2046,6 +2104,8 @@ class SuperCluster:
             path_set.compute_node_depths()
 
         # get average direction of terminal nodes possibly used during a transport event
+        if path_sets["overall"].nodes_data is None:
+            raise RuntimeError("Variable 'nodes_data' is not specified for overall path set")
         avg_direction = np.average(path_sets["overall"].nodes_data[path_sets["overall"].nodes_data[:, 4] == 1, :3],
                                    axis=0)
 
@@ -2056,7 +2116,7 @@ class SuperCluster:
         return self.sc_id, avg_direction
 
     # ===  methods for data navigation  ===
-    def has_passed_filter(self, consider_transport_events: bool = False, active_filters: dict = None) -> bool:
+    def has_passed_filter(self, consider_transport_events: bool = False, active_filters: dict | None = None) -> bool:
         """
         Test if the supercluster (SC) is valid under conditions defined by the active filters
         :param consider_transport_events: if related filters related to transport events should be considered
@@ -2153,8 +2213,8 @@ class SuperCluster:
 
         return caver_cluster_labels
 
-    def get_caver_clusters(self, md_labels: List[str] = None,
-                           snap_ids: Optional[List[int]] = None) -> Dict[str, List[TunnelCluster]]:
+    def get_caver_clusters(self, md_labels: List[str] | None = None,
+                           snap_ids: List[int] | None = None) -> Dict[str, List[TunnelCluster]]:
         """
         Get tunnel clusters from this SC, possibly filtered for specified Snapshot IDs and particular MD simulations
         :param md_labels:
@@ -2173,6 +2233,7 @@ class SuperCluster:
                 caver_clusters[md_label] = list()
                 for cluster_id in self.get_caver_cluster_ids4md_label(md_label):
                     cluster = temp_network.orig_entities[cluster_id - 1]
+                    assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
                     if snap_ids is not None:
                         cluster = cluster.get_subcluster(snap_ids)
                     caver_clusters[md_label].append(cluster)
@@ -2180,13 +2241,15 @@ class SuperCluster:
         return caver_clusters
 
     # === methods for assignment of transport events ===
-    def is_directionally_aligned(self, other_direction: np.array) -> bool:
+    def is_directionally_aligned(self, other_direction: np.ndarray) -> bool:
         """
         Test if the supercluster direction is aligned to other_direction within directional_cutoff
         :param other_direction: other evaluated direction
         """
 
         directional_cutoff = self.parameters["directional_cutoff"]
+        if self.avg_direction is None:
+            raise RuntimeError(f"Variable 'avg_direction' is not specified for supercluster {self.sc_id}")
         angle = vector_angle(self.avg_direction, other_direction)
         if angle <= directional_cutoff or angle >= (2 * np.pi - directional_cutoff):
             return True
@@ -2205,10 +2268,7 @@ class SuperCluster:
         return transport_event.how_much_is_inside(self.path_sets["overall"])
 
     # === methods for data reporting ===
-    def prepare_visualization(self,  md_label: str = "overall",
-                              flag: str = "") -> Tuple[List[str],
-                                                       Optional[Tuple[LayeredPathSet,
-                                                                      Tuple[str, str, int, bool, str]]]]:
+    def prepare_visualization(self,  md_label: str = "overall", flag: str = "") -> Tuple[List[str], Tuple[LayeredPathSet, Tuple[str, str, int, bool, str]] | None]:
         """
         Prepare overall CGO files for visualization of paths representing this supercluster (SC) and generate lines
         for Pymol visualization script
@@ -2227,6 +2287,8 @@ class SuperCluster:
 
         # dump CGO files for visualization of paths representing this SC
         os.makedirs(self.parameters["super_cluster_vis_path"], exist_ok=True)
+        if self.prioritized_sc_id is None:
+            raise RuntimeError(f"Variable 'prioritized_sc_id' was not assigned for supercluster {self.sc_id}")
         viz_data = (self.path_sets[md_label], (self.parameters["super_cluster_vis_path"],
                                                "SC{:02d}_{}".format(self.sc_id, md_label),
                                                self.prioritized_sc_id - 1, True, flag))
@@ -2314,7 +2376,7 @@ class SuperCluster:
 
         return data
 
-    def process_cluster_profile(self) -> Tuple[int, Dict[str, Dict[str, Union[float, int]]], Dict[str, Dict[str, float]],
+    def process_cluster_profile(self) -> Tuple[int, Dict[str, Dict[str, float | int]], Dict[str, Dict[str, float]],
                                           Dict[str, List[int]]]:
         """
         Merging of individual caver tunnel profiles into the new one for a single supercluster (SC)
@@ -2355,7 +2417,7 @@ class SuperCluster:
         return self.sc_id, properties, residues_freq, merged_tunnel_clusters
 
     def filter_super_cluster(self, consider_transport_events: bool, active_filters: dict,
-                             flag: int) -> Tuple[int, Dict[str, Dict[str, Union[float, int]]], Dict[str, Dict[str, float]],
+                             flag: int) -> Tuple[int, Dict[str, Dict[str, float | int]], Dict[str, Dict[str, float]],
                                             Dict[str, List[int]]]:
         """
         Filtering of tunnels loaded from supercluster (SC) profile dumps generated by process_cluster_profile,
@@ -2406,7 +2468,7 @@ class SuperCluster:
         return self.sc_id, filtered_props, filtered_residues_freq, filtered_tunnel_clusters
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict,
-                                         missing_value_default: float = 0) -> Dict[str, np.array]:
+                                         missing_value_default: float = 0) -> Dict[str, np.ndarray]:
         """
         For each MD simulation return array containing values of given tunnel property for each simulation frame
         :param property_name: name of property to extract
@@ -2472,7 +2534,7 @@ class CumulativeTunnelProfile4SuperCluster:
             for tunnel_profile4md in self.tunnel_profiles4md.values():
                 tunnel_profile4md.write_residues(out_stream)
 
-    def get_properties(self, total_num_md_sims: int = 1) -> Dict[str, Dict[str, Union[float, int]]]:
+    def get_properties(self, total_num_md_sims: int = 1) -> Dict[str, Dict[str, float | int]]:
         """
         Compute overall properties of parent supercluster (SC) based on the cumulative tunnel profiles
         :param total_num_md_sims: number of all input MD simulation, not only in this SC
@@ -2708,7 +2770,7 @@ class CumulativeTunnelProfile4SuperCluster:
         return _tunnel_clusters
 
     def get_property_time_evolution_data(self, property_name: str, md_labels: List[str],
-                                         missing_value_default: float = 0) -> Dict[str, np.array]:
+                                         missing_value_default: float = 0) -> Dict[str, np.ndarray]:
         """
         For each MD simulation return array containing values of given tunnel property for each simulation frame
         :param property_name: name of property to extract
@@ -2761,18 +2823,19 @@ class TunnelProfile4MD:
             cluster.parameters.update(self.parameters)
             if cluster.cluster_id in self.sc_caver_clusters:  # cluster belongs to supercluster
                 for snapshot_id, loaded_tunnel in cluster.tunnels.items():
-                    # calculate actual distances from the general starting point (0,0,0) shared across
-                    # transformed MD simulations
-                    loaded_tunnel.spheres_data[:, 3] = einsum_dist(loaded_tunnel.spheres_data[:, 0:3],
-                                                                   np.array([0, 0, 0]))
-
-                    if snapshot_id in self.records.keys():
-                        # only single tunnel can exist in one cluster for any given snapshot
-                        existing_tunnel = self.records[snapshot_id]
-                        if loaded_tunnel.has_better_throughput(existing_tunnel):  # keep tunnel with better throughput
+                    try:
+                        # calculate actual distances from the general starting point (0,0,0) shared across
+                        # transformed MD simulations
+                        loaded_tunnel.spheres_data[:, 3] = einsum_dist(loaded_tunnel.spheres_data[:, 0:3], np.array([0, 0, 0]))  # type: ignore[index]
+                        if snapshot_id in self.records.keys():
+                            # only single tunnel can exist in one cluster for any given snapshot
+                            existing_tunnel = self.records[snapshot_id]
+                            if loaded_tunnel.has_better_throughput(existing_tunnel):  # keep tunnel with better throughput
+                                self.records[snapshot_id] = loaded_tunnel
+                        else:
                             self.records[snapshot_id] = loaded_tunnel
-                    else:
-                        self.records[snapshot_id] = loaded_tunnel
+                    except (TypeError, AttributeError) as e:
+                        raise RuntimeError(f"Variable 'spheres_data' is not specified for tunnel in cluster {cluster.cluster_id} snapshot {snapshot_id}") from e
 
     def write_csv_section(self, file_handler: TextIO):
         """
@@ -2863,7 +2926,7 @@ class TunnelProfile4MD:
 
         return list(caver_cluster_ids)
 
-    def get_property_time_evolution_data(self, property_name: str, missing_value_default: float = 0) -> np.array:
+    def get_property_time_evolution_data(self, property_name: str, missing_value_default: float = 0) -> np.ndarray:
         """
         Returns array containing values of given tunnel property for each simulation frame
         :param property_name: name of property to extract
@@ -2887,7 +2950,7 @@ class TunnelProfile4MD:
 
 def subsample_events(transport_events: Dict[str, List[Tuple[str, Tuple[str, Tuple[int, int]]]]], random_seed: int,
                      max_events: int, md_label: str = "overall",
-                     comparative_groups_definition: Optional[Dict[str, List[str]]] = None) -> List[Tuple[str, str]]:
+                     comparative_groups_definition: Dict[str, List[str]] | None = None) -> List[Tuple[str, str]]:
     """
     Randomly selects limited number of transport events for visualization
     :param transport_events: evaluated information about transport events

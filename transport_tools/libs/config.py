@@ -26,7 +26,7 @@ import numpy as np
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 from configparser import ConfigParser
-from typing import List, Any, Optional, Union, Tuple
+from typing import List, Any, Tuple
 from logging import getLogger
 from transport_tools.libs.ui import initiate_tools
 from transport_tools.libs.utils import get_filepath
@@ -35,7 +35,7 @@ logger = getLogger(__name__)
 
 
 class AnalysisConfig:
-    def __init__(self, file2load_from: Optional[str] = None, logging: bool = True):
+    def __init__(self, file2load_from: str | None = None, logging: bool = True):
         """
         Class storing the job configuration, also enables some parameter evaluation & completion
         :param file2load_from: INI file with configuration to load from
@@ -487,7 +487,7 @@ class AnalysisConfig:
             self.parameters["pickle_protocol"] = 2
             self.internal_settings["pickle_protocol"] = 2
 
-    def _test_parameter_sanity(self, param_name: str, min_val: Union[int, float], max_val: Union[int, float]):
+    def _test_parameter_sanity(self, param_name: str, min_val: int | float, max_val: int | float):
         """
         Checking if value assigned to parameter is within allowed range (if not raising error),
         and also prints warning for suboptimal values (however, job continues in this case)
@@ -1032,7 +1032,7 @@ class AnalysisConfig:
 
         return self.parameters[par_name]
 
-    def get_filters(self) -> List[Union[float, int]]:
+    def get_filters(self) -> List[float | int]:
         """
         Collect filter values properly ordered to act as argument for filter_super_cluster_profiles and define_filters
         :return: list of filter values
