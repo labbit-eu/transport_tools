@@ -62,7 +62,7 @@ class TestUtils(unittest.TestCase):
 
     def test__get_mesh(self):
         try:
-            import mcubes
+            import mcubes  # type: ignore[import-untyped]
         except ModuleNotFoundError:
             self.skipTest("mcubes not installed")
             return
@@ -77,7 +77,7 @@ class TestUtils(unittest.TestCase):
 
     def test_convert_spheres2cgo_surface(self):
         try:
-            import mcubes
+            import mcubes  # type: ignore[import-untyped]
         except ModuleNotFoundError:
             self.skipTest("mcubes not installed")
             return

@@ -515,7 +515,7 @@ class Tunnel:
             raise ValueError(f"Layer membership must be computed before usage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
 
         distance2sp = np.linalg.norm(xyz, axis=0)
-        xyz_layer = int(assign_layer_from_distances(np.array([distance2sp]), self.parameters["layer_thickness"])[1])
+        xyz_layer = int(assign_layer_from_distances(np.array([distance2sp]), self.parameters["layer_thickness"])[1].item())
         last_layer_id = np.max(self.layer_membership)
 
         # now select layers with tunnel spheres adjacent to the point

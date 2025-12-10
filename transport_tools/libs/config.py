@@ -351,7 +351,7 @@ class AnalysisConfig:
                 "visualize_super_cluster_volumes" not in overridden_parameters \
                 and self.advanced_settings["msms"] is None:
             try:
-                import mcubes # type: ignore[import-untyped]
+                import mcubes  # type: ignore[import-untyped]
             except ModuleNotFoundError:
                 pass
             else:
@@ -362,7 +362,7 @@ class AnalysisConfig:
 
         if self.advanced_settings["trajectory_engine"] != "pytraj" and "trajectory_engine" not in overridden_parameters:
             try:
-                import pytraj # type: ignore[import-untyped]
+                import pytraj  # type: ignore[import-untyped]
             except ModuleNotFoundError:
                 pass
             else:

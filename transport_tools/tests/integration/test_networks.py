@@ -24,6 +24,7 @@ import unittest
 import os
 import pytest
 from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_files, compare_test_folders
+from transport_tools.libs.networks import TunnelCluster
 
 class TestTunnelNetwork(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -85,99 +86,6 @@ class TestTunnelNetwork(unittest.TestCase):
             if self._request.session.testsfailed > 0:
                 self.__class__._test_failed = True
 
-    # def _compare_files(self, out_file: str, res_file: str,):
-    #     def focus_pdbfile(file_lines: list) -> list:
-    #         focused_filelines = list()
-    #         for file_line in file_lines:
-    #             # skip over version dependent formating of PDB
-    #             if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
-    #                 continue
-    #             # make chain id blank to avoid version dependent treatment
-    #             if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
-    #                 file_line =  file_line[:21] + " " + file_line[22:]
-    #             if file_line.startswith("TER") and len(file_line) > 21:
-    #                 file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
-    #             focused_filelines.append(file_line.split())
-
-    #         return focused_filelines   
-        
-    #     import pickle
-    #     import gzip
-    #     import numpy as np
-    #     from sys import maxsize
-    #     np.set_printoptions(threshold=maxsize)
-
-    #     res_lines = out_lines = None
-    #     out_mat = res_mat = None
-    #     if res_file.endswith(".dump.gz"):
-    #         with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
-    #             res_lines = pickle.load(res_in)
-    #             out_lines = pickle.load(out_in)
-    #     elif ".dump" in res_file:
-    #         with open(res_file, "rb") as res_in, open(out_file, "rb") as out_in:
-    #             res_lines = pickle.load(res_in)
-    #             out_lines = pickle.load(out_in)
-    #     elif ".gz" in res_file:
-    #         with gzip.open(res_file, 'r') as res_in, gzip.open(out_file, 'r') as out_in:
-    #             res_lines = res_in.readlines()
-    #             out_lines = out_in.readlines()
-    #     elif ".npy" in res_file:
-    #         res_mat = np.load(res_file)
-    #         out_mat = np.load(out_file)
-    #     else:
-    #         with open(res_file, "r") as res_in, open(out_file, "r") as out_in:
-    #             res_lines = res_in.readlines()
-    #             out_lines = out_in.readlines()
-
-    #     #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
-    #     if ".pdb" in res_file:
-    #         res_lines = focus_pdbfile(res_lines)
-    #         out_lines = focus_pdbfile(out_lines)
-
-    #     if res_lines is not None:
-    #         if isinstance(res_lines, np.ndarray):
-    #             self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
-    #                             msg="In files '{}' and '{}':".format(out_file, res_file))
-    #         else:
-    #             self.assertTrue(len(res_lines) == len(out_lines),
-    #                             msg="Different length of files '{}' and '{}':".format(out_file, res_file))
-    #             for res_line, out_line in zip(res_lines, out_lines):
-    #                 if isinstance(res_line, list) or isinstance(res_line, tuple):
-    #                     self.assertTrue(len(res_line) == len(out_line),
-    #                                     msg="Different length of lists {} and {}\n "
-    #                                         "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
-    #                     for res_item, out_item in zip(res_line, out_line):
-    #                         try:
-    #                             self.assertAlmostEqual(float(out_item), float(res_item), places=3,
-    #                                                    msg="In files '{}' and '{}':".format(out_file, res_file))
-    #                         except (ValueError, TypeError):
-    #                             self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
-    #                                                                                                       res_file))
-
-    #                 else:
-    #                     try:
-    #                         self.assertAlmostEqual(float(out_line), float(res_line), places=3,
-    #                                                msg="In files '{}' and '{}':".format(out_file, res_file))
-    #                     except (ValueError, TypeError):
-    #                         self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file,
-    #                                                                                                   res_file))
-
-    #     else:
-    #         self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
-    #                         msg="In files '{}' and '{}':".format(out_file, res_file))
-
-    # def _compare_folders(self, saved_outputs_dir: str, results_dir: str, ):
-    #     results_files = sorted(os.listdir(results_dir))
-    #     out_files = sorted(os.listdir(saved_outputs_dir))
-    #     self.assertEqual(out_files, results_files, msg="In folders '{}' and '{}':".format(saved_outputs_dir,
-    #                                                                                       results_dir))
-
-    #     for res_file, out_file in zip(results_files, out_files):
-    #         res_file = os.path.join(results_dir, res_file)
-    #         out_file = os.path.join(saved_outputs_dir, out_file)
-    #         if os.path.isfile(res_file) and os.path.isfile(out_file):
-    #             compare_test_files(out_file, res_file)
-
     def setUp(self):
         self.saved_data = os.path.join(TestTunnelNetwork.root, "saved_outputs")
         self.parameters = TestTunnelNetwork.config.get_parameters()
@@ -208,6 +116,8 @@ class TestTunnelNetwork(unittest.TestCase):
 
         self.assertEqual(len(saved_net.orig_entities), len(new_net.orig_entities))
         for new_cluster, saved_cluster in zip(new_net.orig_entities, saved_net.orig_entities):
+            assert isinstance(new_cluster, TunnelCluster), f"Expected TunnelCluster but got {type(new_cluster).__name__}"
+            assert isinstance(saved_cluster, TunnelCluster), f"Expected TunnelCluster but got {type(saved_cluster).__name__}"
             self.assertTrue(new_cluster.is_same(saved_cluster))
 
     def test_save_orig_network_visualization(self):
@@ -316,97 +226,6 @@ class TestAquaductNetwork(unittest.TestCase):
             # Check if this test or any previous test in the session has failed
             if self._request.session.testsfailed > 0:
                 self.__class__._test_failed = True
-
-    # def _compare_files(self, out_file: str, res_file: str,):
-    #     def focus_pdbfile(file_lines: list) -> list:
-    #         focused_filelines = list()
-    #         for file_line in file_lines:
-    #             # skip over version dependent formating of PDB
-    #             if file_line.startswith("REMARK") or file_line.startswith("ENDMDL") or file_line.startswith("MODEL   "):
-    #                 continue
-    #             # make chain id blank to avoid version dependent treatment
-    #             if file_line.startswith("ATOM") or file_line.startswith("HETATM"):
-    #                 file_line =  file_line[:21] + " " + file_line[22:]
-    #             if file_line.startswith("TER") and len(file_line) > 21:
-    #                 file_line = file_line[:21] + " " + (file_line[22:] if len(file_line) > 22 else "")
-    #             focused_filelines.append(file_line.split())
-    #         return focused_filelines  
-
-    #     import pickle
-    #     import gzip
-    #     import numpy as np
-    #     from sys import maxsize
-    #     np.set_printoptions(threshold=maxsize)
-
-    #     res_lines = out_lines = None
-    #     out_mat = res_mat = None
-    #     if res_file.endswith(".dump.gz"):
-    #         with gzip.open(res_file, 'rb') as res_in, gzip.open(out_file, 'rb') as out_in:
-    #             res_lines = pickle.load(res_in)
-    #             out_lines = pickle.load(out_in)
-    #     elif ".dump" in res_file:
-    #         with open(res_file, "rb") as res_in, open(out_file, "rb") as out_in:
-    #             res_lines = pickle.load(res_in)
-    #             out_lines = pickle.load(out_in)
-    #     elif ".gz" in res_file:
-    #         with gzip.open(res_file, 'r') as res_in, gzip.open(out_file, 'r') as out_in:
-    #             res_lines = res_in.readlines()
-    #             out_lines = out_in.readlines()
-    #     elif ".npy" in res_file:
-    #         res_mat = np.load(res_file)
-    #         out_mat = np.load(out_file)
-    #     else:
-    #         with open(res_file, "r") as res_in, open(out_file, "r") as out_in:
-    #             res_lines = res_in.readlines()
-    #             out_lines = out_in.readlines()
-
-    #     #for pdb files, we focus comparison on atoms only, no header, models, endmodel, ter, 
-    #     if ".pdb" in res_file:
-    #         res_lines = focus_pdbfile(res_lines)
-    #         out_lines = focus_pdbfile(out_lines)
-
-    #     if res_lines is not None:
-    #         if isinstance(res_lines, np.ndarray):
-    #             self.assertTrue(np.allclose(out_lines, res_lines, atol=1e-3),
-    #                             msg="In files '{}' and '{}':".format(out_file, res_file))
-    #         else:
-    #             self.assertTrue(len(res_lines) == len(out_lines),
-    #                             msg="Different length of files '{}' and '{}':".format(out_file, res_file))
-    #             for res_line, out_line in zip(res_lines, out_lines):
-    #                 if isinstance(res_line, list) or isinstance(res_line, tuple):
-    #                     self.assertTrue(len(res_line) == len(out_line),
-    #                                     msg="Different length of lists {} and {}\n "
-    #                                         "in files '{}' and '{}':".format(res_line, out_line, out_file, res_file))
-    #                     for res_item, out_item in zip(res_line, out_line):
-    #                         try:
-    #                             self.assertAlmostEqual(float(out_item), float(res_item), places=3,
-    #                                                    msg="In files '{}' and '{}':".format(out_file, res_file))
-    #                         except (ValueError, TypeError):
-    #                             self.assertEqual(out_item, res_item, msg="In files '{}' and '{}':".format(out_file,
-    #                                                                                                       res_file))
-    #                 else:
-    #                     try:
-    #                         self.assertAlmostEqual(float(out_line), float(res_line), places=3,
-    #                                                msg="In files '{}' and '{}':".format(out_file, res_file))
-    #                     except (ValueError, TypeError):
-    #                         self.assertEqual(out_line, res_line, msg="In files '{}' and '{}':".format(out_file,
-    #                                                                                                   res_file))
-
-    #     else:
-    #         self.assertTrue(np.allclose(out_mat, res_mat, atol=1e-3),
-    #                         msg="In files '{}' and '{}':".format(out_file, res_file))
-
-    # def _compare_folders(self, saved_outputs_dir: str, results_dir: str, ):
-    #     results_files = sorted(os.listdir(results_dir))
-    #     out_files = sorted(os.listdir(saved_outputs_dir))
-    #     self.assertEqual(out_files, results_files, msg="In folders '{}' and '{}':".format(saved_outputs_dir,
-    #                                                                                       results_dir))
-
-    #     for res_file, out_file in zip(results_files, out_files):
-    #         res_file = os.path.join(results_dir, res_file)
-    #         out_file = os.path.join(saved_outputs_dir, out_file)
-    #         if os.path.isfile(res_file) and os.path.isfile(out_file):
-    #             compare_test_files(out_file, res_file)
 
     def setUp(self):
         self.saved_data = os.path.join(TestAquaductNetwork.root, "saved_outputs")

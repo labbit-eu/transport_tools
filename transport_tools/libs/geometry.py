@@ -1798,7 +1798,7 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
                     raise ValueError(f"Cluster {cluster.cls_id} in layer {cluster.layer_id} has not computed averages")
                 distance2origin = einsum_dist(cluster.average, starting_point_coords)
                 global_layer = int(assign_layer_from_distances(np.array([distance2origin]),
-                                                               self.parameters["layer_thickness"])[1][0])
+                                                                self.parameters["layer_thickness"])[1].item())
                 if cluster.layer_id != global_layer and len(self.layers[cluster.layer_id].clusters.keys()) > 1:
                     # mismatch, need to move cluster to different layer, which we can do without emptying whole layer
                     clusters2reassign.append((cluster.get_node_label(), global_layer))

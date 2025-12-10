@@ -86,3 +86,17 @@ for failure in all_failures:
     for f in failure:
         print(f)
     print("*"+"-"*78+"*")
+
+# Cleanup test_results folder if empty (all tests passed)
+test_results_path = set_paths_from_package_root("tests", "test_results")
+if os.path.exists(test_results_path):
+    if not os.listdir(test_results_path):
+        # Directory is empty, safe to remove
+        try:
+            os.rmdir(test_results_path)
+            print("\nCleaned up empty test_results folder (all tests passed)")
+        except OSError as e:
+            print(f"\nWarning: Could not remove test_results folder: {e}")
+    else:
+        # Directory is not empty, keep it for investigation
+        print(f"\ntest_results folder not empty - keeping for investigation: {test_results_path}")

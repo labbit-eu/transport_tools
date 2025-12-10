@@ -26,7 +26,12 @@ import os
 from typing import Tuple, Dict
 from transport_tools.libs.utils import test_file, get_filepath
 import Bio.PDB
+from Bio.PDB.Structure import Structure
+from Bio.PDB.Atom import Atom
+from Bio.PDB.Superimposer import Superimposer
+from Bio.PDB.PDBParser import PDBParser
 import Bio.Align
+from Bio.Align import Alignment, substitution_matrices
 
 
 logger = getLogger(__name__)
@@ -319,8 +324,7 @@ class VizAtom:
                                                                                      self.y, self.z, self.R)
 
 
-def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
-                        moved_structure: Bio.PDB.Structure.Structure) -> Bio.Align.Alignment:
+def _seq_align_proteins(target_structure: Structure, moved_structure: Structure) -> Alignment:
     """
     Performs a sequence alignment of two proteins loaded previously with Bio.PDB.Structure.
     :param target_structure: target structure to which we align
@@ -337,7 +341,7 @@ def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
 
     # Pymol like settings
     aligner = Bio.Align.PairwiseAligner()
-    aligner.substitution_matrix = Bio.Align.substitution_matrices.load("BLOSUM62")
+    aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
     aligner.open_gap_score = -10
     aligner.extend_gap_score = -0.5
     alignments = aligner.align(target_seq, moved_seq)
@@ -345,9 +349,9 @@ def _seq_align_proteins(target_structure: Bio.PDB.Structure.Structure,
     return alignments[0]
 
 
-def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.PDB.Structure.Structure,
-                         moved_structure: Bio.PDB.Structure.Structure) -> Tuple[Dict[int, Bio.PDB.Atom.Atom],
-                                                                                Dict[int, Bio.PDB.Atom.Atom]]:
+def _get_atoms2superpose(alignment: Alignment, target_structure: Structure,
+                         moved_structure: Structure) -> Tuple[Dict[int, Atom],
+                                                              Dict[int, Atom]]:
     """
     Selects atoms for structure superposition based on sequence alignment. Only alpha Carbon atoms of sequentially
     aligned protein residues are considered.
@@ -406,8 +410,7 @@ def _get_atoms2superpose(alignment: Bio.Align.Alignment, target_structure: Bio.P
     return target_ca, moved_ca
 
 
-def _superpose_moved2target(target_atoms: Dict[int, Bio.PDB.Atom.Atom],
-                            moved_atoms: Dict[int, Bio.PDB.Atom.Atom]) -> Tuple[float, np.ndarray]:
+def _superpose_moved2target(target_atoms: Dict[int, Atom], moved_atoms: Dict[int, Atom]) -> Tuple[float, np.ndarray]:
     """
     Superposition of the structure to the target.
     :param target_atoms: dictionary of residues' alpha Carbons of the target structure
@@ -415,8 +418,9 @@ def _superpose_moved2target(target_atoms: Dict[int, Bio.PDB.Atom.Atom],
     :return: RMSD of the superposition and the 4x4 transformation matrix
     """
 
-    superimposer = Bio.PDB.Superimposer()
+    superimposer = Superimposer()
     superimposer.set_atoms([*target_atoms.values()], [*moved_atoms.values()])
+    assert superimposer.rotran is not None and superimposer.rms is not None, "superimposer should be set after set_atoms"
     rot, trans = superimposer.rotran
     rotran = np.identity(4)
     rotran[:3, :3] = rot
@@ -425,8 +429,7 @@ def _superpose_moved2target(target_atoms: Dict[int, Bio.PDB.Atom.Atom],
     return superimposer.rms, rotran
 
 
-def _get_atom_rmsds(target_atoms: Dict[int, Bio.PDB.Atom.Atom], moved_atoms: Dict[int, Bio.PDB.Atom.Atom],
-                    transform_mat: np.ndarray) -> np.ndarray:
+def _get_atom_rmsds(target_atoms: Dict[int, Atom], moved_atoms: Dict[int, Atom], transform_mat: np.ndarray) -> np.ndarray:
     """
     Modifies the coordinates of the atoms from the moved protein using defined transformation matrix and
     computes the distance corresponding target atoms.
@@ -447,7 +450,7 @@ def _get_atom_rmsds(target_atoms: Dict[int, Bio.PDB.Atom.Atom], moved_atoms: Dic
 
 
 def _update_atoms(rmsds: np.ndarray, target_atoms: dict, moved_atoms: dict,
-                  outlier_cutoff: float = 2.0) -> Tuple[Dict[int, Bio.PDB.Atom.Atom], Dict[int, Bio.PDB.Atom.Atom]]:
+                  outlier_cutoff: float = 2.0) -> Tuple[Dict[int, Atom], Dict[int, Atom]]:
     """
     Sorts atoms depending on their RMSD and then removes outliers with too high RMSD.
     :param rmsds: pairwise atomic RMSD values
@@ -486,9 +489,12 @@ def get_transform_matrix(moved_protein: str, target_protein: str, md_label: str 
     n_iter = 0
     rmsd_diff = 10.0 * rmsd_cutoff
 
-    pdb_parser = Bio.PDB.PDBParser(QUIET=True)
+    pdb_parser = PDBParser(QUIET=True)
     target = pdb_parser.get_structure(target_protein, target_protein)
     moved = pdb_parser.get_structure(moved_protein, moved_protein)
+
+    assert target is not None, f"Failed to parse target protein structure from {target_protein}"
+    assert moved is not None, f"Failed to parse moved protein structure from {moved_protein}"
 
     seq_alignment = _seq_align_proteins(target, moved)
 
@@ -551,7 +557,8 @@ def get_general_rot_mat_from_2_ca_atoms(in_pdb_file: str) -> np.ndarray:
     """
 
     from transport_tools.libs.geometry import cart2spherical
-    structure = Bio.PDB.PDBParser(QUIET=True).get_structure("", in_pdb_file)
+    structure = PDBParser(QUIET=True).get_structure("", in_pdb_file)
+    assert structure is not None, f"Failed to parse protein structure from {in_pdb_file}"
     ca_atoms_coords = np.array([atom.get_coord() for atom in structure.get_atoms() if atom.get_name() == "CA"])
 
     num_resids = ca_atoms_coords.shape[0]

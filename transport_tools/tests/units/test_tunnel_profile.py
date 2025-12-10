@@ -179,6 +179,9 @@ class TestTunnelProfile4MD(unittest.TestCase):
 
         # Check that distances have been recalculated for at least one tunnel
         for tunnel in self.profile.records.values():
+            if tunnel.spheres_data is None:
+                raise ValueError(f"Tunnel data be initiated/loaded before useage for tunnel {tunnel.tunnel_id} of cluster {tunnel.caver_cluster_id}")
+            
             # Distance of first sphere to origin should match coordinate distance
             first_sphere_coords = tunnel.spheres_data[0, 0:3]
             first_sphere_distance = tunnel.spheres_data[0, 3]
