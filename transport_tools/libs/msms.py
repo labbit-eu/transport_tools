@@ -98,7 +98,7 @@ def msms_surface(msms_binary_path: str, spheres: List[Tuple[np.ndarray, float]],
                                                                      sphere[1])
         with open(filename, "w") as outstream:
             outstream.write(output)
-    # TODO test if works, as it is notcovered by tests so far
+    
     with tempfile.TemporaryDirectory(prefix="TT_") as tmp:
         # Create temp file paths using public API
         fd1, xyzr_file = tempfile.mkstemp(suffix='.xyzr', dir=tmp)

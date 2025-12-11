@@ -28,6 +28,12 @@ import transport_tools.tests.units.test_utils as TT_test_utils
 import transport_tools.tests.units.test_geometry as TT_test_geometry
 import transport_tools.tests.units.test_networks as TT_test_networks
 import transport_tools.tests.units.test_tunnel_profile as TT_test_tunnel_profile
+import transport_tools.tests.units.test_outlier_events as TT_test_outlier_events
+import transport_tools.tests.units.test_event_assigner as TT_test_event_assigner
+import transport_tools.tests.units.test_supercluster as TT_test_supercluster
+import transport_tools.tests.units.test_msms as TT_test_msms
+import transport_tools.tests.units.test_config as TT_test_config
+import transport_tools.tests.units.test_ui as TT_test_ui
 from transport_tools.libs.utils import set_paths_from_package_root
 
 # Create unit tests suite
@@ -35,6 +41,12 @@ unit_tests_suite = unittest.defaultTestLoader.loadTestsFromModule(TT_test_utils)
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry))
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks))
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tunnel_profile))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_outlier_events))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_event_assigner))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_supercluster))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_msms))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_ui))
 
 # Run unit tests first
 print("=" * 80)

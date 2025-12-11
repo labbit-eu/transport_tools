@@ -1032,20 +1032,27 @@ class AnalysisConfig:
 
         return self.parameters[par_name]
 
-    def get_filters(self) -> List[float | int]:
+    def get_filters(self) -> Tuple[float, float, float, float, float, float, int, int, float, int, int, int]:
         """
         Collect filter values properly ordered to act as argument for filter_super_cluster_profiles and define_filters
-        :return: list of filter values
+        :return: tuple of filter values (min_length, max_length, min_bottleneck_radius, max_bottleneck_radius,
+                 min_curvature, max_curvature, min_sims_num, min_snapshots_num, min_avg_snapshots_num,
+                 min_total_events, min_entry_events, min_release_events)
         """
 
         filter_names = ["min_length", "max_length", "min_bottleneck_radius", "max_bottleneck_radius", "min_curvature",
                         "max_curvature", "min_sims_num", "min_snapshots_num", "min_avg_snapshots_num",
                         "min_total_events", "min_entry_events", "min_release_events"]
-        filters = list()
+        filters = []
         for name in filter_names:
-            filters.append(self.get_parameter(name))
+            value = self.get_parameter(name)
+            # Ensure integer parameters are cast to int for type safety
+            if name in ["min_sims_num", "min_snapshots_num", "min_total_events", "min_entry_events", "min_release_events"]:
+                filters.append(int(value))
+            else:
+                filters.append(float(value))
 
-        return filters
+        return tuple(filters)
 
     def set_parameter(self, par_name: str, value: Any):
         """

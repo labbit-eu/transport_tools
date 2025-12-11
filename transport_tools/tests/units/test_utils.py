@@ -21,6 +21,9 @@ __author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
+import os
+import tempfile
+import shutil
 import numpy as np
 
 
@@ -95,6 +98,174 @@ class TestUtils(unittest.TestCase):
         self.assertSequenceEqual((10, 3), node_labels_split("10_3"))
         self.assertSequenceEqual((8, 105), node_labels_split("8_105"))
         self.assertSequenceEqual((-99, -99), node_labels_split("SP"))
+
+    def test_test_file_exists(self):
+        """Verify test_file() does not raise for existing files"""
+        from transport_tools.libs.utils import test_file
+
+        # Create a temporary file
+        temp_dir = tempfile.mkdtemp()
+        try:
+            test_file_path = os.path.join(temp_dir, "test.txt")
+            with open(test_file_path, "w") as f:
+                f.write("test")
+
+            # Should not raise
+            test_file(test_file_path)
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_test_file_not_exists(self):
+        """Verify test_file() raises FileNotFoundError for non-existing files"""
+        from transport_tools.libs.utils import test_file
+
+        with self.assertRaises(FileNotFoundError) as context:
+            test_file("/nonexistent/path/to/file.txt")
+
+        self.assertIn("does not exist", str(context.exception))
+
+    def test_get_filepath_single_match(self):
+        """Verify get_filepath() returns path for unique file match"""
+        from transport_tools.libs.utils import get_filepath
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Create a single test file
+            test_file = os.path.join(temp_dir, "test.txt")
+            with open(test_file, "w") as f:
+                f.write("test")
+
+            # Should return the file path
+            result = get_filepath(temp_dir, "test.txt")
+            self.assertTrue(result.endswith("test.txt"))
+            self.assertTrue(os.path.exists(result))
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_get_filepath_pattern_match(self):
+        """Verify get_filepath() works with glob patterns"""
+        from transport_tools.libs.utils import get_filepath
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Create a single test file with specific extension
+            test_file = os.path.join(temp_dir, "test.dat")
+            with open(test_file, "w") as f:
+                f.write("test")
+
+            # Should find file with pattern
+            result = get_filepath(temp_dir, "*.dat")
+            self.assertTrue(result.endswith(".dat"))
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_get_filepath_no_match(self):
+        """Verify get_filepath() raises RuntimeError when no file matches"""
+        from transport_tools.libs.utils import get_filepath
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            with self.assertRaises(RuntimeError) as context:
+                get_filepath(temp_dir, "nonexistent.txt")
+
+            self.assertIn("does not exist", str(context.exception))
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_get_filepath_multiple_matches(self):
+        """Verify get_filepath() raises RuntimeError when multiple files match"""
+        from transport_tools.libs.utils import get_filepath
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # Create multiple matching files
+            for i in range(3):
+                with open(os.path.join(temp_dir, f"test{i}.txt"), "w") as f:
+                    f.write("test")
+
+            with self.assertRaises(RuntimeError) as context:
+                get_filepath(temp_dir, "*.txt")
+
+            self.assertIn("more then 1 file", str(context.exception))
+        finally:
+            shutil.rmtree(temp_dir)
+
+    def test_splitall_absolute_path(self):
+        """Verify splitall() correctly splits absolute paths"""
+        from transport_tools.libs.utils import splitall
+
+        if os.name == 'nt':  # Windows
+            result = splitall("C:\\Users\\test\\file.txt")
+            self.assertIn("Users", result)
+            self.assertIn("test", result)
+            self.assertEqual(result[-1], "file.txt")
+        else:  # Unix-like
+            result = splitall("/home/user/test/file.txt")
+            self.assertEqual(result[0], "/")
+            self.assertIn("home", result)
+            self.assertIn("user", result)
+            self.assertIn("test", result)
+            self.assertEqual(result[-1], "file.txt")
+
+    def test_splitall_relative_path(self):
+        """Verify splitall() correctly splits relative paths"""
+        from transport_tools.libs.utils import splitall
+
+        result = splitall("folder/subfolder/file.txt")
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0], "folder")
+        self.assertEqual(result[1], "subfolder")
+        self.assertEqual(result[2], "file.txt")
+
+    def test_splitall_single_component(self):
+        """Verify splitall() handles single path component"""
+        from transport_tools.libs.utils import splitall
+
+        result = splitall("file.txt")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], "file.txt")
+
+    def test_path_loader_string_simple(self):
+        """Verify path_loader_string() generates os.path.join code"""
+        from transport_tools.libs.utils import path_loader_string
+
+        result = path_loader_string("folder/file.txt")
+        self.assertIn("os.path.join", result)
+        self.assertIn("'folder'", result)
+        self.assertIn("'file.txt'", result)
+
+    def test_path_loader_string_nested(self):
+        """Verify path_loader_string() handles nested paths"""
+        from transport_tools.libs.utils import path_loader_string
+
+        result = path_loader_string("a/b/c/file.txt")
+        self.assertIn("os.path.join", result)
+        self.assertIn("'a'", result)
+        self.assertIn("'b'", result)
+        self.assertIn("'c'", result)
+        self.assertIn("'file.txt'", result)
+
+    def test_set_paths_from_package_root(self):
+        """Verify set_paths_from_package_root() constructs correct paths"""
+        from transport_tools.libs.utils import set_paths_from_package_root
+        import transport_tools
+
+        # Should return path within package
+        result = set_paths_from_package_root("tests", "data")
+
+        # Check it contains package directory
+        package_dir = os.path.dirname(transport_tools.__file__)
+        self.assertTrue(result.startswith(package_dir))
+        self.assertTrue(result.endswith(os.path.join("tests", "data")))
+
+    def test_set_paths_from_package_root_no_args(self):
+        """Verify set_paths_from_package_root() works with no arguments"""
+        from transport_tools.libs.utils import set_paths_from_package_root
+        import transport_tools
+
+        result = set_paths_from_package_root()
+        package_dir = os.path.dirname(transport_tools.__file__)
+        self.assertEqual(result, package_dir)
 
 
 if __name__ == "__main__":

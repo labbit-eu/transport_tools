@@ -46,7 +46,7 @@ class TestConfig(unittest.TestCase):
 
     def test_get_filters(self):
         results = self.config.get_filters()
-        self.assertListEqual([-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1], results)
+        self.assertTupleEqual(tuple([-1, -1, -1, -1, -1, -1, -1, -1, -1.0, -1, -1, -1]), results)
 
     def test_get_input_folders(self):
         results = self.config.get_input_folders()

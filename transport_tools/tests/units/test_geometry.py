@@ -574,6 +574,68 @@ class TestHelpers(unittest.TestCase):
         for i in range(len(test_helpers_xyzs) - 1):
             self.assertEqual(vector_angle(test_helpers_xyzs[i], test_helpers_xyzs[i + 1]), test_helpers_angles[i])
 
+    def test_read_starting_points(self):
+        """Verify read_starting_points() correctly reads PDB file"""
+        from transport_tools.libs.geometry import read_starting_points
+        from transport_tools.libs.utils import set_paths_from_package_root
+        import os
+
+        # Use test data if available
+        test_pdb = set_paths_from_package_root("tests", "data", "simulations", "md1", "caver", "data", "v_origins.pdb")
+
+        if os.path.exists(test_pdb):
+            result = read_starting_points(test_pdb)
+
+            # Should return ndarray with shape (n_points, 4) - x, y, z, radius
+            self.assertIsInstance(result, np.ndarray)
+            self.assertEqual(result.shape[1], 4)
+            self.assertGreater(result.shape[0], 0)
+        else:
+            self.skipTest("Test data not available")
+
+    def test_read_starting_points_nonexistent_file(self):
+        """Verify read_starting_points() raises error for nonexistent file"""
+        from transport_tools.libs.geometry import read_starting_points
+
+        with self.assertRaises(FileNotFoundError):
+            read_starting_points("/nonexistent/file.pdb")
+
+    def test_einsum_dist_same_point(self):
+        """Verify einsum_dist() returns zero for same point"""
+        from transport_tools.libs.geometry import einsum_dist
+
+        point = np.array([[1.0, 2.0, 3.0]])
+        result = einsum_dist(point, point)
+
+        self.assertIsInstance(result, np.ndarray)
+        self.assertAlmostEqual(result[0], 0.0)
+
+    def test_einsum_dist_known_distance(self):
+        """Verify einsum_dist() calculates correct distances"""
+        from transport_tools.libs.geometry import einsum_dist
+
+        # Points at distance 5 apart (3-4-5 triangle)
+        point1 = np.array([[0.0, 0.0, 0.0]])
+        point2 = np.array([[3.0, 4.0, 0.0]])
+
+        result = einsum_dist(point1, point2)
+        self.assertAlmostEqual(result[0], 5.0)
+
+    def test_einsum_dist_multiple_points(self):
+        """Verify einsum_dist() handles multiple point pairs"""
+        from transport_tools.libs.geometry import einsum_dist
+
+        points1 = np.array([[0.0, 0.0, 0.0],
+                           [1.0, 1.0, 1.0]])
+        points2 = np.array([[1.0, 0.0, 0.0],
+                           [1.0, 1.0, 1.0]])
+
+        result = einsum_dist(points1, points2)
+
+        self.assertEqual(len(result), 2)
+        self.assertAlmostEqual(result[0], 1.0)  # Distance from (0,0,0) to (1,0,0)
+        self.assertAlmostEqual(result[1], 0.0)  # Distance from (1,1,1) to (1,1,1)
+
 
 if __name__ == '__main__':
     unittest.main()
