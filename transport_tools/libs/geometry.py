@@ -352,6 +352,7 @@ class LayeredPathSet:
         self.starting_point_coords = starting_point_coords
         self.parameters = parameters
         self.traced_event: Tuple[str, Tuple[int, int]] | None = None
+        self.visualization_prefix: str | None = None
         self.node_depths: Dict[str, float] = dict()
         self.characteristics: Tuple[float, int] | None = None
 
@@ -505,6 +506,7 @@ class LayeredPathSet:
             frame_range = traced_residue[3]
 
         self.traced_event = ("{}:{}".format(traced_residue[0], traced_residue[1]), frame_range)
+        self.visualization_prefix = traced_residue[0].lower() + "_" + self.entity_label
 
     def _get_direction(self) -> np.ndarray:
         """
@@ -1848,11 +1850,12 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
 
 
 class LayeredRepresentationOfEvents(LayeredRepresentation):
-    def __init__(self, parameters: dict, entity_label: str):
+    def __init__(self, parameters: dict, entity_label: str, resname: str = "WAT"):
         """
         Class responsible for splitting of transport event data to layers and defining of their representative paths
         :param parameters: job configuration parameters
         :param entity_label: name of the entity (transport event) to be layered
+        :param resname: name of the traced residue (e.g. "WAT", "O2")
         """
 
         LayeredRepresentation.__init__(self, parameters, entity_label)
@@ -1863,13 +1866,14 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
         self.original_data_path = os.path.join(self.parameters["orig_aquaduct_vis_path"], self.md_label,
                                                "raw_paths_{:d}_cgo.dump.gz".format(event_id))
 
-        self.visualization_prefix = "wat_" + entity_label
+        self.resname = resname
+        self.visualization_prefix = resname.lower() + "_" + entity_label
 
     def __add__(self, other: LayeredRepresentationOfEvents) -> LayeredRepresentationOfEvents:
         if self.layer_thickness != other.layer_thickness:
             raise RuntimeError("Joining two layered representations with different layer thickness is not possible")
 
-        new = LayeredRepresentationOfEvents(self.parameters, self.entity_label)
+        new = LayeredRepresentationOfEvents(self.parameters, self.entity_label, self.resname)
 
         if self.points_mat is not None and other.points_mat is not None:
             new.points_mat = np.concatenate((self.points_mat, other.points_mat))

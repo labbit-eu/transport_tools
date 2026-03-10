@@ -227,10 +227,14 @@ class Network:
             self._save_transformed_pdb_file(os.path.join(self.layered_viz_path, self.transformed_pdb_file_name))
 
         for entity_id, layered_path_set in self.layered_entities.items():
-            try:
-                entity_label = "{}{:03d}".format(self.entity_pymol_abbreviation, entity_id)
-            except ValueError:
-                entity_label = "{}{:s}".format(self.entity_pymol_abbreviation, entity_id)
+            # Use per-entity visualization_prefix if available (e.g. for mixed-residue aqueduct networks)
+            if layered_path_set.visualization_prefix is not None:
+                entity_label = layered_path_set.visualization_prefix
+            else:
+                try:
+                    entity_label = "{}{:03d}".format(self.entity_pymol_abbreviation, entity_id)
+                except ValueError:
+                    entity_label = "{}{:s}".format(self.entity_pymol_abbreviation, entity_id)
 
             layered_path_set.visualize_cgo(os.path.join(self.layered_viz_path, "paths"), entity_label)
 
@@ -989,7 +993,7 @@ class AquaductNetwork(Network):
         """
 
         Network.__init__(self, parameters, md_label)
-        self.entity_pymol_abbreviation = "wat_"
+        self.entity_pymol_abbreviation = "evt_"  # default prefix, overridden per-entity by visualization_prefix
         self.transformed_pdb_file_name = self.md_label + "_A_trans_rot.pdb"
         self.protein_pdb_filename = self.parameters["aquaduct_results_pdb_filename"]
 
@@ -1190,7 +1194,7 @@ class TransportEvent:
             raise ValueError("Event type can only be one of 'inside', 'outside', 'entry' or 'release'")
 
         self.entity_label = "{}_{}".format(path_label.split("_")[-1], self.type)
-        self.entity_pymol_abbreviation = "wat_{}".format(self.entity_label)
+        self.entity_pymol_abbreviation = "{}_{}".format(traced_residue[0].lower(), self.entity_label)
         self.points: List[Point] = list()
         self.points_data: np.ndarray | None = None
         self.parameters = parameters
@@ -1380,7 +1384,7 @@ class TransportEvent:
         """
 
         with threadpool_limits(limits=1, user_api=None):
-            tmp_repre = LayeredRepresentationOfEvents(self.parameters, self.entity_label)
+            tmp_repre = LayeredRepresentationOfEvents(self.parameters, self.entity_label, self.traced_residue[0])
             tmp_repre.load_points(self)
             tmp_repre.split_points_to_layers()
             layered_pathset = tmp_repre.find_representative_paths(self.transform_mat, None,
@@ -2322,12 +2326,13 @@ class SuperCluster:
         # generate Pymol script of events assigned to this SC
         for event_type in sorted(self.transport_events.keys()):
             event_filenames = list()
-            for _md_label, path_id in subsample_events(self.transport_events[event_type],
-                                                       self.parameters["random_seed"],
-                                                       self.parameters["max_events_per_cluster4visualization"],
-                                                       md_label, comparative_groups_definition):
+            for _md_label, path_id, resname in subsample_events(self.transport_events[event_type],
+                                                                self.parameters["random_seed"],
+                                                                self.parameters["max_events_per_cluster4visualization"],
+                                                                md_label, comparative_groups_definition):
                 filename = os.path.join(vis_folder, _md_label, "paths",
-                                        "wat_{}_{}_pathset.dump.gz".format(path_id, event_type))
+                                        "{}{}_{}_pathset.dump.gz".format(resname.lower() + "_",
+                                                                         path_id, event_type))
                 event_filenames.append("{}".format(utils.path_loader_string(filename)))
 
             if event_filenames:
@@ -2950,39 +2955,55 @@ class TunnelProfile4MD:
 
 def subsample_events(transport_events: Dict[str, List[Tuple[str, Tuple[str, Tuple[int, int]]]]], random_seed: int,
                      max_events: int, md_label: str = "overall",
-                     comparative_groups_definition: Dict[str, List[str]] | None = None) -> List[Tuple[str, str]]:
+                     comparative_groups_definition: Dict[str, List[str]] | None = None) \
+        -> List[Tuple[str, str, str]]:
     """
-    Randomly selects limited number of transport events for visualization
+    Randomly selects limited number of transport events for visualization, subsampled per residue type separately
     :param transport_events: evaluated information about transport events
     :param random_seed: value to initiate the random number generator
-    :param max_events: maximum number of events to keep in supercluster
+    :param max_events: maximum number of events to keep per residue type in supercluster
     :param md_label: subsampling from which simulations to prepare; by default 'overall' from all
     :param comparative_groups_definition: definition of groups and belonging MD simulations for comparative analyses
-    :return: retained information on transport events
+    :return: retained information on transport events as list of (md_label, path_id, resname)
     """
 
-    events = list()
+    # collect all events with resname info
+    all_events = list()
     if md_label == "overall":
         for _md_label, paths in transport_events.items():
             for path in paths:
-                events.append((_md_label, path[0]))
+                resname = path[1][0].split(":")[0]
+                all_events.append((_md_label, path[0], resname))
     elif comparative_groups_definition is not None and md_label in comparative_groups_definition.keys():
         for _md_label in comparative_groups_definition[md_label]:
             if _md_label in transport_events.keys():
                 for path in transport_events[_md_label]:
-                    events.append((_md_label, path[0]))
+                    resname = path[1][0].split(":")[0]
+                    all_events.append((_md_label, path[0], resname))
     else:
         if md_label in transport_events.keys():
             for path in transport_events[md_label]:
-                events.append((md_label, path[0]))
+                resname = path[1][0].split(":")[0]
+                all_events.append((md_label, path[0], resname))
 
+    # group by residue type and subsample each group independently
+    from collections import defaultdict
     import random
-    if len(events) > max_events:
-        random.seed(random_seed)
-        random.shuffle(events)
-        return events[:max_events]
-    else:
-        return events
+    events_by_residue: Dict[str, list] = defaultdict(list)
+    for event in all_events:
+        events_by_residue[event[2]].append(event)
+
+    result = list()
+    for resname in sorted(events_by_residue.keys()):
+        residue_events = events_by_residue[resname]
+        if len(residue_events) > max_events:
+            random.seed(random_seed)
+            random.shuffle(residue_events)
+            result.extend(residue_events[:max_events])
+        else:
+            result.extend(residue_events)
+
+    return result
 
 
 def define_filters(min_length: float = -1, max_length: float = -1, min_bottleneck_radius: float = -1,

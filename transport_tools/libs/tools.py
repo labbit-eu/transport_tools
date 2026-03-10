@@ -184,12 +184,13 @@ class OutlierTransportEvents:
 
         for event_type in sorted(events2process.keys()):
             event_filenames = list()
-            for _md_label, path_id in subsample_events(events2process[event_type],
-                                                       self.parameters["random_seed"],
-                                                       self.parameters["max_events_per_cluster4visualization"],
-                                                       md_label, comparative_groups_definition):
+            for _md_label, path_id, resname in subsample_events(events2process[event_type],
+                                                               self.parameters["random_seed"],
+                                                               self.parameters["max_events_per_cluster4visualization"],
+                                                               md_label, comparative_groups_definition):
                 filename = os.path.join(vis_folder, _md_label, "paths",
-                                        "wat_{}_{}_pathset.dump.gz".format(path_id, event_type))
+                                        "{}{}_{}_pathset.dump.gz".format(resname.lower() + "_",
+                                                                         path_id, event_type))
                 event_filenames.append("{}".format(utils.path_loader_string(filename)))
 
             if event_filenames:
