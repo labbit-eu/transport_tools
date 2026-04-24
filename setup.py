@@ -18,15 +18,15 @@
 
 from setuptools import find_packages, setup
 
-install_requires = ['numpy>=1.17.3',
-                    'scipy>=1.5.2',
-                    'scikit-learn>=0.24.0',
-                    'biopython>=1.78',
-                    'fastcluster>=1.1.25',
-                    'hdbscan>=0.8.24',
-                    'mdtraj',
-                    'threadpoolctl',
-                    'joblib'
+install_requires = ['numpy>=2.3.5',
+                    'scipy>=1.16.3',
+                    'scikit-learn>=1.7.2',
+                    'biopython>=1.86',
+                    'fastcluster>=1.3.0',
+                    'hdbscan>=0.8.39',
+                    'mdtraj>=1.11.0',
+                    'threadpoolctl>=3.6.0',
+                    'joblib>=1.5.2'
                     ]
 
 with open('./README.md', 'r') as fh:
@@ -48,7 +48,7 @@ setup(name='transport_tools',
       license='GNU GPL v3',
       keywords='molecular-dynamics transport tunnels channels',
       packages=find_packages(include=['transport_tools*']),
-      python_requires='>=3.8',
+      python_requires='>=3.12',
       install_requires=install_requires,
       scripts=['transport_tools/scripts/tt_engine.py','transport_tools/scripts/tt_filter_caver_by_frames.py','transport_tools/scripts/tt_convert_to_caver.py'],
       provides=['transport_tools'],
