@@ -215,7 +215,12 @@ class TransportProcesses:
         """
 
         self.parameters = config.get_parameters()
-        self.caver_input_folders, self.traj_input_folders, self.aquaduct_input_folders = config.get_input_folders()
+        self.caver_input_folders, self.traj_input_folders, aquaduct_folders = config.get_input_folders()
+        self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
+        self.aquaduct_md_to_roots: Dict[str, List[str]] = {
+            md: [root for root, mds in aquaduct_folders.items() if md in mds]
+            for md in self.aquaduct_input_folders
+        }
         self.reference_pdb_file = config.get_reference_pdb_file()
         self.transformation_folder = self.parameters["transformation_folder"]
         self._super_clusters: Dict[int, SuperCluster] = dict()
@@ -237,7 +242,12 @@ class TransportProcesses:
 
         new_config.report_updates(self.parameters)
         self.parameters = new_config.get_parameters()
-        self.caver_input_folders, self.traj_input_folders, self.aquaduct_input_folders = new_config.get_input_folders()
+        self.caver_input_folders, self.traj_input_folders, aquaduct_folders = new_config.get_input_folders()
+        self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
+        self.aquaduct_md_to_roots = {
+            md: [root for root, mds in aquaduct_folders.items() if md in mds]
+            for md in self.aquaduct_input_folders
+        }
         self.reference_pdb_file = new_config.get_reference_pdb_file()
         self.transformation_folder = self.parameters["transformation_folder"]
 
@@ -856,11 +866,11 @@ class TransportProcesses:
                     [0, 0, 0, -overall_starting_point[2]],
                     [0, 0, 0, 0]])
 
-                # compute transformation matrices from AquaDuct PDB files
+                # compute transformation matrices from AquaDuct PDB files (use first available root)
                 processing = list()
                 aquaduct_transform_mat = dict()
                 for md_label in self.aquaduct_input_folders:
-                    md_folder = os.path.join(self.parameters["aquaduct_results_path"], md_label)
+                    md_folder = os.path.join(self.aquaduct_md_to_roots[md_label][0], md_label)
                     tar_file = utils.get_filepath(md_folder, self.parameters["aquaduct_results_relative_tarfile"])
                     processing.append(pool.apply_async(transform_aquaduct,
                                                        args=(md_label, tar_file,
@@ -990,15 +1000,22 @@ class TransportProcesses:
     @staticmethod
     def _pre_process_single_aquaduct_network(md_label: str, parameters: dict, parallel_processing: bool = True):
         """
-        Transformation and visualization of original AQUA-DUCT network for a single MD simulation
+        Transformation and visualization of original AQUA-DUCT network for a single MD simulation.
+        Merges paths from all root paths that contain this md_label.
         :param md_label: name of folder with the source MD simulation data
         :param parameters: job configuration parameters
         :param parallel_processing: if we process the raw_paths in parallel
         """
 
-        logger.debug("Processing an AQUA-DUCT network from {}.".format(md_label))
-        with AquaductNetwork(parameters, md_label) as aquanet:
+        root_paths = [p for p in parameters["aquaduct_results_path"]
+                      if os.path.isdir(os.path.join(p, md_label))]
+        logger.debug("Processing AQUA-DUCT network from {} ({} source(s)).".format(md_label, len(root_paths)))
+        with AquaductNetwork(parameters, md_label, root_path=root_paths[0]) as aquanet:
             aquanet.read_raw_paths_data(parallel_processing)
+            for extra_root in root_paths[1:]:
+                extra_net = AquaductNetwork(parameters, md_label, load_only=True, root_path=extra_root)
+                extra_net.read_raw_paths_data(parallel_processing)
+                aquanet.orig_entities.extend(extra_net.orig_entities)
             if parameters["visualize_transformed_transport_events"]:
                 aquanet.save_orig_network_visualization()
             aquanet.save_orig_network()
@@ -1015,9 +1032,9 @@ class TransportProcesses:
         logger.info("Processing {:d} AQUA-DUCT networks "
                     "using {:d} {}:".format(items2process, self.parameters["num_cpus"],
                                             process_count(self.parameters["num_cpus"])))
-        logger.debug("The networks are read from sub-folders in '{}' folder that match the following pattern "
-                     "'{}'.".format(self.parameters["aquaduct_results_path"],
-                                    self.parameters["aquaduct_results_folder_pattern"]))
+        logger.debug("The networks are read from sub-folders matching pattern '{}' in: {}.".format(
+            self.parameters["aquaduct_results_folder_pattern"],
+            ", ".join(self.parameters["aquaduct_results_path"])))
         logger.debug("Using the following reference file to "
                      "align AQUA-DUCT networks: '{}'".format(self.reference_pdb_file))
 

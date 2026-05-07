@@ -384,6 +384,12 @@ class AnalysisConfig:
 
         self.input_paths["caver_relative_origin_file"] = os.path.join(caver_subfolder_path, "data", "v_origins.pdb")
 
+        if self.input_paths["aquaduct_results_path"] is not None:
+            # to allow multiple sources with separate AquaDuct results as input (e.g. water and ligand if not process simultaneously)
+            self.input_paths["aquaduct_results_path"] = [
+                p.strip() for p in self.input_paths["aquaduct_results_path"].split(",") if p.strip()
+            ]
+
         if self.input_paths["caver_relative_pdb_file"] is None:
             if not self.input_paths["caver_results_path"]:
                 raise RuntimeError("\nParameter 'caver_results_path' must be defined and point to the folder with the"
@@ -608,13 +614,14 @@ class AnalysisConfig:
                                  "trajectories specified by 'trajectory_path' parameter. PLEASE, consider consulting "
                                  "the user guide.")
 
-            # we need to have caver and aquduct data from same MDs or exact analyses/matching will not work!
+            # we need to have corresponding caver and trajectory data for each aquaduct data otherwise exact analyses/matching will not work!
+            all_aquaduct_md_labels = sorted({md for mds in aquaduct_paths.values() for md in mds})
             exact_matching_data_mismatch = list()
-            for path2assign in aquaduct_paths:
+            for path2assign in all_aquaduct_md_labels:
                 if path2assign not in caver_paths or path2assign not in traj_paths:
                     exact_matching_data_mismatch.append(path2assign)
-            exact_matching_data_coverage = int((len(aquaduct_paths) - len(exact_matching_data_mismatch)) * 100 /
-                                               len(aquaduct_paths))
+            exact_matching_data_coverage = int((len(all_aquaduct_md_labels) - len(exact_matching_data_mismatch)) * 100 /
+                                               len(all_aquaduct_md_labels))
 
             if self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching" \
                     and exact_matching_data_coverage < 90:
@@ -719,15 +726,16 @@ class AnalysisConfig:
         if self.parameters["aquaduct_results_path"]:
             # test presence of AQUA-DUCT data
             aquaduct_keys2test = ["aquaduct_results_relative_tarfile", "aquaduct_results_relative_summaryfile"]
-            if not aquaduct_paths:
-                parameters2check = ("trajectory_path", "trajectory_folder_pattern")
-                raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in {}! Please check if '{}'"
-                                        " parameters are defined "
+            if not any(aquaduct_paths.values()):
+                parameters2check = ("aquaduct_results_path", "aquaduct_results_folder_pattern")
+                raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in any of {}! Please check if"
+                                        " '{}' parameters are defined "
                                         "correctly".format(self.parameters["aquaduct_results_folder_pattern"],
                                                            self.parameters["aquaduct_results_path"], parameters2check))
 
-            missing_file_reports = self._test_input_files(aquaduct_paths, aquaduct_keys2test,
-                                                          root_folder=self.parameters["aquaduct_results_path"])
+            missing_file_reports = ""
+            for root_path, md_labels in aquaduct_paths.items():
+                missing_file_reports += self._test_input_files(md_labels, aquaduct_keys2test, root_folder=root_path)
             if missing_file_reports:
                 raise FileNotFoundError(missing_file_reports)
 
@@ -1073,10 +1081,11 @@ class AnalysisConfig:
 
         return self.parameters.copy()
 
-    def get_input_folders(self) -> Tuple[List[str], List[str], List[str]]:
+    def get_input_folders(self) -> Tuple[List[str], List[str], dict]:
         """
         Enumerates source folders with CAVER data, MD trajectories and AQUA-DUCT data separately
-        :return: list of source folders with CAVER data, MD trajectories, and AQUA-DUCT data, respectively
+        :return: list of source folders with CAVER data, MD trajectories, and dict mapping each
+                 aquaduct_results_path to its sorted list of MD simulation folder names
         """
 
         folders_caver = [a.name for a in Path(self.parameters["caver_results_path"]).glob(self.parameters["caver_results_folder_pattern"]) if a.is_dir()]
@@ -1087,11 +1096,15 @@ class AnalysisConfig:
             folders_trajectory = [a.name for a in Path(self.parameters["trajectory_path"]).glob(self.parameters["trajectory_folder_pattern"]) if a.is_dir()]
 
         if self.parameters["aquaduct_results_path"] is None:
-            folders_aquaduct = []
+            folders_aquaduct = {}
         else:
-            folders_aquaduct = [a.name for a in Path(self.parameters["aquaduct_results_path"]).glob(self.parameters["aquaduct_results_folder_pattern"]) if a.is_dir()]
+            folders_aquaduct = {
+                root_path: sorted(a.name for a in Path(root_path).glob(
+                    self.parameters["aquaduct_results_folder_pattern"]) if a.is_dir())
+                for root_path in self.parameters["aquaduct_results_path"]
+            }
 
-        return sorted(folders_caver), sorted(folders_trajectory), sorted(folders_aquaduct)
+        return sorted(folders_caver), sorted(folders_trajectory), folders_aquaduct
 
     def get_reference_pdb_file(self) -> str:
         """

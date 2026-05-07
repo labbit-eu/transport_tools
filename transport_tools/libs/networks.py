@@ -984,12 +984,14 @@ class TunnelNetwork(Network):
 
 # ---- AquaDuct related classes ----
 class AquaductNetwork(Network):
-    def __init__(self, parameters: dict, md_label: str, load_only: bool = False):
+    def __init__(self, parameters: dict, md_label: str, load_only: bool = False, root_path: str | None = None):
         """
         Class for processing of AQUA-DUCT results, containing AquaductPath objects
         :param parameters: job configuration parameters
         :param md_label: name of folder with the source MD simulation data
         :param load_only: object will be used to load already processed network, no need for pdb_file
+        :param root_path: explicit root path containing this md_label; if None, uses first entry in
+                          parameters["aquaduct_results_path"] that contains the md_label folder
         """
 
         Network.__init__(self, parameters, md_label)
@@ -998,7 +1000,10 @@ class AquaductNetwork(Network):
         self.protein_pdb_filename = self.parameters["aquaduct_results_pdb_filename"]
 
         # input paths
-        root_folder = os.path.join(self.parameters["aquaduct_results_path"], md_label)
+        if root_path is None:
+            root_path = next(p for p in parameters["aquaduct_results_path"]
+                             if os.path.isdir(os.path.join(p, md_label)))
+        root_folder = os.path.join(root_path, md_label)
         self.tar_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_tarfile"])
         self.summary_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_summaryfile"])
         self.fd = None

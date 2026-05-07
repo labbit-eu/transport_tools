@@ -49,8 +49,11 @@ class TestConfig(unittest.TestCase):
         self.assertTupleEqual(tuple([-1, -1, -1, -1, -1, -1, -1, -1, -1.0, -1, -1, -1]), results)
 
     def test_get_input_folders(self):
-        results = self.config.get_input_folders()
-        self.assertSequenceEqual((['md1'], ['md1'], ['md1']), results)
+        caver_folders, traj_folders, aquaduct_folders = self.config.get_input_folders()
+        aquaduct_root = self.config.parameters["aquaduct_results_path"][0]
+        self.assertEqual(['md1'], caver_folders)
+        self.assertEqual(['md1'], traj_folders)
+        self.assertEqual({aquaduct_root: ['md1']}, aquaduct_folders)
 
     def test_get_reference_pdb_file(self):
         results = self.config.get_reference_pdb_file()
