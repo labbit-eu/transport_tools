@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,8 +18,8 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import numpy as np
@@ -499,14 +499,14 @@ class LayeredPathSet:
         if self.starting_point_coords is not None:
             raise RuntimeError("This functionality is meant for events only")
 
-        event_type = self.entity_label.split("_")[1]
+        event_type = self.entity_label.split("_")[-1]
         if event_type == "entry":  # which frame ranges to report
             frame_range = traced_residue[2]
         else:
             frame_range = traced_residue[3]
 
         self.traced_event = ("{}:{}".format(traced_residue[0], traced_residue[1]), frame_range)
-        self.visualization_prefix = traced_residue[0].lower() + "_" + self.entity_label
+        self.visualization_prefix = self.entity_label
 
     def _get_direction(self) -> np.ndarray:
         """
@@ -1862,12 +1862,12 @@ class LayeredRepresentationOfEvents(LayeredRepresentation):
         self.layers: Dict[int, Layer4Events] = dict()  # type: ignore[assignment]
         self.save_points_folder = os.path.join(self.parameters["layered_aquaduct_vis_path"], self.md_label)
 
-        event_id = int(entity_label.split("_")[0])
+        event_id = int(entity_label.split("_")[-2])
         self.original_data_path = os.path.join(self.parameters["orig_aquaduct_vis_path"], self.md_label,
                                                "raw_paths_{:d}_cgo.dump.gz".format(event_id))
 
         self.resname = resname
-        self.visualization_prefix = resname.lower() + "_" + entity_label
+        self.visualization_prefix = entity_label
 
     def __add__(self, other: LayeredRepresentationOfEvents) -> LayeredRepresentationOfEvents:
         if self.layer_thickness != other.layer_thickness:

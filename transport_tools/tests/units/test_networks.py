@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
@@ -351,17 +351,17 @@ class TestTransportEvent(unittest.TestCase):
             test_create_layered_event_pathset2, test_create_layered_event_pathset3
 
         entity_label, md_label, layered_pathset = self.inside.create_layered_event()
-        self.assertEqual("1_inside", entity_label)
+        self.assertEqual("wat_1_inside", entity_label)
         self.assertEqual("e10s1_e9s3p0f1600", md_label)
         self.assertEqual(test_create_layered_event_pathset1, str(layered_pathset))
 
         entity_label, md_label, layered_pathset = self.release.create_layered_event()
-        self.assertEqual("1_release", entity_label)
+        self.assertEqual("wat_1_release", entity_label)
         self.assertEqual("e10s1_e9s3p0f1600", md_label)
         self.assertEqual(test_create_layered_event_pathset2, str(layered_pathset))
 
         entity_label, md_label, layered_pathset = self.entry.create_layered_event()
-        self.assertEqual("1_entry", entity_label)
+        self.assertEqual("wat_1_entry", entity_label)
         self.assertEqual("e10s1_e9s3p0f1600", md_label)
         self.assertEqual(test_create_layered_event_pathset3, str(layered_pathset))
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,8 +18,8 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import os
@@ -1003,6 +1003,7 @@ class AquaductNetwork(Network):
         if root_path is None:
             root_path = next(p for p in parameters["aquaduct_results_path"]
                              if os.path.isdir(os.path.join(p, md_label)))
+        assert isinstance(root_path, str), "Must be string given the above if block"
         root_folder = os.path.join(root_path, md_label)
         self.tar_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_tarfile"])
         self.summary_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_summaryfile"])
@@ -1202,8 +1203,8 @@ class TransportEvent:
         else:
             raise ValueError("Event type can only be one of 'inside', 'outside', 'entry' or 'release'")
 
-        self.entity_label = "{}_{}".format(path_label.split("_")[-1], self.type)
-        self.entity_pymol_abbreviation = "{}_{}".format(traced_residue[0].lower(), self.entity_label)
+        self.entity_label = "{}_{}_{}".format(traced_residue[0].lower(), path_label.split("_")[-1], self.type)
+        self.entity_pymol_abbreviation = self.entity_label
         self.points: List[Point] = list()
         self.points_data: np.ndarray | None = None
         self.parameters = parameters
@@ -1941,7 +1942,8 @@ class SuperCluster:
 
         self.bottleneck_residue_freq: Dict[str, Dict[str, float]] = dict()
 
-        self.num_events: Dict[str, Dict[str, int]] = {"overall": {"entry": 0, "release": 0}}
+        self.num_events: Dict[str, Dict[str, int]] = {"overall": {"entry": 0, "release": 0}} 
+        self.num_events_by_residue: Dict[str, Dict[str, Dict[str, int]]] = {"overall": {}}
 
         # space descriptors
         self.path_sets: Dict[str, LayeredPathSet] = dict()  # info on overall and per MD representative paths of the SC
@@ -1980,6 +1982,12 @@ class SuperCluster:
             details_txt += "Number of MD simulations = {:d}\n".format(self.count_md_labels4events())
             details_txt += "Number of entry events = {:d}\n".format(self.num_events["overall"]["entry"])
             details_txt += "Number of release events = {:d}\n".format(self.num_events["overall"]["release"])
+            if self.num_events_by_residue["overall"]:
+                details_txt += "Per-residue breakdown:\n"
+                for resname in sorted(self.num_events_by_residue["overall"].keys()):
+                    details_txt += "  {}: entry={:d}, release={:d}\n".format(
+                        resname, self.num_events_by_residue["overall"][resname]["entry"],
+                        self.num_events_by_residue["overall"][resname]["release"])
 
             for event_type in sorted(self.transport_events.keys()):
                 details_txt += "{}: (from Simulation: AQUA-DUCT ID, (Resname:Residue), " \
@@ -2015,6 +2023,10 @@ class SuperCluster:
 
         self.transport_events[event_type][md_label].append((path_id, traced_event))
         self.num_events["overall"][event_type] += 1
+        resname = traced_event[0].split(":")[0]
+        if resname not in self.num_events_by_residue["overall"]:
+            self.num_events_by_residue["overall"][resname] = {"entry": 0, "release": 0}
+        self.num_events_by_residue["overall"][resname][event_type] += 1
 
         stat_md_label = md_label
         if self.parameters["perform_comparative_analysis"] \
@@ -2030,6 +2042,11 @@ class SuperCluster:
             if stat_md_label not in self.num_events.keys():
                 self.num_events[stat_md_label] = {"entry": 0, "release": 0}
             self.num_events[stat_md_label][event_type] += 1
+            if stat_md_label not in self.num_events_by_residue:
+                self.num_events_by_residue[stat_md_label] = {}
+            if resname not in self.num_events_by_residue[stat_md_label]:
+                self.num_events_by_residue[stat_md_label][resname] = {"entry": 0, "release": 0}
+            self.num_events_by_residue[stat_md_label][resname][event_type] += 1
             return True
 
     def add_caver_cluster(self, md_label: str, cls_id: int, path_set: LayeredPathSet):
@@ -2356,11 +2373,13 @@ class SuperCluster:
 
         return plines, viz_data
 
-    def get_summary_line_data(self, print_transport_events: bool = False, md_label: str = "overall") -> List[str]:
+    def get_summary_line_data(self, print_transport_events: bool = False, md_label: str = "overall",
+                              residue_names: List[str] | None = None) -> List[str]:
         """
         Generates data for creation of line summarizing overall properties of this supercluster (SC)
         :param print_transport_events: if properties related to transport events should be reported
         :param md_label: summary of which simulations to report; by default report 'overall' stats
+        :param residue_names: sorted list of residue names for per-residue event columns; None = skip
         :return: list of items for the summary line
         """
         data = ["{:d}".format(self.sc_id)]
@@ -2387,6 +2406,14 @@ class SuperCluster:
                 data.append("{:d}".format(self.num_events[md_label]["entry"] + self.num_events[md_label]["release"]))
                 data.append("{:d}".format(self.num_events[md_label]["entry"]))
                 data.append("{:d}".format(self.num_events[md_label]["release"]))
+            if residue_names:
+                res_counts = self.num_events_by_residue.get(md_label, {})
+                for resname in residue_names:
+                    if resname in res_counts:
+                        data.append("{:d}".format(res_counts[resname]["entry"]))
+                        data.append("{:d}".format(res_counts[resname]["release"]))
+                    else:
+                        data.extend(["-", "-"])
 
         return data
 

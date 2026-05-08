@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import numpy as np
@@ -435,7 +435,7 @@ test_event_get_points_data_out3 = np.array([[53.600714083, 38.756084976, 24.4551
                                             [49.705671324, 41.167422199, 29.484756820, 7.06, 0.0, 1.0, 0.0],
                                             [49.067117790, 40.621768126, 28.998445142, 6.67, 0.0, 0.0, 0.0]])
 
-test_create_layered_event_pathset1 = """LayeredPathSet: 1_inside of e10s1_e9s3p0f1600
+test_create_layered_event_pathset1 = """LayeredPathSet: wat_1_inside of e10s1_e9s3p0f1600
 Paths: 
  0: ['4_0' '5_0']
 num nodes = 2
@@ -447,7 +447,7 @@ Data:
  [-2.2        -6.91       -4.58        5.          1.          0.
    0.        ]]"""
 
-test_create_layered_event_pathset2 = """LayeredPathSet: 1_release of e10s1_e9s3p0f1600
+test_create_layered_event_pathset2 = """LayeredPathSet: wat_1_release of e10s1_e9s3p0f1600
 Paths: 
  0: ['7_0' '9_1' '10_0' '9_1']
 num nodes = 4
@@ -463,7 +463,7 @@ Data:
  [  0.386       -9.666       -9.924        9.           1.
     0.           1.18308079]]"""
 
-test_create_layered_event_pathset3 = """LayeredPathSet: 1_entry of e10s1_e9s3p0f1600
+test_create_layered_event_pathset3 = """LayeredPathSet: wat_1_entry of e10s1_e9s3p0f1600
 Paths: 
  0: ['4_0' '5_0' '7_0' '8_0']
 num nodes = 4

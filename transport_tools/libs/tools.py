@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import os
@@ -55,6 +55,7 @@ class OutlierTransportEvents:
         self.transport_events_global: Dict[str, Dict[str, List[Tuple[str, Tuple[str, Tuple[int, int]]]]]] = dict()
 
         self.num_events: Dict[str, Dict[str, int]] = {"overall": {"entry": 0, "release": 0}}
+        self.num_events_by_residue: Dict[str, Dict[str, Dict[str, int]]] = {"overall": {}}
 
     def exist(self, md_label: str = "overall") -> bool:
         """
@@ -99,6 +100,7 @@ class OutlierTransportEvents:
             self.transport_events[event_type][md_label] = list()
 
         self.transport_events[event_type][md_label].append((path_id, traced_event))
+        resname = traced_event[0].split(":")[0]
 
         stat_md_label = md_label
         if self.parameters["perform_comparative_analysis"] \
@@ -110,9 +112,17 @@ class OutlierTransportEvents:
         if stat_md_label not in self.num_events.keys():
             self.num_events[stat_md_label] = {"entry": 0, "release": 0}
         self.num_events[stat_md_label][event_type] += 1
+        if stat_md_label not in self.num_events_by_residue:
+            self.num_events_by_residue[stat_md_label] = {}
+        if resname not in self.num_events_by_residue[stat_md_label]:
+            self.num_events_by_residue[stat_md_label][resname] = {"entry": 0, "release": 0}
+        self.num_events_by_residue[stat_md_label][resname][event_type] += 1
 
         if globally_unassigned:
             self.num_events["overall"][event_type] += 1
+            if resname not in self.num_events_by_residue["overall"]:
+                self.num_events_by_residue["overall"][resname] = {"entry": 0, "release": 0}
+            self.num_events_by_residue["overall"][resname][event_type] += 1
             if event_type not in self.transport_events_global.keys():
                 self.transport_events_global[event_type] = dict()
 
@@ -133,6 +143,12 @@ class OutlierTransportEvents:
             out_stream.write("Unassigned transport events:\n")
             out_stream.write("Number of entry events = {:d}\n".format(self.num_events["overall"]["entry"]))
             out_stream.write("Number of release events = {:d}\n".format(self.num_events["overall"]["release"]))
+            if self.num_events_by_residue["overall"]:
+                out_stream.write("Per-residue breakdown:\n")
+                for resname in sorted(self.num_events_by_residue["overall"].keys()):
+                    out_stream.write("  {}: entry={:d}, release={:d}\n".format(
+                        resname, self.num_events_by_residue["overall"][resname]["entry"],
+                        self.num_events_by_residue["overall"][resname]["release"]))
 
             for event_type in sorted(self.transport_events_global.keys()):
                 out_stream.write("{}: (from Simulation: AQUA-DUCT ID, (Resname:Residue), "
@@ -145,17 +161,30 @@ class OutlierTransportEvents:
                                                                      traced_event[1][1]))
                     out_stream.write("\n")
 
-    def report_summary_line(self, widths: List[int], md_label: str = "overall") -> str:
+    def report_summary_line(self, widths: List[int], md_label: str = "overall",
+                            residue_names: List[str] | None = None) -> str:
         """
         Prepares information on transport events flagged as outliers for generation of summary of superclusters
-        :param widths: column widths to match the format of the rest of the summary file
+        :param widths: column widths; first 4 are [text_start, Num_Events, Num_entries, Num_releases],
+                       followed by pairs [RES_E_width, RES_R_width] for each residue in residue_names
         :param md_label: summary of which simulations to report; by default report 'overall' stats
+        :param residue_names: sorted list of residue names matching the per-residue columns; None = skip
         :return: info on outlier events
         """
 
-        return "{:{width1}s}{:{width2}d}, {:{width3}d}, " \
-               "{:{width4}d}\n".format("Total number of unassigned events:", *self.count_events(md_label),
-                                       width1=widths[0], width2=widths[1], width3=widths[2], width4=widths[3])
+        line = "{:{width1}s}{:{width2}d}, {:{width3}d}, " \
+               "{:{width4}d}".format("Total number of unassigned events:", *self.count_events(md_label),
+                                     width1=widths[0], width2=widths[1], width3=widths[2], width4=widths[3])
+        if residue_names:
+            res_counts = self.num_events_by_residue.get(md_label, {})
+            for i, resname in enumerate(residue_names):
+                w_e, w_r = widths[4 + i * 2], widths[4 + i * 2 + 1]
+                if resname in res_counts:
+                    line += ", {:{we}d}, {:{wr}d}".format(
+                        res_counts[resname]["entry"], res_counts[resname]["release"], we=w_e, wr=w_r)
+                else:
+                    line += ", {:{we}s}, {:{wr}s}".format("-", "-", we=w_e, wr=w_r)
+        return line + "\n"
 
     def prepare_visualization(self, md_label: str = "overall") -> List[str]:
         """
@@ -517,7 +546,7 @@ class TransportProcesses:
                     for i, p in enumerate(processing):
                         event_specification, assigned_sc_ids, max_buriedness, max_depth = p.get()
                         md_label = event_specification[0]
-                        event_path_id, event_type = event_specification[1].split("_")
+                        event_path_id, event_type = event_specification[1].split("_")[-2:]
                         traced_event = event_specification[2]
 
                         if assigned_sc_ids is None:
@@ -1277,15 +1306,23 @@ class TransportProcesses:
                     header_list = ["SC_ID", "No_Sims", "Total_No_Frames", "Avg_No_Frames", "Avg_BR", "StDev", "Max_BR",
                                    "Avg_Len", "StDev", "Avg_Cur", "StDev", "Avg_throug", "StDev", "Priority"]
 
+                    residue_names: List[str] = []
                     if self._events_assigned:
                         header_list.extend(["Num_Events", "Num_entries", "Num_releases"])
+                        residue_set: set = set()
+                        for sc in self._super_clusters.values():
+                            residue_set.update(sc.num_events_by_residue.get(md_label, {}).keys())
+                        if len(residue_set) > 1:
+                            residue_names = sorted(residue_set)
+                            for res in residue_names:
+                                header_list.extend(["{}_E".format(res), "{}_R".format(res)])
 
                     dataset = [header_list]
                     for prio_sc in sorted(self._prioritized_clusters.keys()):  #
                         # we use prioritized IDs as those are also respecting active filters
                         sc_id = self._prioritized_clusters[prio_sc]
-                        dataset.append(self._super_clusters[sc_id].get_summary_line_data(self._events_assigned,
-                                                                                         md_label))
+                        dataset.append(self._super_clusters[sc_id].get_summary_line_data(
+                            self._events_assigned, md_label, residue_names or None))
 
                     # find appropriate width of columns
                     widths = dict()
@@ -1322,7 +1359,11 @@ class TransportProcesses:
                             widths[header_list.index("Num_entries")],
                             widths[header_list.index("Num_releases")]
                         ]
-                        output += self._outlier_transport_events.report_summary_line(out_widths, md_label)
+                        for res in residue_names:
+                            out_widths.append(widths[header_list.index("{}_E".format(res))])
+                            out_widths.append(widths[header_list.index("{}_R".format(res))])
+                        output += self._outlier_transport_events.report_summary_line(
+                            out_widths, md_label, residue_names or None)
 
                     out_stream.write(output)
                     if "overall" not in md_label and cat_stream1 is not None:

@@ -1,0 +1,215 @@
+========================================================================
+Aqua-Duct analysis
+2026-05-07 14:01:41
+Aqua-Duct: v1.0.11
+NumPy: v1.26.4
+MDAnalysis: v2.7
+========================================================================
+Configuration file name: aquaduct_config.txt
+--------------------------------------------
+[global]
+top = stripped.parm7
+trj = autoimg_rmsd_stripped.nc
+twoway = True
+sps = True
+sandwich = False
+waterfall = False
+max_frame = None
+min_frame = None
+step_frame = None
+cache_dir = None
+cache_mem = False
+cache_type = full
+[traceable_residues]
+execute = runonce
+dump = 1_traceable_residues_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+scope_convexhull_inflate = None
+object = resname U01 and sphzone 6.0 ((resnum 205 and name CA) or (resnum 271 and name CA))
+add_passing = None
+[raw_paths]
+execute = runonce
+dump = 2_raw_paths_data.dump
+scope = backbone
+scope_convexhull = True
+scope_everyframe = False
+scope_convexhull_inflate = None
+object = resname U01 and sphzone 6.0 ((resnum 205 and name CA) or (resnum 271 and name CA))
+clear_in_object_info = False
+discard_singletons = 0
+discard_empty_paths = False
+[separate_paths]
+execute = runonce
+dump = 3_separate_paths_data.dump
+allow_passing_paths = False
+auto_barber_tovdw = True
+auto_barber_maxcut = 2.8
+auto_barber_mincut = None
+auto_barber_maxcut_level = True
+auto_barber_mincut_level = True
+auto_barber = None
+separate_barber = True
+discard_empty_paths = True
+sort_by_id = True
+apply_smoothing = False
+apply_soft_smoothing = True
+remove_unused_parts = True
+calculate_coo = False
+discard_short_paths = 1
+discard_short_object = 2.0
+discard_short_logic = or
+[inlets_clustering]
+execute = runonce
+dump = 4_inlets_clustering_data.dump
+max_level = 0
+recluster_outliers = False
+detect_outliers = False
+singletons_outliers = False
+create_master_paths = False
+exclude_passing_in_clustering = True
+add_passing_to_clusters = None
+renumber_clusters = False
+join_clusters = None
+master_paths_amount = None
+separate_master = False
+separate_master_all = True
+inlets_center = cos
+remove_inlets = None
+clustering_order = old-school
+[analysis]
+execute = runonce
+save = 5_analysis_results.txt
+calculate_scope_object_size = False
+scope_chull = backbone
+scope_chull_inflate = None
+object_chull = resname U01 and sphzone 6.0 ((resnum 205 and name CA) or (resnum 271 and name CA))
+cluster_area = True
+cluster_area_precision = 20
+cluster_area_expand = 2
+dump_config = True
+[visualize]
+execute = runonce
+save = 6_visualize_results.py
+split_by_type = False
+retain_all_types = False
+all_paths_raw = True
+all_paths_smooth = False
+all_paths_split = True
+all_paths_raw_io = True
+all_paths_smooth_io = False
+all_paths_amount = None
+paths_raw = True
+paths_smooth = False
+paths_states = True
+paths_raw_io = True
+paths_smooth_io = False
+ctypes_raw = True
+ctypes_smooth = False
+ctypes_amount = None
+inlets_clusters = True
+inlets_clusters_amount = None
+cluster_area = True
+cluster_area_precision = 20
+cluster_area_expand = 2
+show_molecule = protein
+show_molecule_frames = 0
+show_scope_chull = protein
+show_scope_chull_inflate = None
+show_scope_chull_frames = 0
+show_object_chull = resname U01 and sphzone 6.0 ((resnum 205 and name CA) or (resnum 271 and name CA))
+show_object_chull_frames = 0
+[clustering]
+method = meanshift
+recursive_clustering = clustering
+recursive_threshold = >0.9
+auto_barber = None
+cluster_all = True
+bandwidth = Auto
+recursive_clusterization = clusterization
+[reclustering]
+method = meanshift
+recursive_clustering = False
+recursive_threshold = False
+cluster_all = False
+bandwidth = Auto
+[smooth]
+method = window
+[inlets_clusterization]
+recluster_outliers = True
+detect_outliers = Auto
+singletons_outliers = 2
+create_master_paths = True
+max_level = 2
+========================================================================
+Frames window: 0:19999 step 1
+========================================================================
+Names of traced molecules: U01
+========================================================================
+Number of traceable residues: 1
+Number of separate paths: 2
+========================================================================
+Number of inlets: 3
+Number of clusters: 0
+Outliers: yes
+========================================================================
+Clustering history:
+all-+ {size: 3; MeanShift}
+    0 {size: 3}
+========================================================================
+Clusters summary - inlets
+-----------------------------------------
+     Nr Cluster    Size INCOMING OUTGOING
+-----------------------------------------
+      1       0       3        2        1
+-----------------------------------------
+========================================================================
+Clusters summary - areas
+------------------------------------------------------------------------------
+     Nr Cluster     D100      D95      D90      D80      D70      D60      D50
+------------------------------------------------------------------------------
+      1       0     1.46     0.53     0.48     0.42     0.38     0.34     0.31
+------------------------------------------------------------------------------
+========================================================================
+Clusters statistics (of paths) probabilities of transfers
+---------------------------------------------------------------------------------
+     Nr Cluster   IN-OUT     diff        N  IN-OUT_prob    diff_prob       N_prob
+---------------------------------------------------------------------------------
+      1       0        1        0        1         0.50         0.00         0.50
+---------------------------------------------------------------------------------
+Clusters statistics (of paths) mean lengths of transfers
+-----------------------------------------------------------------------------------------
+     Nr Cluster    X->Obj    Obj->X   p-value X->ObjMin X->ObjMinID Obj->XMin Obj->XMinID
+-----------------------------------------------------------------------------------------
+      1       0      22.8      39.1       nan       6.5     0:326:0      39.1     0:326:0
+-----------------------------------------------------------------------------------------
+Clusters statistics (of paths) mean frames numbers of transfers
+-----------------------------------------------------------------------------------------
+     Nr Cluster    X->Obj    Obj->X   p-value X->ObjMin X->ObjMinID Obj->XMin Obj->XMinID
+-----------------------------------------------------------------------------------------
+      1       0      16.5      27.0       nan       4.0     0:326:0      27.0     0:326:0
+-----------------------------------------------------------------------------------------
+========================================================================
+Separate paths clusters types summary - mean lengths of paths
+--------------------------------------------------------------------------------------------------------------
+     Nr   CType    Size  Size%       Tot    TotStd       Inp    InpStd       Obj    ObjStd       Out    OutStd
+--------------------------------------------------------------------------------------------------------------
+      1     0:0       1  50.00    5701.0      0.00       6.5      0.00    5655.4      0.00      39.1      0.00
+      2     0:N       1  50.00   12093.3      0.00      39.1      0.00   12054.1      0.00       nan       nan
+--------------------------------------------------------------------------------------------------------------
+Separate paths clusters types summary - mean number of frames of paths
+--------------------------------------------------------------------------------------------------------------
+     Nr   CType    Size  Size%       Tot    TotStd       Inp    InpStd       Obj    ObjStd       Out    OutStd
+--------------------------------------------------------------------------------------------------------------
+      1     0:0       1  50.00    4736.0      0.00       4.0      0.00    4705.0      0.00      27.0      0.00
+      2     0:N       1  50.00   10514.0      0.00      29.0      0.00   10485.0      0.00       0.0      0.00
+--------------------------------------------------------------------------------------------------------------
+========================================================================
+List of separate paths and properties
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+     Nr        ID  RES  BeginF    InpF    ObjF   ObjFS    OutF    EndF      TotL      InpL      ObjL      OutL     TotS  TotStdS     InpS  InpStdS     ObjS  ObjStdS     OutS  OutStdS   CType
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      1   0:326:0  U01    4599       4    4705    3818      27    9334    5701.0       6.5    5655.4      39.1     1.20    0.644     1.63    0.592     1.20    0.642     1.45    0.723     0:0
+      2   0:326:1  U01    9486      29   10485    9045       0   19999   12093.3      39.1   12054.1       nan     1.15    0.615     1.35    0.744     1.15    0.614      nan      nan     0:N
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

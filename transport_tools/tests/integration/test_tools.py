@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
@@ -392,17 +392,17 @@ class TestTransportProcesses(unittest.TestCase):
                               os.path.join(self.out_path, "data", "exact_matching_analysis", "md1"), self)
 
         compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
-                                           "1_entry_sc2"),
+                                           "wat_1_entry_sc2"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_entry_sc2"), self)
+                                           "wat_1_entry_sc2"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc3"),
+                                           "wat_1_release_sc3"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc3"), self)
+                                           "wat_1_release_sc3"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc2"),
+                                           "wat_1_release_sc2"),
                               os.path.join(self.out_path, "visualization", "exact_matching_analysis", "md1",
-                                           "1_release_sc2"), self)
+                                           "wat_1_release_sc2"), self)
 
         compare_test_folders(os.path.join(self.saved_data, "data", "super_clusters", "CSV_profiles", "filtered02"),
                               os.path.join(self.out_path, "data", "super_clusters", "CSV_profiles", "filtered02"), self)

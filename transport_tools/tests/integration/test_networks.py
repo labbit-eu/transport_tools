@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta <janbre@amu.edu.pl>
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,8 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.6'
-__author__ = 'Jan Brezovsky, Carlos Eduardo Sequeiros-Borja, Bartlomiej Surpeta'
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
@@ -465,6 +465,8 @@ Details on transport events:
 Number of MD simulations = 1
 Number of entry events = 2
 Number of release events = 1
+Per-residue breakdown:
+  WAT: entry=2, release=1
 entry: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
 from md1: 1, (WAT:326), 144->893; 4, (WAT:326), 880->902; 
 release: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
@@ -544,11 +546,11 @@ Number of release events = 0
         self.super_clusters[1].avg_direction = avg_direction
 
         outputs = {
-            "1_release": ((0.8571428571428571, 0.3333333333333333), (0.0, 1.0)),
-            "1_entry": ((0.8571428571428571, 0.5), (0.0, 1.0)),
-            "4_release": ((0.7142857142857143, 0.3333333333333333), (0.0, 1.0)),
-            "4_entry": ((0.7142857142857143, 0.3333333333333333), (0.0, 1.0)),
-            "6_entry": ((0.7272727272727273, 0.3333333333333333), (0.0, 1.0))
+            "wat_1_release": ((0.8571428571428571, 0.3333333333333333), (0.0, 1.0)),
+            "wat_1_entry": ((0.8571428571428571, 0.5), (0.0, 1.0)),
+            "wat_4_release": ((0.7142857142857143, 0.3333333333333333), (0.0, 1.0)),
+            "wat_4_entry": ((0.7142857142857143, 0.3333333333333333), (0.0, 1.0)),
+            "wat_6_entry": ((0.7272727272727273, 0.3333333333333333), (0.0, 1.0))
         }
 
         for event in saved_net.layered_entities.values():
