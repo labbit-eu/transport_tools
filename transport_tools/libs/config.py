@@ -129,6 +129,7 @@ class AnalysisConfig:
             "min_avg_snapshots_num": -1,  # filter on presence in minimum number of snapshots on average
 
             # Processing of transport events from AQUA-DUCT results and their assignment to superclusters
+            "aquaduct_traced_residues_filter": None,  # list of uppercase resnames to analyze; None = process all 
             "event_min_distance": 6.0,  # closest distance of event from starting point to be processed
             "event_assignment_cutoff": 0.85,
             # event_assignment_cutoff represents minimal buriedness of transport event in a supercluster to be
@@ -222,6 +223,7 @@ class AnalysisConfig:
             "pdb_reference_structure",
             "snapshots_per_simulation",
             "comparative_groups_definition",
+            "aquaduct_traced_residues_filter",
             "msms"
         ]
 
@@ -489,6 +491,13 @@ class AnalysisConfig:
                 and self.parameters["comparative_groups_definition"] is not None:
             self._parse_group_definition()
 
+        if isinstance(self.parameters["aquaduct_traced_residues_filter"], str):
+            # parse the resides into list
+            self.parameters["aquaduct_traced_residues_filter"] = [
+                r.strip().upper() for r in self.parameters["aquaduct_traced_residues_filter"].split(",")
+                if r.strip()
+            ]
+
         if self.parameters["legacy_pymol_support"]:
             self.parameters["pickle_protocol"] = 2
             self.internal_settings["pickle_protocol"] = 2
@@ -600,6 +609,12 @@ class AnalysisConfig:
                                          "and '{}') in 'comparative_groups_definition' "
                                          "parameter but must be unique!".format(md_label, group, membership[md_label]))
                     membership[md_label] = group
+
+        if self.parameters["aquaduct_traced_residues_filter"] is not None:
+            if not isinstance(self.parameters["aquaduct_traced_residues_filter"], list) \
+                    or not self.parameters["aquaduct_traced_residues_filter"]:
+                raise ValueError("\nParameter 'aquaduct_traced_residues_filter' must be a non-empty "
+                                 "comma-separated list of residue names (e.g. 'WAT, O2').")
 
         if self.parameters["aquaduct_results_path"]:
             if self.parameters["visualize_exact_matching_outcomes"] \

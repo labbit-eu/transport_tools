@@ -1135,17 +1135,21 @@ class AquaductNetwork(Network):
             traced_residues.append((resname, resid, entry_frames, release_frames))
 
         # read raw paths from tarfile
+        resname_filter = self.parameters.get("aquaduct_traced_residues_filter")
         items2process = list()
         tar_handle = tarfile.open(self.tar_file, "r:gz")
         for filename in sorted(tar_handle.getnames(), key=self._path_sort):
             if search(r'^raw_paths_\d+\.dump', filename):
                 path_label = filename.split(".")[0]
                 path_id = int(path_label.split("_")[2])
+                traced_residue = traced_residues[path_id - 1]
+                if resname_filter is not None and traced_residue[0].upper() not in resname_filter:
+                    continue
                 extracted_file = tar_handle.extractfile(filename)
                 if extracted_file is None:
                     raise ValueError(f"File '{filename}' not found in tarfile '{self.tar_file}'")
                 cgo_object = pickle.load(extracted_file)
-                items2process.append((path_label, traced_residues[path_id - 1], cgo_object))
+                items2process.append((path_label, traced_residue, cgo_object))
         tar_handle.close()
 
         if parallel_processing:
