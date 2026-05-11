@@ -59,6 +59,7 @@ unit_results = unittest.TextTestRunner(verbosity=2).run(unit_tests_suite)
 if os.path.exists(set_paths_from_package_root("tests", "data")):
     integration_tests_suite = unittest.TestSuite()
     import transport_tools.tests.integration.test_tools as TT_test_tools
+    import transport_tools.tests.integration.test_tools_mixed_events as TT_test_tools_mixed_events
     import transport_tools.tests.integration.test_protein_files as TT_test_protein_files
     import transport_tools.tests.integration.test_config as TT_test_config
     import transport_tools.tests.integration.test_geometry as TT_test_geometry2
@@ -69,6 +70,7 @@ if os.path.exists(set_paths_from_package_root("tests", "data")):
     integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_geometry2))
     integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_networks2))
     integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tools))
+    integration_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tools_mixed_events))
 
     print("\n" + "=" * 80)
     print("Running Integration Tests")

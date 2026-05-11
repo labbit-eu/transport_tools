@@ -1,0 +1,8 @@
+Unassigned transport events:
+Number of entry events = 6
+Number of release events = 0
+Per-residue breakdown:
+  WAT: entry=6, release=0
+entry: (from Simulation: AQUA-DUCT ID, (Resname:Residue), start_frame->end_frame; ... )
+from e10s0_seed43_f371m1821: 571, (WAT:8091), 14402->14528; 864, (WAT:11734), 15073->15295; 
+from e10s14_e4s14f222m327_f1997m1236: 63, (WAT:1247), 10188->10199; 280, (WAT:3572), 365->397; 374, (WAT:4387), 7194->7227; 976, (WAT:10380), 9751->9764; 

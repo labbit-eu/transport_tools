@@ -538,28 +538,45 @@ def path_loader_string(path: str) -> str:
 
     return "os.path.join({})".format(", ".join(all_parts))
 
-def prep_test_config(root: str, output_dir: str):
+def prep_test_config(root: str, output_dir: str,
+                     source_filename: str = "tmp_config.ini",
+                     simulations_subdir: str = "simulations",
+                     param_overrides: dict | None = None):
     """
     Prepare a test configuration file by updating paths in the template.
 
-    Reads tmp_config.ini from the test data directory and creates a new config.ini
-    in the test output directory with absolute paths to simulation data.
+    Reads the source config from the test data directory and writes a new config.ini
+    in the test output directory with paths rewritten to absolute test-data paths.
 
     Parameters
     ----------
     root : str
-        Path to the test data directory containing tmp_config.ini and simulations folder
+        Path to the test data directory containing the source config and simulations folder
     output_dir : str
         Path to the test output directory where config.ini will be created
+    source_filename : str
+        Filename of the source config within root (default: "tmp_config.ini")
+    simulations_subdir : str
+        Subdirectory of root used as fallback substitution for legacy parameters not
+        present in param_overrides (default: "simulations")
+    param_overrides : dict | None
+        Per-parameter explicit replacement values. Takes precedence over the fallback
+        substitution. Use this when different parameters need different paths
+        (e.g. caver and aquaduct in separate subdirectories), or to inject values for
+        parameters outside the default legacy set.
     """
-    in_config_file = os.path.join(root, "tmp_config.ini")
+    in_config_file = os.path.join(root, source_filename)
     out_config_file = os.path.join(output_dir, "config.ini")
-    update_parameters = ["caver_results_path", "aquaduct_results_path", "trajectory_path"]
+    overrides = param_overrides or {}
+    legacy_parameters = {"caver_results_path", "aquaduct_results_path", "trajectory_path"}
+    update_parameters = legacy_parameters | set(overrides.keys())
+    fallback = os.path.join(root, simulations_subdir)
+
     with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
         for line in in_stream.readlines():
             for param in update_parameters:
                 if param in line:
-                    line = "{} = {}\n".format(param, os.path.join(root, "simulations"))
+                    line = "{} = {}\n".format(param, overrides.get(param, fallback))
             out_stream.write(line)
 
 
