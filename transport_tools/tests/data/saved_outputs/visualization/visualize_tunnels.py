@@ -146,6 +146,6 @@ cmd.set('cgo_line_width', 5, 'cluster_028')
 
 cmd.do('set all_states, 1')
 cmd.show('cgo')
-cmd.disable('release_*')
-cmd.disable('entry_*')
+cmd.disable('*_release*')
+cmd.disable('*_entry*')
 cmd.zoom()

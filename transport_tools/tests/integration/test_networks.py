@@ -575,17 +575,17 @@ Number of release events = 0
                               "    with gzip.open(event, 'rb') as in_stream:\n",
                               "        pathset = pickle.load(in_stream)\n",
                               "        for path in pathset:\n",
-                              "            path[3:6] = [0.0, 0.0, 1.0]\n",
-                              "            cmd.load_cgo(path, 'entry_001')\n",
-                              "cmd.set('cgo_line_width', 2, 'entry_001')\n\n",
+                              "            path[3:6] = [0.0, 1.0, 1.0]\n",
+                              "            cmd.load_cgo(path, 'wat_entry_001')\n",
+                              "cmd.set('cgo_line_width', 2, 'wat_entry_001')\n\n",
                               "events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_1_release_pathset.dump.gz')]\n",
                               "for event in events:\n",
                               "    with gzip.open(event, 'rb') as in_stream:\n",
                               "        pathset = pickle.load(in_stream)\n",
                               "        for path in pathset:\n",
-                              "            path[3:6] = [0.0, 0.0, 1.0]\n",
-                              "            cmd.load_cgo(path, 'release_001')\n",
-                              "cmd.set('cgo_line_width', 2, 'release_001')\n\n"],
+                              "            path[3:6] = [0.0, 1.0, 1.0]\n",
+                              "            cmd.load_cgo(path, 'wat_release_001')\n",
+                              "cmd.set('cgo_line_width', 2, 'wat_release_001')\n\n"],
                              self.super_clusters[1].prepare_visualization()[0])
 
     def test_get_summary_line(self):

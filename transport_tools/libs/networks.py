@@ -2349,27 +2349,38 @@ class SuperCluster:
                 and self.parameters["comparative_groups_definition"] is not None:
             comparative_groups_definition = self.parameters["comparative_groups_definition"]
 
-        # generate Pymol script of events assigned to this SC
+        # collect sorted residue names across all event types for deterministic color assignment
+        all_residues: List[str] = sorted({
+            path[1][0].split(":")[0]
+            for events in self.transport_events.values()
+            for paths in events.values()
+            for path in paths
+        })
+
+        # generate Pymol script of events assigned to this SC, grouped by (event_type, residue)
         for event_type in sorted(self.transport_events.keys()):
-            event_filenames = list()
+            events_by_residue: Dict[str, List[str]] = {}
             for _md_label, path_id, resname in subsample_events(self.transport_events[event_type],
                                                                 self.parameters["random_seed"],
                                                                 self.parameters["max_events_per_cluster4visualization"],
                                                                 md_label, comparative_groups_definition):
                 filename = os.path.join(vis_folder, _md_label, "paths",
-                                        "{}{}_{}_pathset.dump.gz".format(resname.lower() + "_",
-                                                                         path_id, event_type))
-                event_filenames.append("{}".format(utils.path_loader_string(filename)))
+                                        "{}_{}_pathset.dump.gz".format(resname.lower() + "_" + path_id, event_type))
+                if resname not in events_by_residue:
+                    events_by_residue[resname] = []
+                events_by_residue[resname].append("{}".format(utils.path_loader_string(filename)))
 
-            if event_filenames:
-                plines.append("events = [{}]\n".format(",\n".join(event_filenames)))
+            for resname in sorted(events_by_residue.keys()):
+                color = utils.get_residue_color(all_residues.index(resname))
+                obj_name = "{}_{:03d}".format(resname.lower() + "_" + event_type, self.sc_id)
+                plines.append("events = [{}]\n".format(",\n".join(events_by_residue[resname])))
                 plines.append("for event in events:\n")
                 plines.append("    with gzip.open(event, 'rb') as in_stream:\n")
                 plines.append("        pathset = pickle.load(in_stream)\n")
                 plines.append("        for path in pathset:\n")
-                plines.append("            path[3:6] = {}\n".format(utils.get_caver_color(self.prioritized_sc_id - 1)))
-                plines.append("            cmd.load_cgo(path, '{}_{:03d}')\n".format(event_type, self.sc_id))
-                plines.append("cmd.set('cgo_line_width', {}, '{}_{:03d}')\n\n".format(2, event_type, self.sc_id))
+                plines.append("            path[3:6] = {}\n".format(color))
+                plines.append("            cmd.load_cgo(path, '{}')\n".format(obj_name))
+                plines.append("cmd.set('cgo_line_width', {}, '{}')\n\n".format(2, obj_name))
 
         return plines, viz_data
 

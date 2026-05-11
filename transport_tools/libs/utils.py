@@ -246,6 +246,33 @@ def get_caver_color(color_id: int | None) -> List[float]:
     return colors[color_id]
 
 
+def get_residue_color(residue_rank: int) -> List[float]:
+    """
+    Returns a distinct RGB color for a residue type, offset from the tunnel-cluster palette so
+    residue event paths are visually separable from the enclosing supercluster.
+    :param residue_rank: 0-based rank of the residue (sorted alphabetically among all residues in the set)
+    :return: RGB color in PyMOL format
+    """
+
+    colors = [
+        [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0],
+        [0.71, 0.71, 0.97], [0.5, 0.99, 0.42], [0.99, 0.5, 0.42], [0.21, 0.5, 0.85], [0.5, 0.06, 0.87],
+        [0.0, 0.87, 0.5], [0.86, 0.01, 0.5], [0.58, 0.82, 0.0], [0.89, 0.89, 0.6], [1.0, 0.41, 0.84], [0.41, 1.0, 0.85],
+        [0.87, 0.49, 0.0], [0.62, 0.42, 0.69], [0.66, 0.67, 0.35], [0.4, 0.71, 0.62], [0.32, 1.0, 0.13],
+        [0.72, 0.3, 1.0], [1.0, 0.82, 0.28], [0.96, 0.21, 0.25], [0.24, 0.22, 1.0], [0.0, 0.74, 0.79], [0.4, 0.71, 1.0],
+        [0.75, 1.0, 0.2], [0.79, 0.07, 0.79], [0.87, 0.29, 0.6], [0.14, 1.0, 0.73], [0.45, 0.42, 1.0],
+        [0.86, 0.59, 0.66], [0.61, 0.89, 0.66], [0.0, 0.36, 0.99], [0.86, 0.77, 0.03], [0.23, 0.99, 0.39],
+        [1.0, 0.26, 0.0], [0.0, 0.98, 0.27], [0.15, 0.79, 1.0], [0.53, 0.62, 0.81], [0.88, 0.61, 0.22],
+        [0.75, 0.47, 0.47], [0.73, 0.89, 0.42], [0.34, 0.94, 0.6], [0.77, 0.49, 0.87], [0.49, 0.85, 0.22],
+        [0.69, 0.0, 1.0], [1.0, 0.1, 0.68], [0.24, 0.78, 0.78], [0.94, 0.23, 0.99], [0.87, 0.7, 0.46], [0.01, 0.6, 1.0],
+        [0.33, 0.0, 1.0], [1.0, 0.42, 0.17], [0.61, 0.89, 0.89], [0.99, 0.0, 0.32], [0.22, 0.99, 0.96],
+    ]
+
+    offset = 3  # start at cyan, yellow, magenta — distinct from the first SC colors (blue, green, red)
+    color_id = (offset + residue_rank) % len(colors)
+    return colors[color_id]
+
+
 def convert_coords2cgo(coords: np.ndarray, color_id: int | None) -> List[float]:
     """
     Converts xyz-coordinates of sequence of points such as trace and tunnel to Pymol compiled graphics object(CGO)
