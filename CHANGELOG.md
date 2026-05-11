@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 
+## [Unreleased] - v0.9.7
+### Features
+- support multiple AQUA-DUCT input paths for multi-residue analyses
+- per-residue event tracking and unique entity labels for multi-residue merging
+- optional `aquaduct_traced_residues_filter` parameter (comma-separated uppercase resnames, e.g. `WAT, O2`) to skip unwanted residues; `None` (default) processes all residues, preserving backwards compatibility
+- per-residue colors and object names in PyMOL event visualization
+- optional skipping of empty AQUA-DUCT folders via new `aquaduct_allow_empty_folders` calculations setting (default `False`); when enabled, folders matching `aquaduct_results_folder_pattern` that are missing required tar/summary files are pruned with a one-time warning instead of raising `FileNotFoundError`
+- replaced hardcoded `wat_` prefix with dynamic residue abbreviation to enable multi-residue inputs from AQUA-DUCT
+- point clusters in layers are added in spatially sorted order to ensure stable, deterministic labeling
+
+### Misc
+- updated install requirements to match new environment
+- refactored type checking and validations; resolved several `DeprecationWarning`s
+- improved type hints and added validation checks throughout
+- updated to current numpy/scipy/sklearn/biopython/hdbscan packages with minor node-cluster adjustments; updated test fixtures accordingly
+- added tests to reach >70% coverage of library code; more robust test comparisons
+- new unit tests for tunnel profiles processing
+- corrected formatting of produced `bottleneck.csv` files (no extra spaces) to match original CAVER output format
+- updated package structure to support future deployment
+
+
+## [v0.9.6](https://github.com/labbit-eu/transport_tools/releases/tag/v0.9.6) - 2023-03-30
+### Bug Fixes
+- improving error message for autofinding Caver PDB files
+- using `print` instead of logging during early startup before the logger is initialized
+
+
+## [v0.9.5](https://github.com/labbit-eu/transport_tools/releases/tag/v0.9.5) - 2023-01-12
+### Features
+- new parameter `folder_pattern4exact_matching_analysis` enables selection of specific folders for exact matching analysis (default `"*"` — all folders)
+
+### Bug Fixes
+- correcting selection of residues for visualization of exact matching analysis when using pytraj
+
+### Misc
+- updated references
+
+
+## [v0.9.4](https://github.com/labbit-eu/transport_tools/releases/tag/v0.9.4) - 2022-12-09
+### Features
+- updating scripts for divide-and-conquer approach for tunnel analyses in long trajectories
+- new parameter `caver_pdb_file_pattern` allows the matched filename pattern to be defined in the config file
+- reference caver filename now includes `.1.` to conform to the default file matching pattern
+- supercluster volumes can optionally be generated with the msms program, which is significantly faster than mcubes
+- avoiding detection of CAVER origin and zone files as a relative PDB file for the system
+- handling of `FutureWarning`s from sklearn
+
+### Bug Fixes
+- in case there are 0 items to process, do not trigger progressbar to avoid division by zero
+
+### Documentation
+- updated documentation and docstrings
+- updated readme formatting
+
+### Misc
+- updated documentation
+
+
 ## [v0.9.3](https://github.com/labbit-eu/transport_tools/releases/tag/v0.9.3) - 2022-10-18
 ### Features
 - adding scripts to perform spitting and joining of caver data from trajectory parts
