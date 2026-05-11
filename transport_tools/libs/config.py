@@ -48,6 +48,7 @@ class AnalysisConfig:
         self.input_paths = dict()
         self.output_paths = dict()
         self.advanced_settings = dict()
+        self._logged_empty_aquaduct_folders: set = set()
 
         self._set_initial_sections_w_defaults()
         if file2load_from is not None:
@@ -129,7 +130,8 @@ class AnalysisConfig:
             "min_avg_snapshots_num": -1,  # filter on presence in minimum number of snapshots on average
 
             # Processing of transport events from AQUA-DUCT results and their assignment to superclusters
-            "aquaduct_traced_residues_filter": None,  # list of uppercase resnames to analyze; None = process all 
+            "aquaduct_traced_residues_filter": None,  # list of uppercase resnames to analyze; None = process all
+            "aquaduct_allow_empty_folders": False,  # skip AQUA-DUCT folders missing tar/summary with a warning instead of erroring
             "event_min_distance": 6.0,  # closest distance of event from starting point to be processed
             "event_assignment_cutoff": 0.85,
             # event_assignment_cutoff represents minimal buriedness of transport event in a supercluster to be
@@ -245,6 +247,7 @@ class AnalysisConfig:
             "visualize_layered_events",
             "visualize_exact_matching_outcomes",
             "legacy_pymol_support",
+            "aquaduct_allow_empty_folders",
         ]
 
         self.integer_params = [
@@ -687,7 +690,7 @@ class AnalysisConfig:
                 raise ValueError("\nWhen 'aquaduct_results_path' parameter is used, corresponding folder patterns has "
                                  "to be specified through the 'aquaduct_results_folder_pattern' parameter")
 
-            # in aquaduct_results_path, there are folders for MD matching aquaduct_results_folder_pattern, in which
+            # in aquaduct_results_path, there are folders for matching aquaduct_results_folder_pattern, in which
             # 6_visualize_results.tar.gz and 5_analysis_results.txt files must be located
 
             if not self.parameters["aquaduct_results_relative_tarfile"]:
@@ -1118,6 +1121,27 @@ class AnalysisConfig:
                     self.parameters["aquaduct_results_folder_pattern"]) if a.is_dir())
                 for root_path in self.parameters["aquaduct_results_path"]
             }
+
+            if self.parameters.get("aquaduct_allow_empty_folders"):
+                required_patterns = [
+                    self.parameters["aquaduct_results_relative_tarfile"],
+                    self.parameters["aquaduct_results_relative_summaryfile"],
+                ]
+                pruned: dict = {}
+                for root_path, md_labels in folders_aquaduct.items():
+                    kept = []
+                    for md_label in md_labels:
+                        folder = Path(root_path) / md_label
+                        if all(len([*folder.glob(pat)]) == 1 for pat in required_patterns):
+                            kept.append(md_label)
+                        else:
+                            key = os.path.join(root_path, md_label)
+                            if key not in self._logged_empty_aquaduct_folders:
+                                logger.warning("AQUA-DUCT folder '{}' is missing required tar/summary files; "
+                                               "skipping it due to 'aquaduct_allow_empty_folders = True'.".format(key))
+                                self._logged_empty_aquaduct_folders.add(key)
+                    pruned[root_path] = kept
+                folders_aquaduct = pruned
 
         return sorted(folders_caver), sorted(folders_trajectory), folders_aquaduct
 
