@@ -512,5 +512,121 @@ class TestOutlierTransportEventsEdgeCases(unittest.TestCase):
         self.assertIn("0", numbers_part)
 
 
+class TestOutlierTransportEventsPerResidue(unittest.TestCase):
+    """
+    Unit tests for the per-residue tracking and per-residue PyMOL object naming
+    introduced for multi-residue (e.g. WAT + ligand) AQUA-DUCT analyses.
+    """
+
+    def setUp(self):
+        self.maxDiff = None
+        self.temp_dir = tempfile.mkdtemp()
+        self.test_params = test_parameters_minimal.copy()
+        self.test_params["super_cluster_details_folder"] = os.path.join(self.temp_dir, "details")
+        self.test_params["visualization_folder"] = os.path.join(self.temp_dir, "viz")
+        self.test_params["layered_aquaduct_vis_path"] = os.path.join(self.temp_dir, "layered")
+        self.outliers = OutlierTransportEvents(self.test_params)
+
+    def tearDown(self):
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_num_events_by_residue_initialized(self):
+        """Attribute exists and is initialized to {'overall': {}}"""
+        self.assertIsInstance(self.outliers.num_events_by_residue, dict)
+        self.assertIn("overall", self.outliers.num_events_by_residue)
+        self.assertEqual(self.outliers.num_events_by_residue["overall"], {})
+
+    def test_add_event_populates_residue_overall_and_md_label(self):
+        """Adding an event must update both the per-md_label and the overall residue map
+        when globally_unassigned (default) is True."""
+        self.outliers.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.assertEqual(self.outliers.num_events_by_residue["overall"]["WAT"]["entry"], 1)
+        self.assertEqual(self.outliers.num_events_by_residue["md1"]["WAT"]["entry"], 1)
+        self.assertEqual(self.outliers.num_events_by_residue["md1"]["WAT"]["release"], 0)
+
+    def test_globally_unassigned_false_skips_overall_residue_count(self):
+        """globally_unassigned=False must skip the 'overall' residue map update,
+        consistent with how the legacy num_events is handled."""
+        self.outliers.add_transport_event("md1", "path_001", "entry",
+                                          ("WAT:123", (10, 50)), globally_unassigned=False)
+        # md_label scope updated
+        self.assertEqual(self.outliers.num_events_by_residue["md1"]["WAT"]["entry"], 1)
+        # overall scope NOT updated — WAT key must not exist there
+        self.assertNotIn("WAT", self.outliers.num_events_by_residue["overall"])
+
+    def test_two_residues_tracked_independently(self):
+        """WAT and U01 events tracked under separate keys, no cross-contamination"""
+        self.outliers.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.outliers.add_transport_event("md1", "path_002", "release", ("U01:55", (20, 60)))
+        self.assertEqual(self.outliers.num_events_by_residue["overall"]["WAT"]["entry"], 1)
+        self.assertEqual(self.outliers.num_events_by_residue["overall"]["WAT"]["release"], 0)
+        self.assertEqual(self.outliers.num_events_by_residue["overall"]["U01"]["entry"], 0)
+        self.assertEqual(self.outliers.num_events_by_residue["overall"]["U01"]["release"], 1)
+
+    def test_report_events_details_contains_per_residue_section_when_multi_residue(self):
+        """When multiple residues exist, the details file must contain
+        'Per-residue breakdown:' with one line per residue."""
+        self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
+        self.outliers.add_transport_event("md1", "p2", "entry", ("WAT:456", (20, 60)))
+        self.outliers.add_transport_event("md1", "p3", "release", ("U01:55", (15, 55)))
+        filename = "multi_res.txt"
+        self.outliers.report_events_details(filename)
+        with open(os.path.join(self.test_params["super_cluster_details_folder"], filename)) as f:
+            content = f.read()
+        self.assertIn("Per-residue breakdown:", content)
+        self.assertIn("WAT: entry=2, release=0", content)
+        self.assertIn("U01: entry=0, release=1", content)
+
+    def test_report_summary_line_with_residue_names_appends_pairs(self):
+        """Passing residue_names must append entry/release columns for each residue."""
+        self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
+        self.outliers.add_transport_event("md1", "p2", "release", ("U01:55", (20, 60)))
+        # widths: 4 base + 2 per residue = 8 entries
+        widths = [50, 10, 10, 10, 5, 5, 5, 5]
+        line = self.outliers.report_summary_line(widths, "overall",
+                                                  residue_names=["U01", "WAT"])
+        # Strip trailing newline before counting columns
+        line_stripped = line.rstrip("\n")
+        # Comma-separated values part: 'Total ... events: 2, 1, 1, 0, 1, 1, 0'
+        parts = [p.strip() for p in line_stripped.split(",")]
+        # parts[0] is the header text + first value: "Total number of unassigned events:         2"
+        # parts[1..]: remaining values
+        # Expect: total=2, entry=1, release=1, U01_E=0, U01_R=1, WAT_E=1, WAT_R=0
+        # Last 4 values are the per-residue columns
+        self.assertEqual(parts[-4], "0")  # U01 entry
+        self.assertEqual(parts[-3], "1")  # U01 release
+        self.assertEqual(parts[-2], "1")  # WAT entry
+        self.assertEqual(parts[-1], "0")  # WAT release
+
+    def test_report_summary_line_absent_residue_uses_dash(self):
+        """A residue listed in residue_names but with no events must render as '-'"""
+        self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
+        widths = [50, 10, 10, 10, 5, 5, 5, 5]
+        line = self.outliers.report_summary_line(widths, "overall",
+                                                  residue_names=["U01", "WAT"])
+        line_stripped = line.rstrip("\n")
+        parts = [p.strip() for p in line_stripped.split(",")]
+        # U01 absent -> dashes; WAT present -> 1, 0
+        self.assertEqual(parts[-4], "-")
+        self.assertEqual(parts[-3], "-")
+        self.assertEqual(parts[-2], "1")
+        self.assertEqual(parts[-1], "0")
+
+    def test_prepare_visualization_obj_name_per_residue_pattern(self):
+        """Object name format changed from '{event_type}_outlier' to
+        '{resname_lower}_{event_type}_outlier' to support multi-residue visualization."""
+        self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
+        self.outliers.add_transport_event("md1", "p2", "release", ("U01:55", (20, 60)))
+        vis_lines = self.outliers.prepare_visualization("overall")
+        content = "".join(vis_lines)
+        # Expect per-residue object names
+        self.assertIn("wat_entry_outlier", content)
+        self.assertIn("u01_release_outlier", content)
+        # Old generic names must no longer appear
+        self.assertNotIn("'entry_outlier'", content)
+        self.assertNotIn("'release_outlier'", content)
+
+
 if __name__ == "__main__":
     unittest.main()

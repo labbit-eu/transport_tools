@@ -326,5 +326,68 @@ class TestTransportProcessesMixedEvents(unittest.TestCase):
         save_checkpoint(mol_system, self._get_dumpfile(11), overwrite=True)
 
 
+class TestAquaductTracedResiduesFilterIntegration(unittest.TestCase):
+    """
+    Integration test for the aquaduct_traced_residues_filter parameter.
+    With filter=['WAT'], U01 (ligand) paths must be skipped during
+    read_raw_paths_data, leaving orig_entities devoid of U01 events.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from transport_tools.libs.config import AnalysisConfig
+
+        cls.maxDiff = None
+        cls.root = set_paths_from_package_root("tests", "data")
+        cls.out_path = set_paths_from_package_root(
+            "tests", "test_results", "TestAquaductTracedResiduesFilterIntegration")
+        os.makedirs(cls.out_path, exist_ok=True)
+
+        sims = os.path.join(cls.root, "simulations", "mixed_events")
+        param_overrides = {
+            "caver_results_path": os.path.join(sims, "caver"),
+            "aquaduct_results_path": "{},{}".format(
+                os.path.join(sims, "water"), os.path.join(sims, "ligand")
+            ),
+        }
+        prep_test_config(cls.root, cls.out_path,
+                         source_filename="tmp_config2.ini",
+                         param_overrides=param_overrides)
+
+        cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
+        cls.config.set_parameter("output_path", cls.out_path)
+        # Filter to WAT only — U01 ligand events must be skipped
+        cls.config.set_parameter("aquaduct_traced_residues_filter", ["WAT"])
+
+    @classmethod
+    def tearDownClass(cls):
+        from shutil import rmtree
+        if os.path.exists(cls.out_path):
+            rmtree(cls.out_path)
+
+    def test_filter_excludes_u01_events_from_aquaduct_network(self):
+        """End-to-end: with filter=['WAT'], the AquaductNetwork dumps written by
+        process_aquaduct_networks must contain only WAT-traced paths."""
+        import pickle
+
+        mol_system = TransportProcesses(self.config)
+        mol_system.compute_transformations()
+        mol_system.process_aquaduct_networks()
+
+        for md in ("e10s0_seed43_f371m1821", "e10s14_e4s14f222m327_f1997m1236"):
+            dump = os.path.join(self.out_path, "_internal", "network_data", "aquaduct",
+                                "{}_aqua.dump".format(md))
+            self.assertTrue(os.path.exists(dump),
+                            "expected aquaduct network dump at {}".format(dump))
+            with open(dump, "rb") as f:
+                orig_entities = pickle.load(f)  # AquaductNetwork.save_orig_network dumps the list directly
+
+            self.assertGreater(len(orig_entities), 0,
+                               "WAT events should still be present for {}".format(md))
+            resnames = {path.traced_residue[0] for path in orig_entities}
+            self.assertEqual({"WAT"}, resnames,
+                             "expected only WAT in {} orig_entities, got {}".format(md, resnames))
+
+
 if __name__ == "__main__":
     unittest.main()

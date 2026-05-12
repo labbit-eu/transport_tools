@@ -366,6 +366,65 @@ class TestTransportEvent(unittest.TestCase):
         self.assertEqual(test_create_layered_event_pathset3, str(layered_pathset))
 
 
+class TestTransportEventEntityLabelFormat(unittest.TestCase):
+    """
+    Unit tests for the entity_label refactor introduced for multi-residue merging:
+    - entity_label now starts with the lowercased residue name
+    - entity_pymol_abbreviation is now identical to entity_label
+    """
+
+    def setUp(self):
+        self.transform_mat = np.array([[-0.068, -0.539,  0.838,  -0.139],
+                                       [-0.423,  0.777,  0.465, -28.982],
+                                       [-0.903, -0.323, -0.282,  60.986],
+                                       [0.0, 0.0, 0.0, 1.0]])
+        self.parameters = {
+            "tunnel_properties_quantile": 0.9,
+            "layer_thickness": 1.5,
+            "md_label": "md_x",
+            "output_path": "",
+            "layered_aquaduct_vis_path": "",
+            "orig_aquaduct_vis_path": "",
+            "visualize_layered_events": False,
+            "sp_radius": 0.5,
+        }
+
+    def _make(self, event_type, path_label, resname):
+        from transport_tools.libs.networks import TransportEvent
+        traced_residue = (resname, 588, (9206, 9209), (9210, 9224))
+        return TransportEvent(event_type, path_label, self.parameters, "md_x",
+                              traced_residue, self.transform_mat)
+
+    def test_entity_label_includes_lowercase_resname_prefix(self):
+        """entity_label must start with the lowercased residue name"""
+        for resname in ("WAT", "U01", "O2"):
+            evt = self._make("inside", "raw_paths_1", resname)
+            self.assertTrue(evt.entity_label.startswith(resname.lower() + "_"),
+                            "expected {} to start with '{}_'".format(evt.entity_label,
+                                                                      resname.lower()))
+
+    def test_entity_label_format_matches_resname_pathid_type(self):
+        """Format is '{resname_lower}_{path_id}_{event_type}'"""
+        evt = self._make("entry", "raw_paths_42", "WAT")
+        self.assertEqual("wat_42_entry", evt.entity_label)
+
+        evt2 = self._make("release", "raw_paths_7", "U01")
+        self.assertEqual("u01_7_release", evt2.entity_label)
+
+    def test_entity_pymol_abbreviation_equals_entity_label(self):
+        """After the refactor, entity_pymol_abbreviation must mirror entity_label exactly"""
+        for resname, etype in (("WAT", "inside"), ("U01", "entry"), ("O2", "release")):
+            evt = self._make(etype, "raw_paths_3", resname)
+            self.assertEqual(evt.entity_label, evt.entity_pymol_abbreviation)
+
+    def test_entity_label_for_non_wat_residue(self):
+        """Sanity check: non-WAT residues produce a correctly formed label
+        (regression guard for residue-name handling in multi-residue runs)"""
+        evt = self._make("inside", "raw_paths_15", "U01")
+        self.assertEqual("u01_15_inside", evt.entity_label)
+        self.assertEqual("u01_15_inside", evt.entity_pymol_abbreviation)
+
+
 class TestAquaductPath(unittest.TestCase):
     def setUp(self):
         from transport_tools.libs.networks import AquaductPath

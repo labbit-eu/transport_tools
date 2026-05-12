@@ -21,6 +21,9 @@ __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
+import tempfile
+import shutil
+from unittest.mock import patch
 from transport_tools.libs.config import *
 from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config
 
@@ -94,6 +97,104 @@ class TestConfig(unittest.TestCase):
         for folder, path in saved_params.items():
             self.assertTrue(path, results[folder])
 
+
+class TestAquaductAllowEmptyFoldersIntegration(unittest.TestCase):
+    """
+    Integration test for the aquaduct_allow_empty_folders parameter.
+    Builds a substitute AQUA-DUCT root with symlinks to populated mixed_events folders
+    plus a real empty folder (matching the e* pattern), then exercises AnalysisConfig
+    end-to-end:
+    - allow_empty=False: AnalysisConfig.__init__ must raise FileNotFoundError
+    - allow_empty=True: __init__ succeeds; empty folder pruned; warning logged once
+    """
+
+    def setUp(self):
+        from transport_tools.libs.config import AnalysisConfig
+        self.maxDiff = None
+        self.AnalysisConfig = AnalysisConfig
+        self.root = set_paths_from_package_root("tests", "data")
+        self.sims_orig = os.path.join(self.root, "simulations", "mixed_events")
+        self.tmp = tempfile.mkdtemp(prefix="TT_allow_empty_int_")
+
+        # Build a substitute aquaduct "water" root with symlinks to real populated
+        # folders + a real empty folder
+        self.aquaduct_water_dir = os.path.join(self.tmp, "water")
+        os.makedirs(self.aquaduct_water_dir)
+        for md in ("e10s0_seed43_f371m1821", "e10s14_e4s14f222m327_f1997m1236"):
+            os.symlink(os.path.join(self.sims_orig, "water", md),
+                       os.path.join(self.aquaduct_water_dir, md))
+        os.makedirs(os.path.join(self.aquaduct_water_dir, "e10s99_empty"))
+
+    def tearDown(self):
+        if os.path.exists(self.tmp):
+            shutil.rmtree(self.tmp)
+
+    def _write_config(self, allow_empty: bool) -> str:
+        """Write a tmp_config2.ini variant with overridden paths and the
+        aquaduct_allow_empty_folders flag injected into the CALCULATIONS_SETTINGS
+        section. Returns the path to the resulting config file."""
+        in_config_file = os.path.join(self.root, "tmp_config2.ini")
+        out_config_file = os.path.join(self.tmp, "config_{}.ini".format(allow_empty))
+
+        caver_path = os.path.join(self.sims_orig, "caver")
+        aqua_paths = "{},{}".format(self.aquaduct_water_dir,
+                                     os.path.join(self.sims_orig, "ligand"))
+        out_path = os.path.join(self.tmp, "out_{}".format(allow_empty))
+
+        with open(in_config_file) as in_stream, open(out_config_file, "w") as out_stream:
+            for line in in_stream:
+                stripped = line.lstrip()
+                if stripped.startswith("caver_results_path"):
+                    line = "caver_results_path = {}\n".format(caver_path)
+                elif stripped.startswith("aquaduct_results_path"):
+                    line = "aquaduct_results_path = {}\n".format(aqua_paths)
+                elif stripped.startswith("output_path"):
+                    line = "output_path = {}\n".format(out_path)
+                elif stripped.startswith("aquaduct_traced_residues_filter"):
+                    # inject the allow_empty flag just after this existing setting
+                    out_stream.write(line)
+                    out_stream.write("aquaduct_allow_empty_folders = {}\n".format(allow_empty))
+                    continue
+                out_stream.write(line)
+        return out_config_file
+
+    def test_allow_empty_false_raises_filenotfound(self):
+        """Default (allow_empty=False) must reject configurations that contain an
+        AQUA-DUCT folder missing the required tar/summary files."""
+        config_path = self._write_config(False)
+        with self.assertRaises(FileNotFoundError):
+            self.AnalysisConfig(config_path, logging=False)
+
+    def test_allow_empty_true_prunes_empty_folder(self):
+        """allow_empty=True succeeds and the empty folder is absent from the result of
+        get_input_folders()."""
+        config_path = self._write_config(True)
+        config = self.AnalysisConfig(config_path, logging=False)
+        _, _, aquaduct = config.get_input_folders()
+        # Empty folder must not be present under any aquaduct root
+        for root_path, md_labels in aquaduct.items():
+            self.assertNotIn("e10s99_empty", md_labels,
+                             "expected e10s99_empty to be pruned, found in {}".format(root_path))
+        # The populated folders must still be present
+        all_mds = [md for mds in aquaduct.values() for md in mds]
+        self.assertIn("e10s0_seed43_f371m1821", all_mds)
+        self.assertIn("e10s14_e4s14f222m327_f1997m1236", all_mds)
+
+    def test_allow_empty_true_logs_warning_only_once(self):
+        """The empty-folder warning must fire exactly once across init + any number of
+        explicit get_input_folders() calls, thanks to _logged_empty_aquaduct_folders."""
+        config_path = self._write_config(True)
+        # Patch BEFORE init so we capture the warning emitted during _test_input_data
+        with patch("transport_tools.libs.config.logger") as mock_logger:
+            config = self.AnalysisConfig(config_path, logging=False)
+            # __init__ already triggered one get_input_folders() call inside
+            # _test_input_data; subsequent explicit calls must not re-warn
+            config.get_input_folders()
+            config.get_input_folders()
+            empty_warnings = [c for c in mock_logger.warning.call_args_list
+                              if "e10s99_empty" in str(c)]
+            self.assertEqual(1, len(empty_warnings),
+                             "expected exactly one warning for the empty folder; got {}".format(empty_warnings))
 
 
 if __name__ == '__main__':

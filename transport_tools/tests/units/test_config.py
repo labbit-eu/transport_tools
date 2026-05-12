@@ -504,5 +504,199 @@ class TestStrMethod(unittest.TestCase):
         self.assertIn("Output settings", result)
 
 
+# ---------------------------------------------------------------------------
+# New v0.9.7 parameters & behaviors
+# ---------------------------------------------------------------------------
+
+class TestAquaductNewParameterDefaults(unittest.TestCase):
+    """Defaults for v0.9.7 parameters: aquaduct_traced_residues_filter,
+    aquaduct_allow_empty_folders, and the _logged_empty_aquaduct_folders cache."""
+
+    def test_aquaduct_traced_residues_filter_default_is_none(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("aquaduct_traced_residues_filter", config.calculations_settings)
+        self.assertIsNone(config.calculations_settings["aquaduct_traced_residues_filter"])
+
+    def test_aquaduct_allow_empty_folders_default_is_false(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("aquaduct_allow_empty_folders", config.calculations_settings)
+        self.assertFalse(config.calculations_settings["aquaduct_allow_empty_folders"])
+
+    def test_logged_empty_folders_is_set(self):
+        """The warn-once cache for empty AQUA-DUCT folders must be a set instance."""
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIsInstance(config._logged_empty_aquaduct_folders, set)
+        self.assertEqual(len(config._logged_empty_aquaduct_folders), 0)
+
+
+class TestAquaductTracedResiduesFilterParsing(unittest.TestCase):
+    """Comma-separated string → list[str] parsing done in _autocomplete_parameters."""
+
+    def _make_config_with_parameters(self, filter_value):
+        """Build a config object with the minimum parameters needed to run
+        _autocomplete_parameters() without triggering filesystem auto-detection."""
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {
+            "aquaduct_traced_residues_filter": filter_value,
+            "stop_after_stage": 5,
+            "num_cpus": 1,
+            "pdb_reference_structure": "/tmp/ignored.pdb",
+            "snapshots_per_simulation": 100,
+            "perform_comparative_analysis": False,
+            "comparative_groups_definition": None,
+            "trajectory_path": None,
+            "legacy_pymol_support": False,
+        }
+        return config
+
+    def test_comma_separated_string_parsed_to_list(self):
+        config = self._make_config_with_parameters("WAT,O2")
+        config._autocomplete_parameters()
+        self.assertListEqual(["WAT", "O2"],
+                             config.parameters["aquaduct_traced_residues_filter"])
+
+    def test_values_uppercased(self):
+        config = self._make_config_with_parameters("wat, o2, U01")
+        config._autocomplete_parameters()
+        self.assertListEqual(["WAT", "O2", "U01"],
+                             config.parameters["aquaduct_traced_residues_filter"])
+
+    def test_whitespace_stripped(self):
+        config = self._make_config_with_parameters("  WAT  ,  O2  ")
+        config._autocomplete_parameters()
+        self.assertListEqual(["WAT", "O2"],
+                             config.parameters["aquaduct_traced_residues_filter"])
+
+    def test_none_stays_none(self):
+        config = self._make_config_with_parameters(None)
+        config._autocomplete_parameters()
+        self.assertIsNone(config.parameters["aquaduct_traced_residues_filter"])
+
+    def test_empty_string_becomes_empty_list(self):
+        """An empty/whitespace-only string parses to an empty list. Note: downstream
+        _validate_parameter_values rejects this with a ValueError, but the parser itself
+        produces []."""
+        config = self._make_config_with_parameters("   ,  , ")
+        config._autocomplete_parameters()
+        self.assertListEqual([], config.parameters["aquaduct_traced_residues_filter"])
+
+
+class TestAquaductResultsPathParsing(unittest.TestCase):
+    """Single comma-separated string → list[str] of root paths done in _set_input_paths."""
+
+    def _make_config(self, aquaduct_path_value):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        # Minimum to make _set_input_paths run past the aquaduct block without raising:
+        config.input_paths["caver_results_relative_subfolder_path"] = "caver"
+        config.input_paths["caver_relative_pdb_file"] = "stripped_system.pdb"
+        config.input_paths["aquaduct_results_path"] = aquaduct_path_value
+        return config
+
+    def test_single_path_becomes_list(self):
+        config = self._make_config("/path/to/aquaduct")
+        config._set_input_paths()
+        self.assertEqual(["/path/to/aquaduct"], config.input_paths["aquaduct_results_path"])
+
+    def test_comma_separated_splits(self):
+        config = self._make_config("/path/water,/path/ligand")
+        config._set_input_paths()
+        self.assertEqual(["/path/water", "/path/ligand"],
+                         config.input_paths["aquaduct_results_path"])
+
+    def test_empty_segments_stripped(self):
+        config = self._make_config("/path/water, ,/path/ligand,")
+        config._set_input_paths()
+        self.assertEqual(["/path/water", "/path/ligand"],
+                         config.input_paths["aquaduct_results_path"])
+
+    def test_none_stays_none(self):
+        config = self._make_config(None)
+        config._set_input_paths()
+        self.assertIsNone(config.input_paths["aquaduct_results_path"])
+
+
+class TestGetInputFoldersAquaductDict(unittest.TestCase):
+    """get_input_folders() now returns a dict mapping each aquaduct_results_path to its
+    list of MD-simulation folder names. Includes coverage of aquaduct_allow_empty_folders
+    pruning behavior."""
+
+    def setUp(self):
+        self.maxDiff = None
+        self.tmp = tempfile.mkdtemp(prefix="TT_test_get_input_folders_")
+
+    def tearDown(self):
+        if os.path.exists(self.tmp):
+            shutil.rmtree(self.tmp)
+
+    def _make_aquaduct_root(self, name, populated_mds, empty_mds=()):
+        """Build a temp AQUA-DUCT root with given populated and empty MD subfolders.
+        Populated MDs contain dummy tar.gz and analysis txt files; empty ones don't."""
+        root = os.path.join(self.tmp, name)
+        os.makedirs(root)
+        for md in populated_mds:
+            d = os.path.join(root, md, "aquaduct_results")
+            os.makedirs(d)
+            open(os.path.join(d, "6_visualize_results.tar.gz"), "w").close()
+            open(os.path.join(d, "5_analysis_results.txt"), "w").close()
+        for md in empty_mds:
+            os.makedirs(os.path.join(self.tmp, name, md))
+        return root
+
+    def _config_with_aquaduct(self, paths_list, allow_empty=False):
+        """Construct an AnalysisConfig with parameters dict populated to exercise
+        get_input_folders()."""
+        caver_root = os.path.join(self.tmp, "caver_root")
+        os.makedirs(caver_root, exist_ok=True)
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {
+            "caver_results_path": caver_root,
+            "caver_results_folder_pattern": "md*",
+            "trajectory_path": None,
+            "trajectory_folder_pattern": "md*",
+            "aquaduct_results_path": paths_list,
+            "aquaduct_results_folder_pattern": "e*",
+            "aquaduct_results_relative_tarfile": "aquaduct_results/6_visualize_results.tar.gz",
+            "aquaduct_results_relative_summaryfile": "aquaduct_results/5_analysis_results.txt",
+            "aquaduct_allow_empty_folders": allow_empty,
+        }
+        return config
+
+    def test_none_aquaduct_path_returns_empty_dict(self):
+        config = self._config_with_aquaduct(None)
+        _, _, aquaduct = config.get_input_folders()
+        self.assertEqual({}, aquaduct)
+
+    def test_single_path_returns_dict_keyed_by_path(self):
+        root = self._make_aquaduct_root("water", populated_mds=["e10s0_md1", "e10s14_md2"])
+        config = self._config_with_aquaduct([root])
+        _, _, aquaduct = config.get_input_folders()
+        self.assertEqual({root: ["e10s0_md1", "e10s14_md2"]}, aquaduct)
+
+    def test_allow_empty_folders_prunes_folder_without_required_files(self):
+        """Folders missing the required tar/summary files must be dropped from the
+        result when aquaduct_allow_empty_folders is True."""
+        root = self._make_aquaduct_root("water",
+                                         populated_mds=["e10s0_full"],
+                                         empty_mds=["e10s14_empty"])
+        config = self._config_with_aquaduct([root], allow_empty=True)
+        _, _, aquaduct = config.get_input_folders()
+        self.assertEqual({root: ["e10s0_full"]}, aquaduct)
+
+    def test_allow_empty_folders_logs_warning_exactly_once(self):
+        """Same missing folder must only warn once across multiple get_input_folders()
+        calls (tracked by _logged_empty_aquaduct_folders)."""
+        root = self._make_aquaduct_root("water",
+                                         populated_mds=["e10s0_full"],
+                                         empty_mds=["e10s14_empty"])
+        config = self._config_with_aquaduct([root], allow_empty=True)
+        with patch("transport_tools.libs.config.logger") as mock_logger:
+            config.get_input_folders()
+            config.get_input_folders()
+            warnings = [call for call in mock_logger.warning.call_args_list
+                        if "e10s14_empty" in str(call)]
+            self.assertEqual(1, len(warnings),
+                             "expected exactly one warning across two calls, got: {}".format(warnings))
+
+
 if __name__ == '__main__':
     unittest.main()

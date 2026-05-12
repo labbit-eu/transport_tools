@@ -415,6 +415,107 @@ class TestSuperCluster(unittest.TestCase):
         self.assertNotIn("md2", md_labels)
 
 
+class TestSuperClusterPerResidueTracking(unittest.TestCase):
+    """
+    Unit tests for the per-residue event tracking introduced for multi-residue
+    AQUA-DUCT analyses (WAT + ligand). Covers:
+    - num_events_by_residue initialization and population
+    - get_summary_line_data residue_names parameter (new optional argument)
+    """
+
+    def setUp(self):
+        self.maxDiff = None
+        self.temp_dir = tempfile.mkdtemp()
+        self.parameters = {
+            "perform_comparative_analysis": False,
+            "comparative_groups_definition": None,
+            "transformation_folder": os.path.join(self.temp_dir, "transform"),
+            "caver_foldername": "caver",
+            "super_cluster_path_set_folder": os.path.join(self.temp_dir, "pathsets"),
+            "aqauduct_ligand_effective_radius": 1.5,
+            "layer_thickness": 1.5,
+        }
+        self.sc = SuperCluster(sc_id=1, parameters=self.parameters, total_num_md_sims=3)
+
+    def tearDown(self):
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_num_events_by_residue_initialized(self):
+        """Attribute exists and is initialized to {'overall': {}}"""
+        self.assertIsInstance(self.sc.num_events_by_residue, dict)
+        self.assertIn("overall", self.sc.num_events_by_residue)
+        self.assertEqual(self.sc.num_events_by_residue["overall"], {})
+
+    def test_add_event_populates_overall_by_residue(self):
+        """Adding a WAT entry must populate num_events_by_residue['overall']['WAT']"""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["WAT"]["entry"], 1)
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["WAT"]["release"], 0)
+
+    def test_add_event_two_residues_independent(self):
+        """WAT and U01 must be tracked under separate keys without contamination"""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.sc.add_transport_event("md1", "path_002", "release", ("U01:55", (20, 60)))
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["WAT"]["entry"], 1)
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["WAT"]["release"], 0)
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["U01"]["entry"], 0)
+        self.assertEqual(self.sc.num_events_by_residue["overall"]["U01"]["release"], 1)
+
+    def test_add_event_per_stat_md_label_under_comparative(self):
+        """Comparative analysis: per-residue counts also tracked at group level when
+        local properties are set for that group."""
+        params = self.parameters.copy()
+        params["perform_comparative_analysis"] = True
+        params["comparative_groups_definition"] = {
+            "group_A": ["md1", "md2"], "group_B": ["md3"]
+        }
+        sc = SuperCluster(sc_id=1, parameters=params, total_num_md_sims=3)
+        sc.set_properties({"group_A": True})
+
+        result = sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.assertTrue(result)
+        self.assertEqual(sc.num_events_by_residue["group_A"]["WAT"]["entry"], 1)
+        # overall always incremented too
+        self.assertEqual(sc.num_events_by_residue["overall"]["WAT"]["entry"], 1)
+
+    def test_get_summary_line_data_without_residue_names_unchanged_length(self):
+        """Without residue_names: backwards-compatible column count.
+        sc_id (1) + 13 tunnel-property dashes (no properties set for 'overall')
+        + 3 event columns = 17 items."""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        data = self.sc.get_summary_line_data(print_transport_events=True, md_label="overall")
+        self.assertEqual(len(data), 17)
+
+    def test_get_summary_line_data_with_residue_names_appends_pairs(self):
+        """Passing residue_names adds 2 columns (entry, release) per residue."""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.sc.add_transport_event("md1", "path_002", "release", ("U01:55", (20, 60)))
+        data = self.sc.get_summary_line_data(print_transport_events=True,
+                                              md_label="overall",
+                                              residue_names=["U01", "WAT"])
+        # 17 base columns + 4 (2 residues × 2 columns)
+        self.assertEqual(len(data), 21)
+        # Order matches residue_names: U01_E, U01_R, WAT_E, WAT_R
+        self.assertEqual(data[17], "0")  # U01 entry
+        self.assertEqual(data[18], "1")  # U01 release
+        self.assertEqual(data[19], "1")  # WAT entry
+        self.assertEqual(data[20], "0")  # WAT release
+
+    def test_get_summary_line_data_absent_residue_outputs_dash(self):
+        """Residue in residue_names but absent from this SC's events → '-' for both cols"""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        data = self.sc.get_summary_line_data(print_transport_events=True,
+                                              md_label="overall",
+                                              residue_names=["U01", "WAT"])
+        # U01 has no events anywhere — both columns are '-'
+        self.assertEqual(data[17], "-")
+        self.assertEqual(data[18], "-")
+        # WAT has 1 entry, 0 release
+        self.assertEqual(data[19], "1")
+        self.assertEqual(data[20], "0")
+
+
 class TestModuleFunctions(unittest.TestCase):
     """
     Test module-level functions from networks.py

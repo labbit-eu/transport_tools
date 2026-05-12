@@ -268,5 +268,60 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(result, package_dir)
 
 
+class TestGetResidueColor(unittest.TestCase):
+    """
+    Unit tests for libs.utils.get_residue_color() — the per-residue palette introduced
+    so transport-event paths can be visually separated by residue type in PyMOL.
+    """
+
+    def test_returns_list_of_three_floats(self):
+        """Output must be a list of three floats (RGB)"""
+        from transport_tools.libs.utils import get_residue_color
+        color = get_residue_color(0)
+        self.assertIsInstance(color, list)
+        self.assertEqual(len(color), 3)
+        for component in color:
+            self.assertIsInstance(component, float)
+
+    def test_all_values_in_0_1_range(self):
+        """All RGB components for ranks up to wrap-around must lie in [0.0, 1.0]"""
+        from transport_tools.libs.utils import get_residue_color
+        for rank in range(0, 200):
+            color = get_residue_color(rank)
+            for component in color:
+                self.assertGreaterEqual(component, 0.0)
+                self.assertLessEqual(component, 1.0)
+
+    def test_rank_0_returns_cyan(self):
+        """Rank 0 maps to offset 3 in the palette = cyan, intentionally distinct from
+        the first CAVER color (blue) so residue paths stand out from SC tunnels."""
+        from transport_tools.libs.utils import get_residue_color
+        self.assertListEqual([0.0, 1.0, 1.0], get_residue_color(0))
+
+    def test_consecutive_ranks_differ(self):
+        """Consecutive residue ranks must produce distinct colors"""
+        from transport_tools.libs.utils import get_residue_color
+        for rank in range(0, 10):
+            self.assertNotEqual(get_residue_color(rank), get_residue_color(rank + 1))
+
+    def test_wraps_around_for_large_rank(self):
+        """Function must remain valid (no IndexError) for ranks larger than the palette
+        and continue returning well-formed colors via modulo wrap-around."""
+        from transport_tools.libs.utils import get_residue_color
+        for rank in (0, 50, 100, 500, 1000, 10000):
+            color = get_residue_color(rank)
+            self.assertEqual(len(color), 3)
+            for component in color:
+                self.assertGreaterEqual(component, 0.0)
+                self.assertLessEqual(component, 1.0)
+
+    def test_differs_from_caver_color_for_first_three_ranks(self):
+        """First three residue colors must differ from the first three CAVER colors —
+        the offset is the whole point of having a separate palette."""
+        from transport_tools.libs.utils import get_residue_color, get_caver_color
+        for rank in range(3):
+            self.assertNotEqual(get_residue_color(rank), get_caver_color(rank))
+
+
 if __name__ == "__main__":
     unittest.main()
