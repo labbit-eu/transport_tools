@@ -33,7 +33,8 @@ from transport_tools.libs.ui import progressbar, TimeProcess, process_count
 from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     subsample_events, get_md_membership4groups
-from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points
+from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
+    init_distance_worker, calc_distance_chunk, iter_pair_chunks
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
     transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
@@ -296,22 +297,6 @@ class TransportProcesses:
         for supercluster in self._super_clusters.values():
             supercluster.parameters.update(self.parameters)
 
-    @staticmethod
-    def _calc_avg_cluster_distance(cls1: int, cls2: int, path_set1: LayeredPathSet, path_set2: LayeredPathSet,
-                                   precision: int, cutoff: float) -> Tuple[int, int, float]:
-        """
-        Computes average distance between the paths representing the two clusters
-        :param cls1: order ID of evaluated cluster1 to enable its identification during distance matrix creation
-        :param cls2: order ID of evaluated cluster2 to enable its identification during distance matrix creation
-        :param path_set1: set of paths representing cluster1
-        :param path_set2: set of paths representing cluster2
-        :param precision: ith how many decimals are the calculated distances reported
-        :param cutoff: clustering cutoff
-        :return: cls1, cls2 and average distance between the two evaluated clusters
-        """
-
-        return cls1, cls2, np.around(path_set1.avg_distance2path_set(path_set2, cutoff), precision)
-
     def _compute_intercluster_distances(self, cluster_specifications: List[Tuple[str, int]],
                                         path_sets: Dict[Tuple[str, int], LayeredPathSet],
                                         precision: int = 4) -> np.ndarray:
@@ -327,47 +312,28 @@ class TransportProcesses:
         distance_matrix = np.full((num_clusters, num_clusters), np.inf)
 
         if num_clusters > 1:
-            # parallel processing and progress monitoring related variables
-            processing = list()
-            n_jobs = int((num_clusters ** 2 - num_clusters) / 2)
-            current_batch_size = 0
+            num_cpus = self.parameters["num_cpus"]
+            n_jobs = (num_clusters ** 2 - num_clusters) // 2
+
+            # split the pairwise jobs into balanced chunks; the path-sets are shared with the
+            # workers only once via the Pool initializer, so each job carries merely the
+            # lightweight cluster index pairs - keeping many chunks per CPU aids load balancing
+            # (pair costs vary widely) and frequent progress updates
+            target_num_chunks = max(num_cpus * 64, 1)
+            chunk_size = max(1, -(-n_jobs // target_num_chunks))
+
             done_calcs = 0
-            jobs4batch = min(self.parameters["num_cpus"] * self.parameters["n_jobs_per_cpu_batch"], int(n_jobs / 10))
             progressbar(done_calcs, n_jobs)
 
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
-                for cls1 in range(num_clusters):
-                    num_dists2compute = num_clusters - cls1 - 1
-
-                    # to avoid large memory allocation, keep processing queue moderately filled
-                    if jobs4batch <= current_batch_size + num_dists2compute and current_batch_size > 0:
-
-                        # perform accumulated calculation jobs in this batch
-                        for p in processing:
-                            id1, id2, distance = p.get()
-                            distance_matrix[id1, id2] = distance
-
-                        done_calcs += len(processing)
-                        progressbar(done_calcs, n_jobs)
-                        processing = list()
-                        current_batch_size = 0
-
-                    for cls2 in range(cls1 + 1, num_clusters):
-                        cluster1_specification = cluster_specifications[cls1]
-                        cluster2_specification = cluster_specifications[cls2]
-                        processing.append(pool.apply_async(self._calc_avg_cluster_distance,
-                                                           args=(cls1, cls2, path_sets[cluster1_specification],
-                                                                 path_sets[cluster2_specification], precision,
-                                                                 self.parameters["clustering_cutoff"])))
-                    current_batch_size += num_dists2compute
-
-                # perform remaining calculation jobs
-                for p in processing:
-                    id1, id2, distance = p.get()
-                    distance_matrix[id1, id2] = distance
-
-                done_calcs += len(processing)
-                progressbar(done_calcs, n_jobs)
+            with Pool(processes=num_cpus, initializer=init_distance_worker,
+                      initargs=(path_sets, cluster_specifications, precision,
+                                self.parameters["clustering_cutoff"])) as pool:
+                for chunk_results in pool.imap_unordered(calc_distance_chunk,
+                                                         iter_pair_chunks(num_clusters, chunk_size)):
+                    for id1, id2, distance in chunk_results:
+                        distance_matrix[id1, id2] = distance
+                    done_calcs += len(chunk_results)
+                    progressbar(done_calcs, n_jobs)
 
         # complete the matrix
         for cls1 in range(num_clusters):

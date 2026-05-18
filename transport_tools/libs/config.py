@@ -201,8 +201,7 @@ class AnalysisConfig:
             "use_cluster_spread": True,  # distance calculations for event-SC assignment
             "sp_radius": 0.5,  # radius of starting point
             "tunnel_properties_quantile": 0.90,  # to use for calculation of representative radius of layered clusters
-            "n_jobs_per_cpu_batch": 100000,  # 100000 jobs per cpu should be reasonable for 4 CPUs and 10 GB RAM
-
+  
             # outputs
             "pickle_protocol": 4,
             "verbose_logging": False,
@@ -264,7 +263,6 @@ class AnalysisConfig:
             "min_release_events",
             "random_seed",
             "clustering_max_num_rep_frag",
-            "n_jobs_per_cpu_batch",
             "max_layered_points4visualization",
             "max_events_per_cluster4visualization",
             "pickle_protocol"

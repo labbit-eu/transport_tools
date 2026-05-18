@@ -2171,3 +2171,70 @@ def einsum_dist(xyz1: np.ndarray, xyz2: np.ndarray):
 
     z = (xyz1 - xyz2).T
     return np.sqrt(np.einsum('ij,ij->j', z, z))
+
+
+# Shared state for the cluster-distance worker processes; populated once per worker by
+# init_distance_worker() so that individual jobs carry only lightweight cluster index pairs
+# instead of re-pickling the (potentially large) path-sets for every pairwise comparison.
+_DIST_WORKER_STATE: dict = {}
+
+
+def init_distance_worker(path_sets: Dict[Tuple[str, int], LayeredPathSet],
+                         cluster_specifications: List[Tuple[str, int]],
+                         precision: int, cutoff: float):
+    """
+    Initializer for the cluster-distance multiprocessing Pool; stores data shared by all jobs
+    once per worker process, so individual jobs need to carry only lightweight cluster index
+    pairs instead of re-pickling the path-sets for every pairwise comparison.
+    :param path_sets: sets of representative paths for all clusters
+    :param cluster_specifications: definition of clusters, indexed by their order ID
+    :param precision: number of decimals with which the calculated distances are reported
+    :param cutoff: clustering cutoff
+    """
+
+    _DIST_WORKER_STATE["path_sets"] = path_sets
+    _DIST_WORKER_STATE["cluster_specifications"] = cluster_specifications
+    _DIST_WORKER_STATE["precision"] = precision
+    _DIST_WORKER_STATE["cutoff"] = cutoff
+
+
+def calc_distance_chunk(index_pairs: List[Tuple[int, int]]) -> List[Tuple[int, int, float]]:
+    """
+    Computes average cluster-cluster distances for a chunk of cluster index pairs, using the
+    path-sets shared with the worker process via init_distance_worker().
+    :param index_pairs: list of (cls1, cls2) order ID pairs to evaluate
+    :return: list of (cls1, cls2, average distance) tuples
+    """
+
+    path_sets = _DIST_WORKER_STATE["path_sets"]
+    cluster_specifications = _DIST_WORKER_STATE["cluster_specifications"]
+    precision = _DIST_WORKER_STATE["precision"]
+    cutoff = _DIST_WORKER_STATE["cutoff"]
+
+    results = list()
+    for cls1, cls2 in index_pairs:
+        path_set1 = path_sets[cluster_specifications[cls1]]
+        path_set2 = path_sets[cluster_specifications[cls2]]
+        distance = np.around(path_set1.avg_distance2path_set(path_set2, cutoff), precision)
+        results.append((cls1, cls2, distance))
+
+    return results
+
+
+def iter_pair_chunks(num_clusters: int, chunk_size: int) -> Iterable[List[Tuple[int, int]]]:
+    """
+    Lazily yields chunks of upper-triangle cluster index pairs to keep memory bounded even for
+    large numbers of clusters.
+    :param num_clusters: total number of clusters
+    :param chunk_size: maximal number of index pairs per yielded chunk
+    """
+
+    chunk = list()
+    for cls1 in range(num_clusters):
+        for cls2 in range(cls1 + 1, num_clusters):
+            chunk.append((cls1, cls2))
+            if len(chunk) >= chunk_size:
+                yield chunk
+                chunk = list()
+    if chunk:
+        yield chunk

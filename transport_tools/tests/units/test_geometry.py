@@ -636,6 +636,60 @@ class TestHelpers(unittest.TestCase):
         self.assertAlmostEqual(result[0], 1.0)  # Distance from (0,0,0) to (1,0,0)
         self.assertAlmostEqual(result[1], 0.0)  # Distance from (1,1,1) to (1,1,1)
 
+    def test_iter_pair_chunks(self):
+        """Verify iter_pair_chunks() yields all upper-triangle index pairs in balanced chunks"""
+        from transport_tools.libs.geometry import iter_pair_chunks
+
+        num_clusters = 5
+        expected_pairs = [(i, j) for i in range(num_clusters) for j in range(i + 1, num_clusters)]
+
+        for chunk_size in (1, 3, 4, 100):
+            chunks = list(iter_pair_chunks(num_clusters, chunk_size))
+            # no chunk exceeds the requested size
+            self.assertTrue(all(len(chunk) <= chunk_size for chunk in chunks))
+            # all pairs are present exactly once, preserving the upper-triangle order
+            flat_pairs = [pair for chunk in chunks for pair in chunk]
+            self.assertListEqual(flat_pairs, expected_pairs)
+
+        # nothing to do when there are not enough clusters to form a pair
+        self.assertListEqual(list(iter_pair_chunks(1, 10)), [])
+
+    def test_distance_worker_chunk(self):
+        """Verify init_distance_worker()/calc_distance_chunk() match direct distance calculation"""
+        from transport_tools.libs.geometry import LayeredPathSet, init_distance_worker, calc_distance_chunk
+        from transport_tools.tests.units.data.data_geometry import test_layers_tun, test_layers_event
+
+        params = {
+            "use_cluster_spread": False,
+            "clustering_max_num_rep_frag": 0,
+            "directional_cutoff": 1.5707963267948966,
+            "random_seed": 4,
+            "sp_radius": 0.5,
+            "calculate_exact_path_distances": False
+        }
+        node_path_tun = ['0_1', '1_1', '2_1', '3_1', '4_1', '5_1', '6_2', '7_1', '8_1', '8_3', '7_3', '6_3', '5_2',
+                         '5_3', '6_1', '7_2', '7_4', '8_2', '9_1']
+        node_path_event = ['0_0', '1_0', '4_0', '5_0', '7_0']
+
+        pathset_tun = LayeredPathSet("Cluster_44", "e10s1_e9s3p0f1600", params,
+                                     starting_point_coords=np.array([0., 0., 0.]))
+        pathset_tun.add_node_path(node_path_tun, test_layers_tun)
+        pathset_event = LayeredPathSet("2_release", "e10s1_e9s3p0f1600", params, starting_point_coords=None)
+        pathset_event.add_node_path(node_path_event, test_layers_event)
+
+        cluster_specifications = [("e10s1_e9s3p0f1600", 44), ("e10s1_e9s3p0f1600", 2)]
+        path_sets = {cluster_specifications[0]: pathset_tun, cluster_specifications[1]: pathset_event}
+        cutoff, precision = 999, 4
+
+        init_distance_worker(path_sets, cluster_specifications, precision, cutoff)
+        results = calc_distance_chunk([(0, 1), (0, 0)])
+
+        # index pairs are echoed back unchanged so the matrix fill is order-independent
+        self.assertListEqual([(r[0], r[1]) for r in results], [(0, 1), (0, 0)])
+        self.assertAlmostEqual(results[0][2],
+                               np.around(pathset_tun.avg_distance2path_set(pathset_event, cutoff), precision))
+        self.assertAlmostEqual(results[1][2], 0.0)  # distance of a cluster to itself
+
 
 if __name__ == '__main__':
     unittest.main()
