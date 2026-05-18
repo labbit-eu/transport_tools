@@ -690,6 +690,28 @@ class TestHelpers(unittest.TestCase):
                                np.around(pathset_tun.avg_distance2path_set(pathset_event, cutoff), precision))
         self.assertAlmostEqual(results[1][2], 0.0)  # distance of a cluster to itself
 
+    def test_iter_shard_pair_chunks(self):
+        """Verify the shards together cover every upper-triangle pair exactly once"""
+        from transport_tools.libs.geometry import iter_shard_pair_chunks, count_pairs_for_shard
+
+        num_clusters, num_shards = 7, 3
+        expected_pairs = [(i, j) for i in range(num_clusters) for j in range(i + 1, num_clusters)]
+
+        collected = list()
+        for shard_id in range(num_shards):
+            shard_pairs = [pair for chunk in iter_shard_pair_chunks(num_clusters, num_shards, shard_id, 4)
+                           for pair in chunk]
+            # count_pairs_for_shard agrees with what the generator actually yields
+            self.assertEqual(count_pairs_for_shard(num_clusters, num_shards, shard_id), len(shard_pairs))
+            collected.extend(shard_pairs)
+
+        # the shards partition the upper triangle - every pair is present exactly once
+        self.assertListEqual(sorted(collected), sorted(expected_pairs))
+
+        # a single shard covering everything equals the plain upper-triangle enumeration
+        single_shard = [pair for chunk in iter_shard_pair_chunks(num_clusters, 1, 0, 100) for pair in chunk]
+        self.assertListEqual(single_shard, expected_pairs)
+
 
 if __name__ == '__main__':
     unittest.main()

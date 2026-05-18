@@ -546,6 +546,8 @@ class TestAquaductTracedResiduesFilterParsing(unittest.TestCase):
             "comparative_groups_definition": None,
             "trajectory_path": None,
             "legacy_pymol_support": False,
+            "slurm_folder": None,
+            "clustering_folder": "/tmp/ignored_clustering",
         }
         return config
 

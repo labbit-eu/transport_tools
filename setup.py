@@ -50,6 +50,9 @@ setup(name='transport_tools',
       packages=find_packages(include=['transport_tools*']),
       python_requires='>=3.12',
       install_requires=install_requires,
+      # optional dependency for the 'slurm' distance backend; conda users can instead install it
+      # directly with 'conda install -c conda-forge submitit'
+      extras_require={'slurm': ['submitit>=1.5.0']},
       scripts=['transport_tools/scripts/tt_engine.py','transport_tools/scripts/tt_filter_caver_by_frames.py','transport_tools/scripts/tt_convert_to_caver.py'],
       provides=['transport_tools'],
       classifiers=['Development Status :: 5 - Production/Stable',

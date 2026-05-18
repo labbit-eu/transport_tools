@@ -13,8 +13,10 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - optional skipping of empty AQUA-DUCT folders via new `aquaduct_allow_empty_folders` calculations setting (default `False`); when enabled, folders matching `aquaduct_results_folder_pattern` that are missing required tar/summary files are pruned with a one-time warning instead of raising `FileNotFoundError`
 - replaced hardcoded `wat_` prefix with dynamic residue abbreviation to enable multi-residue inputs from AQUA-DUCT
 - point clusters in layers are added in spatially sorted order to ensure stable, deterministic labeling
+- optional SLURM backend for the stage-4 cluster-cluster distance calculation via the new `distance_backend` setting (`local` default, or `slurm`); the `slurm` backend distributes the pairwise distances over SLURM array jobs using the optional `submitit` package and is configured through the new `slurm_partition`, `slurm_account`, `slurm_timeout_min`, `slurm_mem_gb`, `slurm_cpus_per_task`, `slurm_num_shards`, `slurm_folder`, and `slurm_array_parallelism` parameters; each shard persists its result, so an interrupted or partially failed run is resumed on re-run without recomputing the shards that already finished
 
 ### Misc
+- sped up the stage-4 cluster-cluster distance calculation: path-sets are now shared with the worker processes once via a `Pool` initializer instead of being re-pickled for every pairwise comparison; removed the now-obsolete `n_jobs_per_cpu_batch` parameter
 - updated install requirements to match new environment
 - refactored type checking and validations; resolved several `DeprecationWarning`s
 - improved type hints and added validation checks throughout

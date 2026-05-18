@@ -2238,3 +2238,42 @@ def iter_pair_chunks(num_clusters: int, chunk_size: int) -> Iterable[List[Tuple[
                 chunk = list()
     if chunk:
         yield chunk
+
+
+def count_pairs_for_shard(num_clusters: int, num_shards: int, shard_id: int) -> int:
+    """
+    Returns the number of upper-triangle cluster index pairs assigned to a single shard under the
+    strided assignment used by iter_shard_pair_chunks().
+    :param num_clusters: total number of clusters
+    :param num_shards: total number of shards the work is split into
+    :param shard_id: 0-based ID of the shard
+    """
+
+    total_pairs = (num_clusters ** 2 - num_clusters) // 2
+    return len(range(shard_id, total_pairs, num_shards))
+
+
+def iter_shard_pair_chunks(num_clusters: int, num_shards: int, shard_id: int,
+                           chunk_size: int) -> Iterable[List[Tuple[int, int]]]:
+    """
+    Lazily yields chunks of the upper-triangle cluster index pairs assigned to a single shard.
+    Pairs are distributed across shards in a strided fashion (pair i goes to shard i % num_shards),
+    which balances the load well because the per-pair cost varies along the matrix rows.
+    :param num_clusters: total number of clusters
+    :param num_shards: total number of shards the work is split into
+    :param shard_id: 0-based ID of the shard whose pairs are yielded
+    :param chunk_size: maximal number of index pairs per yielded chunk
+    """
+
+    chunk = list()
+    pair_index = 0
+    for cls1 in range(num_clusters):
+        for cls2 in range(cls1 + 1, num_clusters):
+            if pair_index % num_shards == shard_id:
+                chunk.append((cls1, cls2))
+                if len(chunk) >= chunk_size:
+                    yield chunk
+                    chunk = list()
+            pair_index += 1
+    if chunk:
+        yield chunk

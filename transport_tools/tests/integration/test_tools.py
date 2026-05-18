@@ -129,6 +129,33 @@ class TestTransportProcesses(unittest.TestCase):
                                            "paths"), self)
         save_checkpoint(mol_system, self._get_dumpfile(3), overwrite=True)
 
+    def test_04distance_shard_consistency(self):
+        """SLURM-shard distance calculation must reproduce the local distance matrix exactly"""
+        import numpy as np
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(3))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        cluster_specifications, path_sets, _ = mol_system._assemble_cluster_path_sets(load_path_sets=True)
+        local_matrix = mol_system._compute_intercluster_distances(cluster_specifications, path_sets)
+
+        # rebuild the matrix from sharded calculations, exactly as the SLURM backend would
+        num_shards = 3
+        num_clusters = len(cluster_specifications)
+        sharded_matrix = np.full((num_clusters, num_clusters), np.inf)
+        for shard_id in range(num_shards):
+            for id1, id2, distance in mol_system.compute_distance_shard(num_shards, shard_id):
+                sharded_matrix[int(id1), int(id2)] = distance
+        for cls1 in range(num_clusters):
+            sharded_matrix[cls1, cls1] = 0
+            for cls2 in range(cls1 + 1, num_clusters):
+                sharded_matrix[cls2, cls1] = sharded_matrix[cls1, cls2]
+
+        self.assertFalse(np.isinf(sharded_matrix).any())
+        self.assertTrue(np.array_equal(local_matrix, sharded_matrix))
+
     def test_04merge_tunnel_clusters2super_clusters(self):
         try:
             mol_system = load_checkpoint(self._get_dumpfile(3))
@@ -142,6 +169,51 @@ class TestTransportProcesses(unittest.TestCase):
         compare_test_folders(os.path.join(self.saved_data, "data", "clustering"),
                               os.path.join(self.out_path, "data", "clustering"), self)
         save_checkpoint(mol_system, self._get_dumpfile(4), overwrite=True)
+
+    def test_04merge_tunnel_clusters2super_clusters_slurm(self):
+        """Same checks as test_04merge..., but the stage-4 distances are computed via the SLURM
+        backend (submitit). Runs only when a SLURM environment with submitit is detected."""
+        import shutil
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(3))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        # the SLURM shards rebuild the analysis from the config file, so it must carry an absolute
+        # output_path matching this test run (the shared test config uses a relative one) and the
+        # same slurm_folder as the launcher - kept outside the clustering folder compared below
+        slurm_folder = os.path.join(self.out_path, "temp", "slurm_shards")
+        slurm_config = os.path.join(self.out_path, "config_slurm.ini")
+        with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
+                open(slurm_config, "w") as out_stream:
+            for line in in_stream:
+                if line.startswith("output_path"):
+                    line = "output_path = {}\n".format(self.out_path)
+                out_stream.write(line)
+                if line.strip() == "[CALCULATIONS_SETTINGS]":
+                    out_stream.write("slurm_folder = {}\n".format(slurm_folder))
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["distance_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 3
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_folder"] = slurm_folder
+
+        mol_system.compute_tunnel_clusters_distances()
+        mol_system.merge_tunnel_clusters2super_clusters()
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "clustering"),
+                              os.path.join(self.out_path, "_internal", "clustering"), self)
+        compare_test_folders(os.path.join(self.saved_data, "data", "clustering"),
+                              os.path.join(self.out_path, "data", "clustering"), self)
 
     def test_05create_super_cluster_profiles(self):
         try:

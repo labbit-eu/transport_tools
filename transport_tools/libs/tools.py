@@ -26,7 +26,7 @@ import numpy as np
 import fastcluster
 from typing import List, Dict, Tuple
 from scipy.cluster.hierarchy import fcluster
-from multiprocessing import Pool
+from multiprocessing import Pool, get_context
 from transport_tools.libs.config import AnalysisConfig
 from logging import getLogger
 from transport_tools.libs.ui import progressbar, TimeProcess, process_count
@@ -34,7 +34,7 @@ from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
-    init_distance_worker, calc_distance_chunk, iter_pair_chunks
+    init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, iter_shard_pair_chunks
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
     transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
@@ -256,6 +256,7 @@ class TransportProcesses:
         """
 
         self.parameters = config.get_parameters()
+        self.config_file = config.source_file  # INI file the analysis was launched from (needed by SLURM shards)
         self.caver_input_folders, self.traj_input_folders, aquaduct_folders = config.get_input_folders()
         self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
         self.aquaduct_md_to_roots: Dict[str, List[str]] = {
@@ -283,6 +284,7 @@ class TransportProcesses:
 
         new_config.report_updates(self.parameters)
         self.parameters = new_config.get_parameters()
+        self.config_file = new_config.source_file
         self.caver_input_folders, self.traj_input_folders, aquaduct_folders = new_config.get_input_folders()
         self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
         self.aquaduct_md_to_roots = {
@@ -325,9 +327,13 @@ class TransportProcesses:
             done_calcs = 0
             progressbar(done_calcs, n_jobs)
 
-            with Pool(processes=num_cpus, initializer=init_distance_worker,
-                      initargs=(path_sets, cluster_specifications, precision,
-                                self.parameters["clustering_cutoff"])) as pool:
+            # use the 'spawn' start method: the workers must not be forked from this (typically
+            # multi-threaded, e.g. via numpy/BLAS) process, as forking while another thread holds
+            # an internal lock deadlocks the child - this happens intermittently, in particular
+            # for the SLURM shard processes (see compute_distance_shard)
+            with get_context("spawn").Pool(processes=num_cpus, initializer=init_distance_worker,
+                                           initargs=(path_sets, cluster_specifications, precision,
+                                                     self.parameters["clustering_cutoff"])) as pool:
                 for chunk_results in pool.imap_unordered(calc_distance_chunk,
                                                          iter_pair_chunks(num_clusters, chunk_size)):
                     for id1, id2, distance in chunk_results:
@@ -677,45 +683,153 @@ class TransportProcesses:
 
         return matrix, cluster_specifications, cluster_characteristics
 
+    def _assemble_cluster_path_sets(self, load_path_sets: bool = True) -> Tuple[List[Tuple[str, int]],
+                                                                                Dict[Tuple[str, int], LayeredPathSet],
+                                                                                Dict[Tuple[str, int],
+                                                                                     Tuple[float, int]]]:
+        """
+        Collects tunnel clusters from all analyzed MD simulations and orders them by importance
+        (cluster ID, mean throughput, number of tunnels, finally md_label to avoid duplicated keys
+        in case the exact same clusters appear more times, e.g., due to analyses of parts of the
+        same simulation). The resulting cluster ordering is deterministic, so it is identical for
+        the local and SLURM backends and across all SLURM shards.
+        :param load_path_sets: if False, the layered path-sets are not retained (only their
+                               characteristics); used by the SLURM launcher which does not need them
+        :return: ordered list of cluster specifications, dict of path-sets keyed by specification
+                 (empty when load_path_sets is False), and dict of cluster characteristics
+        """
+
+        path_sets: Dict[Tuple[str, int], LayeredPathSet] = dict()
+        ordered_clusters = dict()
+        cluster_characteristics: Dict[Tuple[str, int], Tuple[float, int]] = dict()
+
+        for md_label in self.caver_input_folders:
+            tunnel_network = TunnelNetwork(self.parameters, md_label)
+            tunnel_network.load_layered_network()
+
+            for cls_id, layered_path_set in tunnel_network.layered_entities.items():
+                cluster_specification = (md_label, int(cls_id))  # tunnel cluster IDs are integers
+                if layered_path_set.characteristics is None:
+                    raise RuntimeError(f"Variable 'characteristics' is not specified for tunnel cluster {cls_id} in {md_label}")
+                avg_throughput, num_tunnels = layered_path_set.characteristics
+                cluster_characteristics[cluster_specification] = layered_path_set.characteristics
+                importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels, md_label)
+                if load_path_sets:
+                    path_sets[cluster_specification] = layered_path_set
+                ordered_clusters[importance_key] = cluster_specification
+
+        cluster_specifications = [ordered_clusters[x] for x in sorted(ordered_clusters.keys())]
+
+        return cluster_specifications, path_sets, cluster_characteristics
+
     def compute_tunnel_clusters_distances(self):
         """
         Compute pairwise cluster-cluster distances, and save their matrix
         """
 
         with TimeProcess("Cluster-cluster distances calculation"):
-            # collect clusters from all analyzed MD simulations & order clusters according to their importance,
-            # e.g., cluster ID, their mean throughput, number of tunnels, finally we have md_label to avoid
-            # Duplicated keys in case of exact same clusters appearing more times (e.g. due to analyses of parts of
-            # the same simulation
+            backend = self.parameters["distance_backend"]
+            # the SLURM launcher does not need the path-sets in this process - the compute nodes
+            # rebuild them themselves - so we avoid loading them here to save memory
+            cluster_specifications, path_sets, cluster_characteristics = \
+                self._assemble_cluster_path_sets(load_path_sets=(backend != "slurm"))
 
-            path_sets = dict()
-            ordered_clusters = dict()
-            cluster_characteristics = dict()
-
-            for md_label in self.caver_input_folders:
-                tunnel_network = TunnelNetwork(self.parameters, md_label)
-                tunnel_network.load_layered_network()
-
-                for cls_id, layered_path_set in tunnel_network.layered_entities.items():
-                    cluster_specification = (md_label, cls_id)
-                    if layered_path_set.characteristics is None:
-                        raise RuntimeError(f"Variable 'characteristics' is not specified for tunnel cluster {cls_id} in {md_label}")
-                    avg_throughput, num_tunnels = layered_path_set.characteristics
-                    cluster_characteristics[cluster_specification] = layered_path_set.characteristics
-                    importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels, md_label)
-                    path_sets[cluster_specification] = layered_path_set
-                    ordered_clusters[importance_key] = cluster_specification
-
-            cluster_specifications = [ordered_clusters[x] for x in sorted(ordered_clusters.keys())]
             if len(cluster_specifications) <= 1:
                 raise RuntimeError("Not enough tunnel clusters available to calculate their distances")
 
-            logger.info("Computing distances for {:d} tunnel clusters "
-                        "using {:d} {}:".format(len(cluster_specifications), self.parameters["num_cpus"],
-                                                process_count(self.parameters["num_cpus"])))
+            if backend == "slurm":
+                logger.info("Computing distances for {:d} tunnel clusters using SLURM array "
+                            "jobs:".format(len(cluster_specifications)))
+                distance_matrix = self._compute_intercluster_distances_slurm(cluster_specifications)
+            else:
+                logger.info("Computing distances for {:d} tunnel clusters "
+                            "using {:d} {}:".format(len(cluster_specifications), self.parameters["num_cpus"],
+                                                    process_count(self.parameters["num_cpus"])))
+                distance_matrix = self._compute_intercluster_distances(cluster_specifications, path_sets)
 
-            distance_matrix = self._compute_intercluster_distances(cluster_specifications, path_sets)
             self._save_distance_matrix(distance_matrix, cluster_specifications, cluster_characteristics)
+
+    def _compute_intercluster_distances_slurm(self, cluster_specifications: List[Tuple[str, int]]) -> np.ndarray:
+        """
+        Computes the inter-cluster distance matrix by distributing the pairwise calculations over
+        SLURM array jobs (one task per shard) using submitit. The rounding precision is applied by
+        the shards themselves (see compute_distance_shard).
+        :param cluster_specifications: definition of clusters
+        :return: distance matrix for clustering
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' distance backend requires the analysis to be run from a configuration "
+                               "file - the SLURM compute nodes need it to rebuild the analysis state.")
+
+        num_clusters = len(cluster_specifications)
+        distance_matrix = np.full((num_clusters, num_clusters), np.inf)
+
+        if num_clusters > 1:
+            results, num_shards = slurm.run_distance_shards_on_slurm(self.config_file, num_clusters,
+                                                                     self.parameters)
+            for id1, id2, distance in results:
+                distance_matrix[int(id1), int(id2)] = distance
+            logger.info("Assembled distance matrix from {:d} SLURM shards.".format(num_shards))
+
+        # complete the matrix
+        for cls1 in range(num_clusters):
+            distance_matrix[cls1, cls1] = 0
+            for cls2 in range(cls1 + 1, num_clusters):
+                distance_matrix[cls2, cls1] = distance_matrix[cls1, cls2]
+
+        if np.isinf(distance_matrix).any():
+            raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM shards; "
+                               "inspect the shard logs in '{}'.".format(self.parameters["slurm_folder"]))
+
+        return distance_matrix
+
+    def compute_distance_shard(self, num_shards: int, shard_id: int,
+                               precision: int = 4) -> List[Tuple[int, int, float]]:
+        """
+        Computes a single shard of the inter-cluster distance matrix - the strided subset of
+        upper-triangle cluster pairs assigned to shard_id. Used by the SLURM distance backend;
+        executed on a SLURM compute node.
+        :param num_shards: total number of shards the calculation is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :param precision: with how many decimals are the calculated distances reported
+        :return: list of (cluster1_id, cluster2_id, distance) tuples for this shard's pairs
+        """
+
+        cluster_specifications, path_sets, _ = self._assemble_cluster_path_sets(load_path_sets=True)
+        num_clusters = len(cluster_specifications)
+        if num_clusters <= 1:
+            return list()
+
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        cutoff = self.parameters["clustering_cutoff"]
+        n_jobs = count_pairs_for_shard(num_clusters, num_shards, shard_id)
+        if n_jobs == 0:
+            return list()
+
+        logger.info("SLURM shard %d/%d: computing %d cluster-cluster distances using %d %s.",
+                    shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
+
+        chunk_size = max(1, -(-n_jobs // max(num_cpus * 64, 1)))
+        results: List[Tuple[int, int, float]] = list()
+        done_calcs = 0
+        progressbar(done_calcs, n_jobs)
+
+        # 'spawn' start method - this shard process is multi-threaded (numpy/BLAS), so forking
+        # the worker processes here would intermittently deadlock the children on inherited locks
+        with get_context("spawn").Pool(processes=num_cpus, initializer=init_distance_worker,
+                                       initargs=(path_sets, cluster_specifications,
+                                                 precision, cutoff)) as pool:
+            for chunk_results in pool.imap_unordered(calc_distance_chunk,
+                                                     iter_shard_pair_chunks(num_clusters, num_shards,
+                                                                            shard_id, chunk_size)):
+                results.extend(chunk_results)
+                done_calcs += len(chunk_results)
+                progressbar(done_calcs, n_jobs)
+
+        return results
 
     def merge_tunnel_clusters2super_clusters(self):
         """

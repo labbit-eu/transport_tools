@@ -118,6 +118,17 @@ class AnalysisConfig:
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
             "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
+            # Stage 4 - computing distances among layered clusters
+            "distance_backend": "local",  # 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit)
+            "slurm_partition": None,  # SLURM partition for the distance-shard array job
+            "slurm_account": None,  # SLURM account for the distance-shard array job
+            "slurm_timeout_min": 240,  # wall-time limit per array task, in minutes
+            "slurm_mem_gb": 8.0,  # memory limit per array task, in GB
+            "slurm_cpus_per_task": 4,  # CPU cores requested and used per array task
+            "slurm_num_shards": None,  # number of array tasks; None => derived automatically from the job size
+            "slurm_folder": None,  # shared dir for submitit logs/artifacts; None => <clustering_folder>/stage4_shards
+            "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
+
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
             "max_length": -1,  # filter on maximum tunnel length
@@ -225,7 +236,12 @@ class AnalysisConfig:
             "snapshots_per_simulation",
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
-            "msms"
+            "msms",
+            "slurm_partition",
+            "slurm_account",
+            "slurm_num_shards",
+            "slurm_folder",
+            "slurm_array_parallelism"
         ]
 
         self.boolean_params = [
@@ -265,7 +281,11 @@ class AnalysisConfig:
             "clustering_max_num_rep_frag",
             "max_layered_points4visualization",
             "max_events_per_cluster4visualization",
-            "pickle_protocol"
+            "pickle_protocol",
+            "slurm_timeout_min",
+            "slurm_cpus_per_task",
+            "slurm_num_shards",
+            "slurm_array_parallelism"
         ]
 
         self.float_params = [
@@ -286,7 +306,8 @@ class AnalysisConfig:
             "sp_radius",
             "tunnel_properties_quantile",
             "directional_cutoff",
-            "aqauduct_ligand_effective_radius"
+            "aqauduct_ligand_effective_radius",
+            "slurm_mem_gb"
         ]
 
     def _load_configuration(self, path2configfile: str):
@@ -503,6 +524,9 @@ class AnalysisConfig:
             self.parameters["pickle_protocol"] = 2
             self.internal_settings["pickle_protocol"] = 2
 
+        if self.parameters["slurm_folder"] is None:
+            self.parameters["slurm_folder"] = os.path.join(self.parameters["clustering_folder"], "stage4_shards")
+
     def _test_parameter_sanity(self, param_name: str, min_val: int | float, max_val: int | float):
         """
         Checking if value assigned to parameter is within allowed range (if not raising error),
@@ -569,6 +593,20 @@ class AnalysisConfig:
         if self.parameters["clustering_linkage"] == "single":
             logger.warning("\nUse of 'single' for 'cluster_linkage' parameter is discouraged as it often leads to "
                            "rather poorly defined superclusters. PLEASE, consider using 'average' or 'complete'.")
+
+        if self.parameters["distance_backend"] not in ("local", "slurm"):
+            raise ValueError("\nUnsupported value '{}' for 'distance_backend' parameter.\n Valid options are "
+                             "'local' and 'slurm'.".format(self.parameters["distance_backend"]))
+
+        if self.parameters["distance_backend"] == "slurm":
+            self._test_parameter_sanity("slurm_timeout_min", 1, sys.maxsize)
+            self._test_parameter_sanity("slurm_cpus_per_task", 1, sys.maxsize)
+            if self.parameters["slurm_mem_gb"] <= 0:
+                raise ValueError("\nParameter 'slurm_mem_gb' must be a positive number.")
+            if self.parameters["slurm_num_shards"] is not None:
+                self._test_parameter_sanity("slurm_num_shards", 1, sys.maxsize)
+            if self.parameters["slurm_array_parallelism"] is not None:
+                self._test_parameter_sanity("slurm_array_parallelism", 1, sys.maxsize)
 
         ambiguous_assignment_resolution_methods = ["exact_matching", "penetration_depth", "assign2all"]
         if self.parameters["ambiguous_event_assignment_resolution"] not in ambiguous_assignment_resolution_methods:
@@ -1172,6 +1210,8 @@ class AnalysisConfig:
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
             "min_tunnel_radius4clustering": "# Clustering of tunnel clusters into superclusters",
+            "distance_backend": "# Stage 4 - computing distances among layered clusters "
+                                "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",
             "event_min_distance": "# Processing of transport events from AQUA-DUCT results, "
                                   "and their assignment to superclusters",
