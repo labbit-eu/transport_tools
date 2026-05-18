@@ -128,6 +128,7 @@ class AnalysisConfig:
             "slurm_num_shards": None,  # number of array tasks; None => derived automatically from the job size
             "slurm_folder": None,  # shared dir for submitit logs/artifacts; None => <clustering_folder>/stage4_shards
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
+            "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -241,7 +242,8 @@ class AnalysisConfig:
             "slurm_account",
             "slurm_num_shards",
             "slurm_folder",
-            "slurm_array_parallelism"
+            "slurm_array_parallelism",
+            "slurm_setup"
         ]
 
         self.boolean_params = [
@@ -594,7 +596,7 @@ class AnalysisConfig:
             logger.warning("\nUse of 'single' for 'cluster_linkage' parameter is discouraged as it often leads to "
                            "rather poorly defined superclusters. PLEASE, consider using 'average' or 'complete'.")
 
-        if self.parameters["distance_backend"] not in ("local", "slurm"):
+        if self.parameters["distance_backend"].lower() not in ("local", "slurm"):
             raise ValueError("\nUnsupported value '{}' for 'distance_backend' parameter.\n Valid options are "
                              "'local' and 'slurm'.".format(self.parameters["distance_backend"]))
 
