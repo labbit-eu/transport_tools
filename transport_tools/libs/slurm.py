@@ -1,0 +1,252 @@
+# -*- coding: utf-8 -*-
+
+# TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
+# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Distribution of the stage-4 cluster-cluster distance calculation over SLURM array jobs.
+# Submission is handled by the optional 'submitit' package (an extra dependency); it is imported
+# lazily so that the rest of TransportTools installs and runs without it.
+
+__version__ = '0.9.7'
+__author__ = 'Jan Brezovsky'
+__mail__ = 'janbre@amu.edu.pl'
+
+import os
+import json
+import numpy as np
+from typing import List, Tuple
+from logging import getLogger
+
+logger = getLogger(__name__)
+
+# average number of pairwise comparisons targeted per shard when the shard count is auto-derived
+_TARGET_PAIRS_PER_SHARD = 20000
+# upper bound on the auto-derived number of shards, to keep the SLURM array reasonably sized
+_MAX_AUTO_SHARDS = 200
+# filename recording the parameters a set of partial shard results was computed for
+_SHARDS_INFO_FILE = "shards_info.json"
+
+
+def shard_result_path(slurm_folder: str, shard_id: int) -> str:
+    """
+    Returns the path of the result file a given shard writes (and the launcher reads back).
+    :param slurm_folder: shared folder used for the SLURM distance calculation
+    :param shard_id: 0-based ID of the shard
+    """
+
+    return os.path.join(slurm_folder, "shard_result_{:05d}.npy".format(shard_id))
+
+
+def submitit_available() -> bool:
+    """
+    Return True if the optional 'submitit' package is importable.
+    """
+
+    try:
+        import submitit  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def derive_num_shards(n_jobs: int) -> int:
+    """
+    Derive a sensible number of SLURM array tasks for a distance job, aiming for roughly
+    _TARGET_PAIRS_PER_SHARD pairwise comparisons per shard while keeping the array size bounded.
+    :param n_jobs: total number of pairwise distance comparisons to perform
+    :return: number of shards to use
+    """
+
+    num_shards = -(-max(n_jobs, 1) // _TARGET_PAIRS_PER_SHARD)  # ceiling division
+    return max(1, min(num_shards, _MAX_AUTO_SHARDS))
+
+
+def _run_distance_shard(config_file: str, num_shards: int, shard_id: int) -> int:
+    """
+    Compute one shard of the inter-cluster distance matrix. This is executed on a SLURM compute
+    node and must remain a top-level function so that submitit can pickle it.
+
+    The analysis state is rebuilt from the configuration file - the layered networks the shard
+    needs are already present on the shared filesystem - so the stage-3 checkpoint is not required.
+    The result is written atomically to a per-shard file in the SLURM folder (keyed by shard_id),
+    so that a run interrupted partway can be resumed without recomputing finished shards.
+    :param config_file: path to the INI configuration file of the analysis
+    :param num_shards: total number of shards the calculation is split into
+    :param shard_id: 0-based ID of the shard to compute
+    :return: number of cluster pairs this shard computed
+    """
+
+    from transport_tools.libs.config import AnalysisConfig
+    from transport_tools.libs.tools import TransportProcesses
+
+    config = AnalysisConfig(config_file, logging=False)
+    mol_system = TransportProcesses(config)
+    results = mol_system.compute_distance_shard(num_shards, shard_id)
+
+    array = np.array(results, dtype=np.float64) if results else np.empty((0, 3), dtype=np.float64)
+    out_file = shard_result_path(config.parameters["slurm_folder"], shard_id)
+    tmp_file = out_file + ".tmp.npy"  # write to a temporary file, then atomically rename it
+    np.save(tmp_file, array)
+    os.replace(tmp_file, out_file)
+
+    return len(results)
+
+
+def _resolve_num_shards(n_jobs: int, parameters: dict) -> int:
+    """
+    Determine the number of shards to use - either the user-requested value or an auto-derived
+    one - capped so that there is never more shards than pairwise comparisons.
+    :param n_jobs: total number of pairwise distance comparisons
+    :param parameters: job configuration parameters
+    """
+
+    num_shards = parameters["slurm_num_shards"]
+    if num_shards is None:
+        num_shards = derive_num_shards(n_jobs)
+    return max(1, min(num_shards, n_jobs))
+
+
+def _prepare_shard_results(slurm_folder: str, num_shards: int, num_clusters: int,
+                           parameters: dict) -> List[int]:
+    """
+    Validate any partial shard results already present in the SLURM folder and report which shards
+    still need to be computed. Partial results are reused only if they were produced for the same
+    problem (cluster count, shard count) and the same distance-affecting parameters; otherwise the
+    stale result files are discarded so the calculation starts fresh.
+    :param slurm_folder: shared folder used for the SLURM distance calculation
+    :param num_shards: total number of shards
+    :param num_clusters: total number of tunnel clusters
+    :param parameters: job configuration parameters
+    :return: sorted list of shard IDs whose results are still missing
+    """
+
+    info = {
+        "num_shards": num_shards,
+        "num_clusters": num_clusters,
+        "clustering_cutoff": parameters["clustering_cutoff"],
+        "calculate_exact_path_distances": parameters["calculate_exact_path_distances"],
+    }
+    info_file = os.path.join(slurm_folder, _SHARDS_INFO_FILE)
+
+    previous_info = None
+    if os.path.exists(info_file):
+        try:
+            with open(info_file) as in_stream:
+                previous_info = json.load(in_stream)
+        except (json.JSONDecodeError, OSError):
+            previous_info = None
+
+    if previous_info != info:
+        # absent or stale partial results - discard them and start a fresh calculation
+        for filename in os.listdir(slurm_folder):
+            if filename.startswith("shard_result_") and filename.endswith(".npy"):
+                os.remove(os.path.join(slurm_folder, filename))
+        with open(info_file, "w") as out_stream:
+            json.dump(info, out_stream, indent=2)
+
+    return [sid for sid in range(num_shards)
+            if not os.path.exists(shard_result_path(slurm_folder, sid))]
+
+
+def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
+                                 parameters: dict) -> Tuple[List[Tuple[int, int, float]], int]:
+    """
+    Compute the inter-cluster distances as a SLURM array job (one task per shard) via submitit.
+    Only the shards whose results are not already present on disk are (re)submitted, so a run that
+    was interrupted - or in which some shards failed - can be resumed by simply running stage 4
+    again, without recomputing the shards that already succeeded.
+    :param config_file: path to the INI configuration file of the analysis
+    :param num_clusters: total number of tunnel clusters
+    :param parameters: job configuration parameters
+    :return: concatenated list of (cluster1_id, cluster2_id, distance) tuples, and the number of
+             shards that were used
+    """
+
+    try:
+        import submitit  # type: ignore[import-untyped]
+    except ImportError:
+        raise RuntimeError("The 'slurm' distance backend requires the optional 'submitit' package, which is not "
+                            "installed.\nInstall it with 'pip install submitit' or "
+                            "'conda install -c conda-forge submitit', or set 'distance_backend = local'.")
+
+    n_jobs = (num_clusters ** 2 - num_clusters) // 2
+    num_shards = _resolve_num_shards(n_jobs, parameters)
+    slurm_folder = parameters["slurm_folder"]
+    os.makedirs(slurm_folder, exist_ok=True)
+
+    missing_shards = _prepare_shard_results(slurm_folder, num_shards, num_clusters, parameters)
+    num_done = num_shards - len(missing_shards)
+    if num_done:
+        logger.info("Reusing %d/%d shard result(s) already present in '%s'; resuming.",
+                    num_done, num_shards, slurm_folder)
+
+    if missing_shards:
+        # cluster="slurm" makes submission fail loudly if SLURM is unavailable, rather than
+        # silently falling back to local execution - the user explicitly requested this backend
+        executor = submitit.AutoExecutor(folder=slurm_folder, cluster="slurm")
+        update_params = {
+            "name": "tt_distances",
+            "timeout_min": parameters["slurm_timeout_min"],
+            "cpus_per_task": parameters["slurm_cpus_per_task"],
+            "mem_gb": parameters["slurm_mem_gb"],
+            "nodes": 1,
+            "tasks_per_node": 1,
+        }
+        if parameters["slurm_partition"] is not None:
+            update_params["slurm_partition"] = parameters["slurm_partition"]
+        if parameters["slurm_account"] is not None:
+            update_params["slurm_account"] = parameters["slurm_account"]
+        if parameters["slurm_array_parallelism"] is not None:
+            update_params["slurm_array_parallelism"] = parameters["slurm_array_parallelism"]
+        executor.update_parameters(**update_params)
+
+        logger.info("Submitting %d SLURM shard(s) (of %d total) to compute %d cluster-cluster "
+                    "distances (submitit folder: %s).", len(missing_shards), num_shards, n_jobs,
+                    slurm_folder)
+        jobs = executor.map_array(_run_distance_shard,
+                                  [config_file] * len(missing_shards),
+                                  [num_shards] * len(missing_shards),
+                                  missing_shards)
+        logger.info("SLURM array job submitted as %d task(s); waiting for completion.", len(jobs))
+
+        # wait for every submitted shard; a failed shard is logged but does not abort collection -
+        # the shards that did finish wrote their result files and will be reused on the next run
+        for shard_id, job in zip(missing_shards, jobs):
+            try:
+                num_pairs = job.result()
+                logger.info("SLURM shard %d/%d finished (%d distances).",
+                            shard_id + 1, num_shards, num_pairs)
+            except Exception as error:
+                logger.error("SLURM shard %d (job %s) failed: %s", shard_id, job.job_id, error)
+
+    # assemble the matrix entries from the per-shard result files written by the shards themselves
+    results: List[Tuple[int, int, float]] = []
+    still_missing: List[int] = []
+    for shard_id in range(num_shards):
+        result_file = shard_result_path(slurm_folder, shard_id)
+        if not os.path.exists(result_file):
+            still_missing.append(shard_id)
+            continue
+        for row in np.load(result_file):
+            results.append((int(row[0]), int(row[1]), float(row[2])))
+
+    if still_missing:
+        raise RuntimeError("SLURM shard(s) {} did not produce results; inspect their logs in '{}'. "
+                           "{}/{} shard(s) completed - re-run stage 4 to resume from "
+                           "them.".format(still_missing, slurm_folder,
+                                          num_shards - len(still_missing), num_shards))
+
+    return results, num_shards
