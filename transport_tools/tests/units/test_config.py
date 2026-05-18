@@ -469,6 +469,7 @@ class TestStrMethod(unittest.TestCase):
             "visualize_transformed_transport_events": False,
             "visualize_exact_matching_outcomes": False,
             "trajectory_engine": "mdtraj",  # Required by __str__
+            "distance_backend": "local",
             "msms": None,  # Required by __str__
         }
         self.config.source_file = "/test/config.ini"

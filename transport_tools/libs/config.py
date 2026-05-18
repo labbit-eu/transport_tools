@@ -1006,6 +1006,15 @@ class AnalysisConfig:
                                    "imported. Please ensure that it is properly installed in the current "
                                    "environment--for example by running 'conda install ambertools -c conda-forge'.")
         msg += "\nJob configuration loaded from file: '{}'\n".format(self.source_file)
+        if self.parameters["distance_backend"].lower() == "slurm":
+            try:
+                import submitit # type: ignore[import-untyped]
+                msg += "submitit {}\n".format(version('submitit'))
+            except PackageNotFoundError:
+                raise RuntimeError("Requested to use SLURM via submitit but required module cannot be imported.\n"
+                                   " Please ensure that it is properly installed in the current environment,"
+                                   "for example by running 'conda install -c conda-forge submitit'.")
+
         msg += "#=== General calculations settings ===\n"
         for name, values in self.calculations_settings.items():
             msg += " {} = {}\n".format(name, str(values))
