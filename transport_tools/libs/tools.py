@@ -753,14 +753,14 @@ class TransportProcesses:
             if backend == "slurm":
                 logger.info("Computing distances for {:d} tunnel clusters using SLURM array "
                             "jobs:".format(len(cluster_specifications)))
-                distance_matrix = self._compute_intercluster_distances_slurm(cluster_specifications)
+                condensed_distances = self._compute_intercluster_distances_slurm(cluster_specifications)
             else:
                 logger.info("Computing distances for {:d} tunnel clusters "
                             "using {:d} {}:".format(len(cluster_specifications), self.parameters["num_cpus"],
                                                     process_count(self.parameters["num_cpus"])))
-                distance_matrix = self._compute_intercluster_distances(cluster_specifications, path_sets)
+                condensed_distances = self._compute_intercluster_distances(cluster_specifications, path_sets)
 
-            self._save_distance_matrix(distance_matrix, cluster_specifications, cluster_characteristics)
+            self._save_distance_matrix(condensed_distances, cluster_specifications, cluster_characteristics)
 
     def _compute_intercluster_distances_slurm(self, cluster_specifications: List[Tuple[str, int]]) -> np.ndarray:
         """
