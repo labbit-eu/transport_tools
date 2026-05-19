@@ -365,6 +365,33 @@ class TestLayeredPathSet(unittest.TestCase):
         self.assertAlmostEqual(6.843536853, pathset_tun.avg_distance2path_set(pathset_event2, dist_type=2))
         self.assertAlmostEqual(999, pathset_tun.avg_distance2path_set(pathset_event2, distance_cutoff=2))
 
+    def test_avg_distance2path_set_matches_reference(self):
+        """The vectorized avg_distance2path_set must match the pure-Python reference implementation."""
+        from transport_tools.libs.geometry import LayeredPathSet
+        from transport_tools.tests.units.data.data_geometry import test_pathset_event2_nodes_data, test_layers_tun
+
+        pathset_event2 = LayeredPathSet("2_release", "e10s1_e9s3p0f1600", self.params, starting_point_coords=None)
+        pathset_event2.node_paths = [np.array(['0_0', '1_0', '4_0', '5_0', '7_0'])]
+        pathset_event2.nodes_data = test_pathset_event2_nodes_data
+        pathset_event2.node_labels = ['0_0', '1_0', '4_0', '5_0', '7_0']
+
+        exact_parms = self.params.copy()
+        exact_parms["calculate_exact_path_distances"] = True
+        pathset_tun_exact = LayeredPathSet("Cluster_44", "e10s1_e9s3p0f1600", exact_parms,
+                                           starting_point_coords=np.array([0., 0., 0.]))
+        pathset_tun_exact.add_node_path(self.node_path_tun, test_layers_tun)
+
+        # covers overlapping (self pairs), directionally misaligned, far-away (cutoff) and exact-distance cases
+        pathsets = [self.pathset_tun, self.pathset_event, self.merged_pathset, pathset_event2, pathset_tun_exact]
+        for query in pathsets:
+            for other in pathsets:
+                for dist_type in (0, 1, 2):
+                    for cutoff in (999, 2):
+                        reference = query._avg_distance2path_set_reference(other, cutoff, dist_type)
+                        vectorized = query.avg_distance2path_set(other, cutoff, dist_type)
+                        self.assertAlmostEqual(reference, vectorized, places=7,
+                                               msg=f"{query} vs {other}, dist_type={dist_type}, cutoff={cutoff}")
+
 
 class TestLayers(unittest.TestCase):
     def setUp(self):

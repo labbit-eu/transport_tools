@@ -1131,13 +1131,71 @@ class LayeredPathSet:
 
         fragmented_paths = list()
         num_paths = 0
+        terminal_nodes = set(self._get_terminal_node_labels())
         for path in self.node_paths:
-            term_nodes4path = set(self._get_terminal_node_labels()) & set(path)
+            term_nodes4path = terminal_nodes & set(path)
             fragments = self._get_path_fragments(path, term_nodes4path)
             num_paths += len(fragments)
             fragmented_paths.append(fragments)
 
         return num_paths, fragmented_paths
+
+    def _pre_compute_dense_distance_matrix(self, other_set: LayeredPathSet, dist_type: int,
+                                           consider_rmsf: bool = False) -> np.ndarray:
+        """
+        Build a dense node-to-node distance matrix between this and the other pathset for the requested distance type.
+        Equivalent to the forward matrix of _pre_compute_distance_matrices, but stored as a 2D NumPy array with NaN
+        marking node pairs that are not adjacent (and hence were not evaluated).
+        :param other_set: other evaluated pathset
+        :param dist_type: 0 - center distances, 1 - surface distances, 2 - surface and rmsf distances
+        :param consider_rmsf: if the RMSF correction should be computed
+        :return: dense distance matrix of shape (#self nodes, #other nodes)
+        """
+
+        if self.nodes_data is None:
+            raise ValueError(f"Empty pathset {self} should not be processed")
+
+        other_index = {label: j for j, label in enumerate(other_set.node_labels)}
+        dist_mat = np.full((len(self.node_labels), len(other_set.node_labels)), np.nan)
+        last_layer = np.max(self.nodes_data[:, 3])
+        first_terminal_layer = self._get_first_terminal_layer()
+
+        for i, node_data in enumerate(self.nodes_data):
+            for other_label, dist, surf_dist, rmsf_dist in \
+                    self._compute_distances(node_data, last_layer, first_terminal_layer, other_set, consider_rmsf):
+                dist_mat[i, other_index[str(other_label)]] = (dist, surf_dist, rmsf_dist)[dist_type]
+
+        return dist_mat
+
+    def _build_inverted_dense_distance_matrix(self, fwd_mat: np.ndarray, other_set: LayeredPathSet,
+                                              expanded_paths: List[List[List[str]]], dist_type: int) -> np.ndarray:
+        """
+        Build the inverted (other-to-self) dense distance matrix from the forward one. Nodes of the other pathset
+        that are not adjacent to any node of this pathset - and hence absent from the forward matrix - have their
+        distances computed on demand via _update_missing_distances, mirroring the missing-node handling of the
+        original _get_dist2closest_node based kernel.
+        :param fwd_mat: forward dense distance matrix from _pre_compute_dense_distance_matrix
+        :param other_set: other evaluated pathset
+        :param expanded_paths: fragmented paths of the other pathset (limits the missing-node search to used nodes)
+        :param dist_type: 0 - center distances, 1 - surface distances, 2 - surface and rmsf distances
+        :return: dense distance matrix of shape (#other nodes, #self nodes)
+        """
+
+        inv_mat = fwd_mat.T.copy()
+        self_index = {label: i for i, label in enumerate(self.node_labels)}
+        other_index = {label: j for j, label in enumerate(other_set.node_labels)}
+        used_labels = {label for fragmented_path in expanded_paths
+                       for fragment in fragmented_path for label in fragment}
+
+        for label in used_labels:
+            j = other_index[label]
+            if np.all(np.isnan(inv_mat[j])):
+                # node never adjacent to any node of this pathset - compute its missing distances
+                missing = self._update_missing_distances(label, other_set)
+                for self_label, distances in missing[label].items():
+                    inv_mat[j, self_index[self_label]] = distances[dist_type]
+
+        return inv_mat
 
     def avg_distance2path_set(self, other_set: LayeredPathSet, distance_cutoff: float = 999,
                               dist_type: int = 1) -> float:
@@ -1145,6 +1203,87 @@ class LayeredPathSet:
         Compute mean closest surface-to-surface distance of all paths from two pathsets
         Note that if during calculation the mean distance is projected to surpass distance cutoff, the two patsets are
         deemed faraway with 999 distance. The same distance is also assumed for directionally misaligned patset pairs.
+
+        Vectorized re-implementation of the closest-node distance kernel: the per-node Python loops of the original
+        algorithm are replaced by NumPy operations over dense node-to-node distance matrices. Pathset pairs that
+        require the original kernel's stateful missing-node handling (detected as a non-finite running sum) are
+        delegated to the pure-Python _avg_distance2path_set_reference, which also serves as its regression reference.
+        :param other_set: other set to which the distance is calculated
+        :param distance_cutoff: cutoff on accurate distance calculation, anything beyond this value is far (999)
+        :param dist_type: 0 - center distances, 1 - surface distances, 2 - surface and rmsf distances
+        :return: mean distance (surface-to-surface by default) between pathsets
+        """
+
+        exact = self.parameters["calculate_exact_path_distances"]
+        angle = vector_angle(self._get_direction(), other_set._get_direction())
+        if not exact and self.parameters["directional_cutoff"] <= angle <= \
+                (2 * np.pi - self.parameters["directional_cutoff"]):
+            # directionally misaligned
+            return 999
+
+        # expand shorter paths
+        num_paths1, expanded_paths1 = self.get_fragmented_paths()
+        num_paths2, expanded_paths2 = other_set.get_fragmented_paths()
+
+        total_num_dists = num_paths1 * num_paths2
+        if num_paths1 == 0:
+            raise RuntimeError("Empty LayeredPathSet:\n{}".format(str(self)))
+        if num_paths2 == 0:
+            raise RuntimeError("Empty LayeredPathSet:\n{}".format(str(other_set)))
+
+        too_distant = 3 * distance_cutoff * total_num_dists
+
+        # dense node-to-node distance matrices (NaN marks non-adjacent, i.e. non-evaluated, node pairs)
+        fwd_mat = self._pre_compute_dense_distance_matrix(other_set, dist_type)
+        inv_mat = self._build_inverted_dense_distance_matrix(fwd_mat, other_set, expanded_paths2, dist_type)
+
+        self_index = {label: i for i, label in enumerate(self.node_labels)}
+        other_index = {label: j for j, label in enumerate(other_set.node_labels)}
+        fragmented1 = [_index_fragmented_path(fp, self_index) for fp in expanded_paths1]
+        fragmented2 = [_index_fragmented_path(fp, other_index) for fp in expanded_paths2]
+
+        sum_distances = 0.0
+        for node_ids1, prefix_lengths1, is_sp1 in fragmented1:
+            for node_ids2, prefix_lengths2, is_sp2 in fragmented2:
+                # forward direction: surface distance to the closest path2 node for each path1 node
+                fwd = fwd_mat[np.ix_(node_ids1, node_ids2)]
+                fwd = np.where(np.isnan(fwd), np.inf, fwd)
+                # running minimum over the growing path2 prefix; negative (overlap) distances clamped to 0
+                fwd = np.maximum(np.minimum.accumulate(fwd, axis=1), 0.0)
+                fwd[is_sp1, :] = 0.0  # SP nodes are excluded from the path1 sum
+                fwd_cumsum = np.cumsum(fwd, axis=0)
+                dist4path1 = fwd_cumsum[np.ix_(prefix_lengths1 - 1, prefix_lengths2 - 1)]
+
+                # inverted direction: surface distance to the closest path1 node for each path2 node
+                inv = inv_mat[np.ix_(node_ids2, node_ids1)]
+                inv = np.where(np.isnan(inv), np.inf, inv)
+                inv = np.maximum(np.minimum.accumulate(inv, axis=1), 0.0)
+                inv[is_sp2, :] = 0.0  # SP nodes are excluded from the path2 sum
+                inv_cumsum = np.cumsum(inv, axis=0)
+                cum_frag_dist = inv_cumsum[np.ix_(prefix_lengths2 - 1, prefix_lengths1 - 1)].T
+
+                # mean closest distance per (path1 prefix, path2 prefix); SP excluded from both path lengths
+                dists2evaluate = (prefix_lengths1[:, None] - 1) + (prefix_lengths2[None, :] - 1)
+                sum_distances += float(np.sum((dist4path1 + cum_frag_dist) / dists2evaluate))
+
+        if not np.isfinite(sum_distances):
+            # a path2 node had no adjacent node of this pathset for some path1 prefix; the original
+            # kernel resolves this by a stateful per-node switch to self-adjacency distances that
+            # cannot be reproduced by the static dense matrices - fall back to the reference kernel
+            return self._avg_distance2path_set_reference(other_set, distance_cutoff, dist_type)
+
+        if not exact and sum_distances > too_distant:
+            # avg of two path_sets that are too distant will still be beyond the cutoff,
+            # not messing the clustering much
+            return 999
+
+        return sum_distances / total_num_dists
+
+    def _avg_distance2path_set_reference(self, other_set: LayeredPathSet, distance_cutoff: float = 999,
+                                         dist_type: int = 1) -> float:
+        """
+        Original pure-Python implementation of avg_distance2path_set, retained as a reference for regression
+        testing of the vectorized avg_distance2path_set. Not used in production code.
         :param other_set: other set to which the distance is calculated
         :param distance_cutoff: cutoff on accurate distance calculation, anything beyond this value is far (999)
         :param dist_type: 0 - center distances, 1 - surface distances, 2 - surface and rmsf distances
@@ -2171,6 +2310,25 @@ def einsum_dist(xyz1: np.ndarray, xyz2: np.ndarray):
 
     z = (xyz1 - xyz2).T
     return np.sqrt(np.einsum('ij,ij->j', z, z))
+
+
+def _index_fragmented_path(fragmented_path: List[List[str]],
+                           node_index: Dict[str, int]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert a fragmented path (list of node-label fragments) into the integer node indices along its concatenated
+    nodes, the cumulative lengths of its fragment prefixes, and a boolean mask of its starting-point (SP) nodes.
+    Used by LayeredPathSet.avg_distance2path_set to address the dense distance matrices.
+    :param fragmented_path: path fragments, each a list of node labels
+    :param node_index: mapping from node label to its row/column index in the dense distance matrix
+    :return: node indices along the concatenated path, prefix lengths per fragment, SP-node mask
+    """
+
+    labels = [label for fragment in fragmented_path for label in fragment]
+    node_ids = np.array([node_index[label] for label in labels], dtype=int)
+    prefix_lengths = np.cumsum([len(fragment) for fragment in fragmented_path])
+    is_sp = np.array(["SP" in label for label in labels], dtype=bool)
+
+    return node_ids, prefix_lengths, is_sp
 
 
 # Shared state for the cluster-distance worker processes; populated once per worker by

@@ -1012,7 +1012,7 @@ class AnalysisConfig:
             try:
                 import submitit # type: ignore[import-untyped]
                 msg += "submitit {}\n".format(version('submitit'))
-            except PackageNotFoundError:
+            except (PackageNotFoundError, ModuleNotFoundError)
                 raise RuntimeError("Requested to use SLURM via submitit but required module cannot be imported.\n"
                                    " Please ensure that it is properly installed in the current environment,"
                                    "for example by running 'conda install -c conda-forge submitit'.")

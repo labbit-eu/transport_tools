@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 ### Misc
 - sped up the stage-4 cluster-cluster distance calculation: path-sets are now shared with the worker processes once via a `Pool` initializer instead of being re-pickled for every pairwise comparison; removed the now-obsolete `n_jobs_per_cpu_batch` parameter
+- vectorized the path-set distance kernel (`LayeredPathSet.avg_distance2path_set`): the per-node closest-node Python loops were replaced by NumPy operations over dense node-to-node distance matrices
 - updated install requirements to match new environment
 - refactored type checking and validations; resolved several `DeprecationWarning`s
 - improved type hints and added validation checks throughout
