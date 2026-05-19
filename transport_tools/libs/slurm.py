@@ -211,7 +211,7 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
             update_params["slurm_account"] = parameters["slurm_account"]
         if parameters["slurm_array_parallelism"] is not None:
             update_params["slurm_array_parallelism"] = parameters["slurm_array_parallelism"]
-        if parameters["slurm_setup"] is not None:
+        if parameters["slurm_setup"]:  # non-empty list of setup commands; submitit expects a list of str
             update_params["slurm_setup"] = parameters["slurm_setup"]
         executor.update_parameters(**update_params)
 

@@ -312,6 +312,11 @@ class AnalysisConfig:
             "slurm_mem_gb"
         ]
 
+        # parameters whose value is a list of strings, one per (non-empty) line in the INI file
+        self.list_params = [
+            "slurm_setup"
+        ]
+
     def _load_configuration(self, path2configfile: str):
         """
         Load job configuration from INI formatted file
@@ -348,6 +353,9 @@ class AnalysisConfig:
                         param_value = config[section].getint(param_name)
                     elif param_name in self.float_params:
                         param_value = config[section].getfloat(param_name)
+                    elif param_name in self.list_params:
+                        param_value = [line.strip() for line in str(config[section].get(param_name)).splitlines()
+                                       if line.strip()]
                     else:
                         param_value = str(config[section].get(param_name))
 
