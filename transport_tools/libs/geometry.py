@@ -2398,6 +2398,22 @@ def iter_pair_chunks(num_clusters: int, chunk_size: int) -> Iterable[List[Tuple[
         yield chunk
 
 
+def condensed_pair_index(i: np.ndarray, j: np.ndarray, num_clusters: int) -> np.ndarray:
+    """
+    Maps upper-triangle (i, j) index arrays (with i < j) to their positions in the condensed 1-D
+    representation of a num_clusters x num_clusters symmetric distance matrix, using the same
+    row-major ordering as scipy.spatial.distance.squareform and numpy.triu_indices(n, 1). This
+    lets stage 4 assemble and store the pairwise distances directly in condensed form, avoiding
+    the dense N x N matrix entirely.
+    :param i: array of lower (row) indices
+    :param j: array of higher (column) indices
+    :param num_clusters: total number of clusters (side length of the dense matrix)
+    :return: array of positions in the condensed distance vector
+    """
+
+    return i * num_clusters - (i * (i + 1)) // 2 + j - i - 1
+
+
 def count_pairs_for_shard(num_clusters: int, num_shards: int, shard_id: int) -> int:
     """
     Returns the number of upper-triangle cluster index pairs assigned to a single shard under the

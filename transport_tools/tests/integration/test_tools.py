@@ -138,8 +138,10 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
+        from scipy.spatial.distance import squareform
+
         cluster_specifications, path_sets, _ = mol_system._assemble_cluster_path_sets(load_path_sets=True)
-        local_matrix = mol_system._compute_intercluster_distances(cluster_specifications, path_sets)
+        local_condensed = mol_system._compute_intercluster_distances(cluster_specifications, path_sets)
 
         # rebuild the matrix from sharded calculations, exactly as the SLURM backend would
         num_shards = 3
@@ -154,7 +156,7 @@ class TestTransportProcesses(unittest.TestCase):
                 sharded_matrix[cls2, cls1] = sharded_matrix[cls1, cls2]
 
         self.assertFalse(np.isinf(sharded_matrix).any())
-        self.assertTrue(np.array_equal(local_matrix, sharded_matrix))
+        self.assertTrue(np.array_equal(local_condensed, squareform(sharded_matrix, checks=False)))
 
     def test_04merge_tunnel_clusters2super_clusters(self):
         try:

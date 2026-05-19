@@ -162,7 +162,7 @@ def _prepare_shard_results(slurm_folder: str, num_shards: int, num_clusters: int
 
 
 def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
-                                 parameters: dict) -> Tuple[List[Tuple[int, int, float]], int]:
+                                 parameters: dict) -> Tuple[np.ndarray, int]:
     """
     Compute the inter-cluster distances as a SLURM array job (one task per shard) via submitit.
     Only the shards whose results are not already present on disk are (re)submitted, so a run that
@@ -171,8 +171,8 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
     :param config_file: path to the INI configuration file of the analysis
     :param num_clusters: total number of tunnel clusters
     :param parameters: job configuration parameters
-    :return: concatenated list of (cluster1_id, cluster2_id, distance) tuples, and the number of
-             shards that were used
+    :return: (P, 3) float64 array of (cluster1_id, cluster2_id, distance) rows concatenated from
+             all shards, and the number of shards that were used
     """
 
     try:
@@ -239,21 +239,28 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
             except Exception as error:
                 logger.error("SLURM shard %d (job %s) failed: %s", shard_id, job.job_id, error)
 
-    # assemble the matrix entries from the per-shard result files written by the shards themselves
-    results: List[Tuple[int, int, float]] = []
+    # assemble the matrix entries from the per-shard result files written by the shards
+    # themselves; the shards already store their pairs as compact (K, 3) float64 arrays, so they
+    # are concatenated directly instead of being expanded into a Python list of tuples (which
+    # would cost ~150 B/pair, i.e. tens of GB for large studies)
+    shard_arrays: List[np.ndarray] = []
     still_missing: List[int] = []
     for shard_id in range(num_shards):
         result_file = shard_result_path(slurm_folder, shard_id)
         if not os.path.exists(result_file):
             still_missing.append(shard_id)
             continue
-        for row in np.load(result_file):
-            results.append((int(row[0]), int(row[1]), float(row[2])))
+        shard_arrays.append(np.load(result_file))
 
     if still_missing:
         raise RuntimeError("SLURM shard(s) {} did not produce results; inspect their logs in '{}'. "
                            "{}/{} shard(s) completed - re-run stage 4 to resume from "
                            "them.".format(still_missing, slurm_folder,
                                           num_shards - len(still_missing), num_shards))
+
+    if shard_arrays:
+        results = np.concatenate(shard_arrays)
+    else:
+        results = np.empty((0, 3), dtype=np.float64)
 
     return results, num_shards

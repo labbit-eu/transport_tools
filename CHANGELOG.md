@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ### Misc
 - sped up the stage-4 cluster-cluster distance calculation: path-sets are now shared with the worker processes once via a `Pool` initializer instead of being re-pickled for every pairwise comparison; removed the now-obsolete `n_jobs_per_cpu_batch` parameter
 - vectorized the path-set distance kernel (`LayeredPathSet.avg_distance2path_set`): the per-node closest-node Python loops were replaced by NumPy operations over dense node-to-node distance matrices
+- reworked stage-4 distance assembly to use the condensed (upper-triangle) form end-to-end: the SLURM shards' results are concatenated as NumPy arrays instead of Python tuple lists, the pairwise distances are scattered straight into a 1-D condensed vector (no dense N×N matrix is ever materialized), and stage 5 feeds it directly to `fastcluster` without rebuilding triangular indices; the saved matrix file is now `caver_clusters_clustering_distances.npy` (older dense `caver_clusters_clustering_matrix.npy` files are still read for backwards compatibility), roughly halving disk usage and peak clustering memory
 - updated install requirements to match new environment
 - refactored type checking and validations; resolved several `DeprecationWarning`s
 - improved type hints and added validation checks throughout

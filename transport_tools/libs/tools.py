@@ -34,7 +34,8 @@ from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
-    init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, iter_shard_pair_chunks
+    init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
+    iter_shard_pair_chunks, condensed_pair_index
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
     transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
@@ -303,15 +304,15 @@ class TransportProcesses:
                                         path_sets: Dict[Tuple[str, int], LayeredPathSet],
                                         precision: int = 4) -> np.ndarray:
         """
-        Computes inter-cluster distance matrix
+        Computes the pairwise inter-cluster distances
         :param cluster_specifications: definition of clusters
         :param path_sets: sets of representative paths for all clusters
         :param precision: with how many decimals are the calculated distances reported
-        :return: distance matrix for clustering
+        :return: condensed (upper-triangle) vector of pairwise cluster distances for clustering
         """
 
         num_clusters = len(cluster_specifications)
-        distance_matrix = np.full((num_clusters, num_clusters), np.inf)
+        condensed_distances = np.full(num_clusters * (num_clusters - 1) // 2, np.inf)
 
         if num_clusters > 1:
             num_cpus = self.parameters["num_cpus"]
@@ -336,18 +337,16 @@ class TransportProcesses:
                                                      self.parameters["clustering_cutoff"])) as pool:
                 for chunk_results in pool.imap_unordered(calc_distance_chunk,
                                                          iter_pair_chunks(num_clusters, chunk_size)):
-                    for id1, id2, distance in chunk_results:
-                        distance_matrix[id1, id2] = distance
-                    done_calcs += len(chunk_results)
+                    # scatter the chunk's pairs straight into the condensed vector - the dense
+                    # N x N matrix is never materialized
+                    chunk = np.asarray(chunk_results, dtype=np.float64)
+                    rows = chunk[:, 0].astype(np.intp)
+                    cols = chunk[:, 1].astype(np.intp)
+                    condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = chunk[:, 2]
+                    done_calcs += chunk.shape[0]
                     progressbar(done_calcs, n_jobs)
 
-        # complete the matrix
-        for cls1 in range(num_clusters):
-            distance_matrix[cls1, cls1] = 0
-            for cls2 in range(cls1 + 1, num_clusters):
-                distance_matrix[cls2, cls1] = distance_matrix[cls1, cls2]
-
-        return distance_matrix
+        return condensed_distances
 
     def _does_super_cluster_exist(self, sc_id: int) -> bool:
         """
@@ -605,23 +604,29 @@ class TransportProcesses:
                 else:
                     rmtree(output_path, True)
 
-    def _save_distance_matrix(self, distance_matrix: np.ndarray, cluster_specifications: List[Tuple[str, int]],
+    def _save_distance_matrix(self, condensed_distances: np.ndarray,
+                              cluster_specifications: List[Tuple[str, int]],
                               cluster_characteristics: Dict[Tuple[str, int], Tuple[float, int]]):
         """
-        Save pair-wise cluster distance matrix and cluster specifications to files
-        :param distance_matrix: distance matrix
+        Save the pairwise cluster distances (in condensed upper-triangle form) and the cluster
+        specifications to files
+        :param condensed_distances: condensed vector of pairwise cluster distances
         :param cluster_specifications: definition of clusters
         :param cluster_characteristics: data on cluster throughputs and number of tunnels
         """
 
         os.makedirs(self.parameters["clustering_folder"], exist_ok=True)
-        np.save(os.path.join(self.parameters["clustering_folder"], "caver_clusters_clustering_matrix.npy"),
-                distance_matrix)
+        np.save(os.path.join(self.parameters["clustering_folder"], "caver_clusters_clustering_distances.npy"),
+                condensed_distances)
 
         with open(os.path.join(self.parameters["clustering_folder"], "cluster_specifications.dump"), "wb") as out:
             pickle.dump((cluster_specifications, cluster_characteristics), out)
 
-        if self.parameters["save_distance_matrix_csv"]:  # safe CSV formatted matrix
+        if self.parameters["save_distance_matrix_csv"]:  # save CSV formatted matrix
+            from scipy.spatial.distance import squareform
+            # the CSV export needs the full symmetric matrix - rebuild it from the condensed form
+            # on demand; it is no longer persisted on disk in this dense form
+            distance_matrix = squareform(condensed_distances)
 
             # get natural order of labels
             natural_order_map = dict()
@@ -672,16 +677,24 @@ class TransportProcesses:
 
     def _load_distance_matrix(self) -> Tuple[np.ndarray, List[Tuple[str, int]], Dict[Tuple[str, int], Tuple[float, int]]]:
         """
-        Loads distance matrix and cluster_specifications from files
-        :return: distance matrix, cluster_specifications, cluster_characteristics
+        Loads the condensed pairwise cluster distances and the cluster specifications from files
+        :return: condensed distance vector, cluster_specifications, cluster_characteristics
         """
 
-        with open(os.path.join(self.parameters["clustering_folder"], "cluster_specifications.dump"), "rb") as in_stream:
+        clustering_folder = self.parameters["clustering_folder"]
+        with open(os.path.join(clustering_folder, "cluster_specifications.dump"), "rb") as in_stream:
             cluster_specifications, cluster_characteristics = pickle.load(in_stream)
 
-        matrix = np.load(os.path.join(self.parameters["clustering_folder"], "caver_clusters_clustering_matrix.npy"))
+        condensed_file = os.path.join(clustering_folder, "caver_clusters_clustering_distances.npy")
+        if os.path.exists(condensed_file):
+            condensed_distances = np.load(condensed_file)
+        else:
+            # backward compatibility: stage 4 of an older run stored the full dense N x N matrix
+            from scipy.spatial.distance import squareform
+            legacy_matrix = np.load(os.path.join(clustering_folder, "caver_clusters_clustering_matrix.npy"))
+            condensed_distances = squareform(legacy_matrix, checks=False)
 
-        return matrix, cluster_specifications, cluster_characteristics
+        return condensed_distances, cluster_specifications, cluster_characteristics
 
     def _assemble_cluster_path_sets(self, load_path_sets: bool = True) -> Tuple[List[Tuple[str, int]],
                                                                                 Dict[Tuple[str, int], LayeredPathSet],
@@ -755,7 +768,7 @@ class TransportProcesses:
         SLURM array jobs (one task per shard) using submitit. The rounding precision is applied by
         the shards themselves (see compute_distance_shard).
         :param cluster_specifications: definition of clusters
-        :return: distance matrix for clustering
+        :return: condensed (upper-triangle) vector of pairwise cluster distances for clustering
         """
 
         from transport_tools.libs import slurm
@@ -765,26 +778,26 @@ class TransportProcesses:
                                "file - the SLURM compute nodes need it to rebuild the analysis state.")
 
         num_clusters = len(cluster_specifications)
-        distance_matrix = np.full((num_clusters, num_clusters), np.inf)
+        condensed_distances = np.full(num_clusters * (num_clusters - 1) // 2, np.inf)
 
         if num_clusters > 1:
             results, num_shards = slurm.run_distance_shards_on_slurm(self.config_file, num_clusters,
                                                                      self.parameters)
-            for id1, id2, distance in results:
-                distance_matrix[int(id1), int(id2)] = distance
+            # scatter the shard pairs straight into the condensed vector in one vectorized
+            # assignment - the dense N x N matrix is never materialized
+            rows = results[:, 0].astype(np.intp)
+            cols = results[:, 1].astype(np.intp)
+            condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = results[:, 2]
             logger.info("Assembled distance matrix from {:d} SLURM shards.".format(num_shards))
 
-        # complete the matrix
-        for cls1 in range(num_clusters):
-            distance_matrix[cls1, cls1] = 0
-            for cls2 in range(cls1 + 1, num_clusters):
-                distance_matrix[cls2, cls1] = distance_matrix[cls1, cls2]
+            # verify completeness cheaply on the 1-D vector: any pair the shards failed to
+            # compute is still set to its initial infinity
+            if np.isinf(condensed_distances).any():
+                raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
+                                   "shards; inspect the shard logs in "
+                                   "'{}'.".format(self.parameters["slurm_folder"]))
 
-        if np.isinf(distance_matrix).any():
-            raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM shards; "
-                               "inspect the shard logs in '{}'.".format(self.parameters["slurm_folder"]))
-
-        return distance_matrix
+        return condensed_distances
 
     def compute_distance_shard(self, num_shards: int, shard_id: int,
                                precision: int = 4) -> List[Tuple[int, int, float]]:
@@ -862,9 +875,9 @@ class TransportProcesses:
                         "with distance cutoff {:.2f} A:".format(self.parameters["clustering_linkage"],
                                                                 self.parameters["clustering_cutoff"]))
 
-            # load and transform distance_matrix to condensed matrix of pairwise dissimilarities
-            distance_matrix, cluster_specifications, cluster_characteristics = self._load_distance_matrix()
-            condensed_matrix = distance_matrix[np.triu_indices(distance_matrix.shape[0], 1)]
+            # load the condensed pairwise dissimilarities (already in the upper-triangle form
+            # fastcluster expects - no dense matrix is materialized)
+            condensed_matrix, cluster_specifications, cluster_characteristics = self._load_distance_matrix()
 
             # cluster the tunnel clusters :)
             linkage_matrix = fastcluster.linkage(condensed_matrix, method=self.parameters["clustering_linkage"])
