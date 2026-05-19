@@ -129,6 +129,7 @@ class AnalysisConfig:
             "slurm_folder": None,  # shared dir for submitit logs/artifacts; None => <clustering_folder>/stage4_shards
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
             "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
+            "slurm_srun_args": None,  # extra args for the srun call inside the array job; None => ['--cpu-bind=none']
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -243,7 +244,8 @@ class AnalysisConfig:
             "slurm_num_shards",
             "slurm_folder",
             "slurm_array_parallelism",
-            "slurm_setup"
+            "slurm_setup",
+            "slurm_srun_args"
         ]
 
         self.boolean_params = [
@@ -314,7 +316,8 @@ class AnalysisConfig:
 
         # parameters whose value is a list of strings, one per (non-empty) line in the INI file
         self.list_params = [
-            "slurm_setup"
+            "slurm_setup",
+            "slurm_srun_args"
         ]
 
     def _load_configuration(self, path2configfile: str):

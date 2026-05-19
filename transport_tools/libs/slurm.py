@@ -213,6 +213,11 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
             update_params["slurm_array_parallelism"] = parameters["slurm_array_parallelism"]
         if parameters["slurm_setup"]:  # non-empty list of setup commands; submitit expects a list of str
             update_params["slurm_setup"] = parameters["slurm_setup"]
+        # disable srun CPU pinning by default: when stage 4 is itself launched from inside a SLURM
+        # allocation, the parent job's SLURM_CPU_BIND* variables leak into this array job's sbatch
+        # script and make the nested srun fail with "CPU binding outside of job step allocation".
+        # The job stays confined to its allocated cores via cgroups regardless.
+        update_params["slurm_srun_args"] = parameters["slurm_srun_args"] or ["--cpu-bind=none"]
         executor.update_parameters(**update_params)
 
         logger.info("Submitting %d SLURM shard(s) (of %d total) to compute %d cluster-cluster "
