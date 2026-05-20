@@ -1131,17 +1131,19 @@ class TransportProcesses:
                     progressbar(i + 1, items2process)
 
     @staticmethod
-    def _pre_process_single_aquaduct_network(md_label: str, parameters: dict, parallel_processing: bool = True):
+    def _pre_process_single_aquaduct_network(md_label: str, parameters: dict, root_paths: List[str],
+                                             parallel_processing: bool = True):
         """
         Transformation and visualization of original AQUA-DUCT network for a single MD simulation.
         Merges paths from all root paths that contain this md_label.
         :param md_label: name of folder with the source MD simulation data
         :param parameters: job configuration parameters
+        :param root_paths: pre-filtered list of aquaduct_results_path entries that actually contain this
+                           md_label with the required tar/summary files (already accounts for
+                           aquaduct_allow_empty_folders)
         :param parallel_processing: if we process the raw_paths in parallel
         """
 
-        root_paths = [p for p in parameters["aquaduct_results_path"]
-                      if os.path.isdir(os.path.join(p, md_label))]
         logger.debug("Processing AQUA-DUCT network from {} ({} source(s)).".format(md_label, len(root_paths)))
         with AquaductNetwork(parameters, md_label, root_path=root_paths[0]) as aquanet:
             aquanet.read_raw_paths_data(parallel_processing)
@@ -1180,15 +1182,17 @@ class TransportProcesses:
                 with Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     for md_label in self.aquaduct_input_folders:
-                        processing.append(pool.apply_async(self._pre_process_single_aquaduct_network,
-                                                           args=(md_label, self.parameters, False)))
+                        processing.append(pool.apply_async(
+                            self._pre_process_single_aquaduct_network,
+                            args=(md_label, self.parameters, self.aquaduct_md_to_roots[md_label], False)))
 
                     for i, p in enumerate(processing):
                         p.get()
                         progressbar(i + 1, items2process)
             else:
                 for i, md_label in enumerate(self.aquaduct_input_folders):
-                    self._pre_process_single_aquaduct_network(md_label, self.parameters, True)
+                    self._pre_process_single_aquaduct_network(md_label, self.parameters,
+                                                              self.aquaduct_md_to_roots[md_label], True)
                     progressbar(i + 1, items2process)
 
     def create_layered_description4aquaduct_networks(self):
