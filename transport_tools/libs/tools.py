@@ -300,6 +300,33 @@ class TransportProcesses:
         for supercluster in self._super_clusters.values():
             supercluster.parameters.update(self.parameters)
 
+    def _condensed_distances_path(self) -> str:
+        """
+        :return: path of the condensed pairwise-distance .npy file in the clustering folder
+        """
+
+        return os.path.join(self.parameters["clustering_folder"],
+                            "caver_clusters_clustering_distances.npy")
+
+    def _allocate_condensed_distances(self, num_pairs: int) -> np.ndarray:
+        """
+        Allocate the condensed pairwise-distance vector as a disk-backed memmap. The .npy file is
+        created in the clustering folder so that the workers/shards scatter their results straight
+        onto disk - the full N(N-1)/2 vector is never held fully resident, and stage 5 can load it
+        via mmap. Initialised to +inf so any pair the workers/shards fail to fill is still
+        detectable by the completeness check on the result.
+        :param num_pairs: number of upper-triangle pairs, i.e. N(N-1)/2 for N clusters
+        :return: memmap-backed condensed distance vector of shape (num_pairs,), pre-filled with +inf
+        """
+
+        from numpy.lib.format import open_memmap
+
+        os.makedirs(self.parameters["clustering_folder"], exist_ok=True)
+        condensed_distances = open_memmap(self._condensed_distances_path(), mode='w+',
+                                          dtype=np.float64, shape=(num_pairs,))
+        condensed_distances[:] = np.inf
+        return condensed_distances
+
     def _compute_intercluster_distances(self, cluster_specifications: List[Tuple[str, int]],
                                         path_sets: Dict[Tuple[str, int], LayeredPathSet],
                                         precision: int = 4) -> np.ndarray:
@@ -312,7 +339,7 @@ class TransportProcesses:
         """
 
         num_clusters = len(cluster_specifications)
-        condensed_distances = np.full(num_clusters * (num_clusters - 1) // 2, np.inf)
+        condensed_distances = self._allocate_condensed_distances(num_clusters * (num_clusters - 1) // 2)
 
         if num_clusters > 1:
             num_cpus = self.parameters["num_cpus"]
@@ -616,8 +643,13 @@ class TransportProcesses:
         """
 
         os.makedirs(self.parameters["clustering_folder"], exist_ok=True)
-        np.save(os.path.join(self.parameters["clustering_folder"], "caver_clusters_clustering_distances.npy"),
-                condensed_distances)
+        # the condensed .npy was already created and filled in-place by
+        # _allocate_condensed_distances during distance computation - just flush to make sure
+        # it is durable on disk. The else branch handles legacy callers that pass a plain ndarray.
+        if isinstance(condensed_distances, np.memmap):
+            condensed_distances.flush()
+        else:
+            np.save(self._condensed_distances_path(), condensed_distances)
 
         with open(os.path.join(self.parameters["clustering_folder"], "cluster_specifications.dump"), "wb") as out:
             pickle.dump((cluster_specifications, cluster_characteristics), out)
@@ -629,51 +661,38 @@ class TransportProcesses:
             distance_matrix = squareform(condensed_distances)
 
             # get natural order of labels
-            natural_order_map = dict()
-            for matrix_pos, cls_spec in enumerate(cluster_specifications):
-                natural_order_map[cls_spec] = matrix_pos
-
+            natural_order_map = {cls_spec: pos for pos, cls_spec
+                                 in enumerate(cluster_specifications)}
             reordered_cluster_specifications = sorted(natural_order_map.keys())
+            reorder_idx = np.fromiter(
+                (natural_order_map[cs] for cs in reordered_cluster_specifications),
+                dtype=np.intp, count=len(reordered_cluster_specifications),
+            )
 
             # define maximal label lengths for CSV formatting
-            label_lengths1 = [1]  # initialize with the minimum label length
-            label_lengths2 = [1]  # initialize with the minimum label length
-            for cls_spec in reordered_cluster_specifications:
-                label_lengths1.append(len(cls_spec[0]))
-                label_lengths2.append(len(str(cls_spec[1])))
-            label_length1 = max(label_lengths1)
-            label_length2 = max(label_lengths2) + 4
+            label_length1 = max([1] + [len(cs[0]) for cs in reordered_cluster_specifications])
+            label_length2 = max([1] + [len(str(cs[1])) for cs in reordered_cluster_specifications]) + 4
+
+            # pre-format axis labels - identical strings serve as the column header cells
+            # and as the leading label of each data row
+            axis_labels = [
+                "{:>{l1}s}:{:>{l2}s}".format(cs[0], "cls{}".format(cs[1]),
+                                             l1=label_length1, l2=label_length2)
+                for cs in reordered_cluster_specifications
+            ]
+
+            # vectorize per-cell float formatting: one C-level call replaces the
+            # N**2 Python-level str.format calls
+            cell_width = label_length1 + label_length2
+            reordered = np.ascontiguousarray(distance_matrix[np.ix_(reorder_idx, reorder_idx)])
+            formatted_cells = np.char.mod("%{}.3f".format(cell_width), reordered)
 
             # save matrix
             os.makedirs(os.path.dirname(self.parameters["distance_matrix_csv_file"]), exist_ok=True)
             with open(self.parameters["distance_matrix_csv_file"], "w") as out_stream:
-                line = " " * (label_length1+label_length2) + ", "
-                for cls_spec in reordered_cluster_specifications[:-1]:
-                    label1 = "{:>{label_length}s}:".format(cls_spec[0], label_length=label_length1)
-                    label2 = "cls{}".format(cls_spec[1])
-                    line += "{}{:>{label_length}s}, ".format(label1, label2, label_length=label_length2)
-
-                label1 = "{:>{label_length}s}:".format(reordered_cluster_specifications[-1][0],
-                                                       label_length=label_length1)
-                label2 = "cls{}".format(reordered_cluster_specifications[-1][1])
-                line += "{}{:>{label_length}s}\n".format(label1, label2, label_length=label_length2)
-                out_stream.write(line)
-
-                for cls_spec1 in reordered_cluster_specifications:
-                    label1 = "{:>{label_length}s}:".format(cls_spec1[0], label_length=label_length1)
-                    label2 = "cls{}".format(cls_spec1[1])
-                    line = "{}{:>{label_length}s}, ".format(label1, label2, label_length=label_length2)
-
-                    matrix_pos1 = natural_order_map[cls_spec1]
-                    for cls_spec2 in reordered_cluster_specifications[:-1]:
-                        matrix_pos2 = natural_order_map[cls_spec2]
-                        line += "{:>{label_length}.3f}, ".format(distance_matrix[matrix_pos1, matrix_pos2],
-                                                                 label_length=(label_length1 + label_length2))
-
-                    matrix_pos2 = natural_order_map[reordered_cluster_specifications[-1]]
-                    line += "{:>{label_length}.3f}\n".format(distance_matrix[matrix_pos1, matrix_pos2],
-                                                             label_length=(label_length1 + label_length2))
-                    out_stream.write(line)
+                out_stream.write(" " * cell_width + ", " + ", ".join(axis_labels) + "\n")
+                for axis_label, row in zip(axis_labels, formatted_cells):
+                    out_stream.write(axis_label + ", " + ", ".join(row.tolist()) + "\n")
 
     def _load_distance_matrix(self) -> Tuple[np.ndarray, List[Tuple[str, int]], Dict[Tuple[str, int], Tuple[float, int]]]:
         """
@@ -687,7 +706,9 @@ class TransportProcesses:
 
         condensed_file = os.path.join(clustering_folder, "caver_clusters_clustering_distances.npy")
         if os.path.exists(condensed_file):
-            condensed_distances = np.load(condensed_file)
+            # mmap so fastcluster.linkage and the optional CSV export can stream pages on demand
+            # instead of pulling the full N(N-1)/2 vector into resident memory
+            condensed_distances = np.load(condensed_file, mmap_mode='r')
         else:
             # backward compatibility: stage 4 of an older run stored the full dense N x N matrix
             from scipy.spatial.distance import squareform
@@ -778,7 +799,7 @@ class TransportProcesses:
                                "file - the SLURM compute nodes need it to rebuild the analysis state.")
 
         num_clusters = len(cluster_specifications)
-        condensed_distances = np.full(num_clusters * (num_clusters - 1) // 2, np.inf)
+        condensed_distances = self._allocate_condensed_distances(num_clusters * (num_clusters - 1) // 2)
 
         if num_clusters > 1:
             results, num_shards = slurm.run_distance_shards_on_slurm(self.config_file, num_clusters,
