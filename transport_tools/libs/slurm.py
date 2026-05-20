@@ -27,14 +27,16 @@ __mail__ = 'janbre@amu.edu.pl'
 import os
 import json
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from logging import getLogger
 
 logger = getLogger(__name__)
 
 # average number of pairwise comparisons targeted per shard when the shard count is auto-derived
 _TARGET_PAIRS_PER_SHARD = 20000
-# upper bound on the auto-derived number of shards, to keep the SLURM array reasonably sized
+# default upper bound on the auto-derived number of shards, to keep the SLURM array reasonably
+# sized; only applied when the user did not set slurm_array_parallelism (which then governs
+# the shard count instead, regardless of whether it is larger or smaller than this default)
 _MAX_AUTO_SHARDS = 200
 # filename recording the parameters a set of partial shard results was computed for
 _SHARDS_INFO_FILE = "shards_info.json"
@@ -62,16 +64,22 @@ def submitit_available() -> bool:
     return True
 
 
-def derive_num_shards(n_jobs: int) -> int:
+def derive_num_shards(n_jobs: int, array_parallelism: Optional[int] = None) -> int:
     """
     Derive a sensible number of SLURM array tasks for a distance job, aiming for roughly
     _TARGET_PAIRS_PER_SHARD pairwise comparisons per shard while keeping the array size bounded.
+    When `array_parallelism` is provided, it governs the cap directly (the user already expressed
+    their preferred array size, and there is no benefit to deriving more shards than tasks that
+    can run concurrently); otherwise the count falls back to the _MAX_AUTO_SHARDS default.
     :param n_jobs: total number of pairwise distance comparisons to perform
+    :param array_parallelism: user-configured maximum number of concurrent array tasks; when set,
+                              it replaces _MAX_AUTO_SHARDS as the cap on the derived shard count
     :return: number of shards to use
     """
 
     num_shards = -(-max(n_jobs, 1) // _TARGET_PAIRS_PER_SHARD)  # ceiling division
-    return max(1, min(num_shards, _MAX_AUTO_SHARDS))
+    cap = array_parallelism if array_parallelism is not None else _MAX_AUTO_SHARDS
+    return max(1, min(num_shards, cap))
 
 
 def _run_distance_shard(config_file: str, num_shards: int, shard_id: int) -> int:
@@ -115,7 +123,7 @@ def _resolve_num_shards(n_jobs: int, parameters: dict) -> int:
 
     num_shards = parameters["slurm_num_shards"]
     if num_shards is None:
-        num_shards = derive_num_shards(n_jobs)
+        num_shards = derive_num_shards(n_jobs, parameters["slurm_array_parallelism"])
     return max(1, min(num_shards, n_jobs))
 
 
