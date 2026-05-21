@@ -29,7 +29,7 @@ import gzip
 import numpy as np
 from threadpoolctl import threadpool_limits
 from logging import getLogger
-from multiprocessing import Pool
+from multiprocessing import Pool, get_context
 from re import search
 from typing import Dict, List, TextIO, Set, Tuple
 from transport_tools.libs.geometry import Point, LayeredRepresentationOfTunnels, \
@@ -1154,7 +1154,7 @@ class AquaductNetwork(Network):
         tar_handle.close()
 
         if parallel_processing:
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 for path_label, traced_residue, cgo_object in items2process:
                     processing.append(("raw-path[{}/{}]".format(self.md_label, path_label),

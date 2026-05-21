@@ -322,8 +322,11 @@ class TransportProcesses:
         from numpy.lib.format import open_memmap
 
         os.makedirs(self.parameters["clustering_folder"], exist_ok=True)
-        condensed_distances = open_memmap(self._condensed_distances_path(), mode='w+',
-                                          dtype=np.float64, shape=(num_pairs,))
+        # numpy stubs declare open_memmap's mode/dtype/shape defaults as EllipsisType, so the
+        # type checker rejects the real argument types here even though they are correct at
+        # runtime; suppress the false positive.
+        condensed_distances = open_memmap(self._condensed_distances_path(), mode='w+',  # type: ignore[arg-type]
+                                          dtype=np.float64, shape=(num_pairs,))  # type: ignore[arg-type]
         condensed_distances[:] = np.inf
         return condensed_distances
 
@@ -492,7 +495,7 @@ class TransportProcesses:
         Pre-compute superclusters (SCs) data - creating a single PathSet per SC and compute its overall direction
         """
 
-        with Pool(processes=self.parameters["num_cpus"]) as pool:
+        with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
             processing = list()
             for super_cluster in self._super_clusters.values():
                 if super_cluster.avg_direction is None:
@@ -550,15 +553,18 @@ class TransportProcesses:
 
                 self._outlier_transport_events = OutlierTransportEvents(self.parameters)
 
-                with Pool(processes=self.parameters["num_cpus"]) as pool:
+                num_cpus = self.parameters["num_cpus"]
+                with get_context("spawn").Pool(
+                        processes=num_cpus,
+                        initializer=init_event_assigner_worker,
+                        initargs=(self.parameters, self._super_clusters, self._active_filters,
+                                  num_cpus, num_cpus)) as pool:
                     processing = list()
                     progressbar(0, items2process)
                     for event_specification, event_path_set in path_sets.items():
-                        event_assigner = EventAssigner(self.parameters, event_specification, event_path_set,
-                                                       self._super_clusters, self._active_filters)
-
                         processing.append(("event={}/{}".format(event_specification[0], event_specification[1]),
-                                           pool.apply_async(event_assigner.perform_assignment)))
+                                           pool.apply_async(assign_event_worker,
+                                                            args=((event_specification, event_path_set),))))
 
                     timeout = self.parameters["worker_task_timeout_s"]
                     for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout,
@@ -988,7 +994,7 @@ class TransportProcesses:
             # compute transformation matrices from caver PDB files
             num_raw_paths = 0
             timeout = self.parameters["worker_task_timeout_s"]
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 tunnel_transform_mat = dict()
                 for md_label in self.caver_input_folders:
@@ -1114,7 +1120,7 @@ class TransportProcesses:
         logger.debug("Using the following reference file to align caver clusters: '{}'".format(self.reference_pdb_file))
 
         with TimeProcess("Processing"):
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 for md_label in self.caver_input_folders:
                     processing.append(("tunnel-network[{}]".format(md_label),
@@ -1133,7 +1139,7 @@ class TransportProcesses:
         """
 
         with TimeProcess("Layering"):
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 cls_ids2process4md_label = dict()
                 tunnel_networks = dict()
@@ -1236,7 +1242,7 @@ class TransportProcesses:
         with TimeProcess("Processing"):
             progressbar(0, items2process)
             if self._aquaduct_single_event_inputs:
-                with Pool(processes=self.parameters["num_cpus"]) as pool:
+                with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     for md_label in self.aquaduct_input_folders:
                         processing.append(("aquaduct-network[{}]".format(md_label),
@@ -1259,7 +1265,7 @@ class TransportProcesses:
         """
 
         with TimeProcess("Layering"):
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 event_ids2process4md_label = dict()
                 aqua_networks = dict()
@@ -1313,16 +1319,24 @@ class TransportProcesses:
 
         with TimeProcess("Creating"):
             os.makedirs(os.path.join(self.parameters["super_cluster_profiles_folder"], "initial"), exist_ok=True)
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            # Use the spawn context with init_supercluster_worker so each worker pins its BLAS
+            # thread budget to the parent's CPU allocation. Submitting process_supercluster_profile_worker
+            # (a top-level function) instead of super_cluster.process_cluster_profile (a bound method)
+            # keeps the per-task pickle to the SuperCluster only.
+            num_cpus = self.parameters["num_cpus"]
+            with get_context("spawn").Pool(processes=num_cpus,
+                                           initializer=init_supercluster_worker,
+                                           initargs=(num_cpus, num_cpus)) as pool:
                 logger.info("Creating {:d} supercluster tunnel profiles "
-                            "using {:d} {}:".format(len(self._super_clusters.keys()), self.parameters["num_cpus"],
-                                                    process_count(self.parameters["num_cpus"])))
+                            "using {:d} {}:".format(len(self._super_clusters.keys()), num_cpus,
+                                                    process_count(num_cpus)))
                 logger.debug(self._report_filters())
 
                 processing = list()
                 for super_cluster in self._super_clusters.values():
                     processing.append(("sc-profile[sc_id={}]".format(super_cluster.sc_id),
-                                       pool.apply_async(super_cluster.process_cluster_profile)))
+                                       pool.apply_async(process_supercluster_profile_worker,
+                                                        args=(super_cluster,))))
 
                 if not len(processing) > 0:
                     raise RuntimeError("Not enough superclusters are available to create their profiles")
@@ -1381,10 +1395,17 @@ class TransportProcesses:
         with TimeProcess("Filtering"):
             os.makedirs(os.path.join(self.parameters["super_cluster_profiles_folder"],
                                      "filtered{:02d}".format(self.filter_flag)), exist_ok=True)
-            with Pool(processes=self.parameters["num_cpus"]) as pool:
+            # Use the spawn context with init_supercluster_worker so each worker pins its BLAS
+            # thread budget to the parent's CPU allocation. Submitting filter_supercluster_worker
+            # (a top-level function) instead of super_cluster.filter_super_cluster (a bound method)
+            # keeps the per-task pickle to the SuperCluster plus the small filter args making the worker SLURM-ready
+            num_cpus = self.parameters["num_cpus"]
+            with get_context("spawn").Pool(processes=num_cpus,
+                                           initializer=init_supercluster_worker,
+                                           initargs=(num_cpus, num_cpus)) as pool:
                 logger.info("Filtering {:d} supercluster profiles "
-                            "using {:d} {}:".format(self.enumerate_valid_super_clusters(), self.parameters["num_cpus"],
-                                                    process_count(self.parameters["num_cpus"])))
+                            "using {:d} {}:".format(self.enumerate_valid_super_clusters(), num_cpus,
+                                                    process_count(num_cpus)))
                 self._active_filters = define_filters(min_length, max_length, min_bottleneck_radius,
                                                       max_bottleneck_radius, min_curvature, max_curvature, min_sims_num,
                                                       min_snapshots_num, min_avg_snapshots_num, min_total_events,
@@ -1396,9 +1417,9 @@ class TransportProcesses:
                 for super_cluster in self._super_clusters.values():
                     super_cluster.properties = dict()
                     processing.append(("sc-filter[sc_id={},flag={}]".format(super_cluster.sc_id, self.filter_flag),
-                                       pool.apply_async(super_cluster.filter_super_cluster,
-                                                        args=(self._events_assigned, self._active_filters,
-                                                              self.filter_flag))))
+                                       pool.apply_async(filter_supercluster_worker,
+                                                        args=(super_cluster, self._events_assigned,
+                                                              self._active_filters, self.filter_flag))))
                 num_retained_sc = 0
                 if not len(processing) > 0:
                     raise RuntimeError("Not enough superclusters are available to filter their profiles")
@@ -1644,7 +1665,7 @@ class TransportProcesses:
                         ("overall" in md_label or self.parameters["visualize_comparative_super_cluster_volumes"]):
                     surface_cgo = True
 
-                with Pool(processes=self.parameters["num_cpus"]) as pool:
+                with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     # parallel generation of SC visualization
                     for prio_sc_id, vis_data in data4vis:
@@ -2047,6 +2068,102 @@ class EventAssigner:
                                                 self.parameters["caver_traj_offset"], clusters2proc, resids=resid)
 
         return buriedness
+
+
+# Shared state for the event-assigner worker processes; populated once per worker by
+# init_event_assigner_worker() so that individual tasks need to carry only the per-event data
+# instead of re-pickling the (potentially hundreds of MB) supercluster dict for every event.
+_EVENT_WORKER_STATE: dict = {}
+
+
+def init_event_assigner_worker(parameters: dict,
+                               superclusters: Dict[int, SuperCluster],
+                               active_filters: dict,
+                               allocated_cpus: int, pool_size: int):
+    """
+    Initializer for the event-assigner multiprocessing Pool; stores read-only state shared by all
+    tasks (analysis parameters, the supercluster dict, the active filter set) exactly once per
+    worker, so individual tasks need to carry only (event_specification, event_path_set) instead
+    of re-pickling the supercluster dict for every event. Also caps this worker's BLAS thread
+    budget so pool_size * threads_per_worker stays within the parent's CPU allocation.
+    :param parameters: job configuration parameters
+    :param superclusters: dictionary of SuperCluster objects to assign events to (read-only)
+    :param active_filters: filter set currently active when the assignment was requested
+    :param allocated_cpus: total CPU budget the parent has (num_cpus on local, slurm_cpus_per_task
+                           inside a SLURM shard); used by cap_blas_threads_for_worker()
+    :param pool_size: number of worker processes in this pool, used by cap_blas_threads_for_worker()
+    """
+
+    utils.cap_blas_threads_for_worker(allocated_cpus, pool_size)
+    _EVENT_WORKER_STATE["parameters"] = parameters
+    _EVENT_WORKER_STATE["superclusters"] = superclusters
+    _EVENT_WORKER_STATE["active_filters"] = active_filters
+
+
+def assign_event_worker(task: Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], LayeredPathSet]):
+    """
+    Top-level worker for transport-event-to-supercluster assignment. Reconstructs an EventAssigner
+    from the shared _EVENT_WORKER_STATE (populated once by init_event_assigner_worker()) and the
+    per-task event data, then delegates to EventAssigner.perform_assignment().
+    Lives at module scope (not a bound method) so the multiprocessing Pool can submit it under
+    the 'spawn' start method without pickling the surrounding TransportProcesses instance.
+    :param task: (event_specification, event_path_set) tuple
+    :return: same as EventAssigner.perform_assignment()
+    """
+
+    event_specification, event_path_set = task
+    assigner = EventAssigner(_EVENT_WORKER_STATE["parameters"], event_specification, event_path_set,
+                             _EVENT_WORKER_STATE["superclusters"], _EVENT_WORKER_STATE["active_filters"])
+    return assigner.perform_assignment()
+
+
+def init_supercluster_worker(allocated_cpus: int, pool_size: int):
+    """
+    Initializer for the supercluster-profile and supercluster-filter multiprocessing Pools. The
+    per-task pickle for these pools is small (tunnel_clusters is dropped from each SuperCluster by
+    _precompute_cumulative_super_cluster_data() before these pools run, and the heavy
+    CumulativeTunnelProfile is loaded from disk inside the worker), so no shared state needs to be
+    injected here. The initializer's sole responsibility is to cap the worker's BLAS thread budget
+    so pool_size * threads_per_worker stays within the parent's CPU allocation.
+    :param allocated_cpus: total CPU budget the parent has (num_cpus on local, slurm_cpus_per_task
+                           inside a SLURM shard); used by cap_blas_threads_for_worker()
+    :param pool_size: number of worker processes in this pool, used by cap_blas_threads_for_worker()
+    """
+
+    utils.cap_blas_threads_for_worker(allocated_cpus, pool_size)
+
+
+def process_supercluster_profile_worker(super_cluster: SuperCluster) -> Tuple[int, Dict[str, Dict[str, float | int]],
+                                                                              Dict[str, Dict[str, float]],
+                                                                              Dict[str, List[int]]]:
+    """
+    Top-level worker that delegates to SuperCluster.process_cluster_profile(). Lives at module
+    scope (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
+    surrounding TransportProcesses instance into the per-task pickle.
+    :param super_cluster: the SuperCluster whose profile is being built; carries only SC metadata
+                          at this stage (tunnel_clusters has been freed in stage 5 precompute)
+    :return: same as SuperCluster.process_cluster_profile()
+    """
+
+    return super_cluster.process_cluster_profile()
+
+
+def filter_supercluster_worker(super_cluster: SuperCluster, consider_transport_events: bool,
+                               active_filters: dict, flag: int) -> Tuple[int, Dict[str, Dict[str, float | int]],
+                                                                         Dict[str, Dict[str, float]],
+                                                                         Dict[str, List[int]]]:
+    """
+    Top-level worker that delegates to SuperCluster.filter_super_cluster(). Lives at module scope
+    (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
+    surrounding TransportProcesses instance into the per-task pickle.
+    :param super_cluster: the SuperCluster being filtered
+    :param consider_transport_events: forwarded to filter_super_cluster()
+    :param active_filters: forwarded to filter_super_cluster()
+    :param flag: filtering-pass ID, forwarded to filter_super_cluster()
+    :return: same as SuperCluster.filter_super_cluster()
+    """
+
+    return super_cluster.filter_super_cluster(consider_transport_events, active_filters, flag)
 
 
 def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int, end_frame: int, caver_traj_offset: int,
