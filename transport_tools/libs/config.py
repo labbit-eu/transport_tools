@@ -100,6 +100,7 @@ class AnalysisConfig:
             "start_from_stage": 1,
             "stop_after_stage": None,
             "num_cpus": None,  # set number of CPUs automatically using self._detect_set_num_cpu()
+            "worker_task_timeout_s": 3600,  # per-task timeout for multiprocessing-Pool workers; on TimeoutError the offending task is logged and the pool terminated. Set to None to disable.
             "pdb_reference_structure": None,  # reference structure for alignment
             "layer_thickness": 1.5,  # thickness of concentric layered grid
 
@@ -234,6 +235,7 @@ class AnalysisConfig:
             "topology_relative_file",
             "stop_after_stage",
             "num_cpus",
+            "worker_task_timeout_s",
             "pdb_reference_structure",
             "snapshots_per_simulation",
             "comparative_groups_definition",
@@ -273,6 +275,7 @@ class AnalysisConfig:
             "start_from_stage",
             "stop_after_stage",
             "num_cpus",
+            "worker_task_timeout_s",
             "snapshots_per_simulation",
             "caver_traj_offset",
             "snapshot_id_position",
@@ -595,6 +598,13 @@ class AnalysisConfig:
                 logger.warning("\nThe number of CPU{:d}) specified for parallel processing is quite large, which might "
                                "actually hamper the performance due to IO restrictions.\n Consider decreasing the value"
                                " of parameter 'num_cpus'".format(self.parameters["num_cpus"]))
+
+        if self.parameters["worker_task_timeout_s"] is not None:
+            self._test_parameter_sanity("worker_task_timeout_s", 1, sys.maxsize)
+            if self.parameters["worker_task_timeout_s"] < 600:
+                logger.warning("\nParameter 'worker_task_timeout_s' is set to a very small value ({:d}s); any worker "
+                               "task that legitimately takes longer will abort the run. Set to None to disable the "
+                               "timeout.".format(self.parameters["worker_task_timeout_s"]))
 
         import fastcluster
         valid_linkage = fastcluster.mthidx.copy()

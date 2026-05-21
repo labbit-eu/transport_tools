@@ -1157,11 +1157,12 @@ class AquaductNetwork(Network):
             with Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 for path_label, traced_residue, cgo_object in items2process:
-                    processing.append(pool.apply_async(self._process_single_raw_path,
-                                                       args=(path_label, self.parameters, traced_residue,
-                                                             self.transform_mat, self.md_label, cgo_object)))
-                for p in processing:
-                    tmp_path = p.get()
+                    processing.append(("raw-path[{}/{}]".format(self.md_label, path_label),
+                                       pool.apply_async(self._process_single_raw_path,
+                                                        args=(path_label, self.parameters, traced_residue,
+                                                              self.transform_mat, self.md_label, cgo_object))))
+                timeout = self.parameters["worker_task_timeout_s"]
+                for tmp_path in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
                     if tmp_path.has_transport_event():
                         self.orig_entities.append(tmp_path)
         else:

@@ -363,8 +363,11 @@ class TransportProcesses:
                                            initargs=(path_sets, cluster_specifications, precision,
                                                      self.parameters["clustering_cutoff"],
                                                      num_cpus, num_cpus)) as pool:
-                for chunk_results in pool.imap_unordered(calc_distance_chunk,
-                                                         iter_pair_chunks(num_clusters, chunk_size)):
+                timeout = self.parameters["worker_task_timeout_s"]
+                imap_iter = pool.imap_unordered(calc_distance_chunk,
+                                                iter_pair_chunks(num_clusters, chunk_size))
+                for chunk_results in utils.iter_imap_results(imap_iter, timeout=timeout, pool=pool,
+                                                             label="distance-chunk (local)"):
                     # scatter the chunk's pairs straight into the condensed vector - the dense
                     # N x N matrix is never materialized
                     chunk = np.asarray(chunk_results, dtype=np.float64)
@@ -493,7 +496,8 @@ class TransportProcesses:
             processing = list()
             for super_cluster in self._super_clusters.values():
                 if super_cluster.avg_direction is None:
-                    processing.append(pool.apply_async(super_cluster.compute_space_descriptors))
+                    processing.append(("sc_id={}".format(super_cluster.sc_id),
+                                       pool.apply_async(super_cluster.compute_space_descriptors)))
 
             items2process = len(processing)
             if items2process:
@@ -502,8 +506,10 @@ class TransportProcesses:
                                                     process_count(self.parameters["num_cpus"])))
 
                 progressbar(0, items2process)
-                for i, p in enumerate(processing):
-                    sc_id, avg_direction = p.get()
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, (sc_id, avg_direction) in enumerate(utils.iter_pool_results(processing,
+                                                                                   timeout=timeout,
+                                                                                   pool=pool)):
                     self._super_clusters[sc_id].avg_direction = avg_direction
                     del self._super_clusters[sc_id].tunnel_clusters  # remove extensive data
                     progressbar(i + 1, items2process)
@@ -551,10 +557,13 @@ class TransportProcesses:
                         event_assigner = EventAssigner(self.parameters, event_specification, event_path_set,
                                                        self._super_clusters, self._active_filters)
 
-                        processing.append(pool.apply_async(event_assigner.perform_assignment))
+                        processing.append(("event={}/{}".format(event_specification[0], event_specification[1]),
+                                           pool.apply_async(event_assigner.perform_assignment)))
 
-                    for i, p in enumerate(processing):
-                        event_specification, assigned_sc_ids, max_buriedness, max_depth = p.get()
+                    timeout = self.parameters["worker_task_timeout_s"]
+                    for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout,
+                                                                       pool=pool)):
+                        event_specification, assigned_sc_ids, max_buriedness, max_depth = result
                         md_label = event_specification[0]
                         event_path_id, event_type = event_specification[1].split("_")[-2:]
                         traced_event = event_specification[2]
@@ -858,9 +867,12 @@ class TransportProcesses:
                                        initargs=(path_sets, cluster_specifications,
                                                  precision, cutoff,
                                                  num_cpus, num_cpus)) as pool:
-            for chunk_results in pool.imap_unordered(calc_distance_chunk,
-                                                     iter_shard_pair_chunks(num_clusters, num_shards,
-                                                                            shard_id, chunk_size)):
+            timeout = self.parameters["worker_task_timeout_s"]
+            imap_iter = pool.imap_unordered(calc_distance_chunk,
+                                            iter_shard_pair_chunks(num_clusters, num_shards,
+                                                                   shard_id, chunk_size))
+            for chunk_results in utils.iter_imap_results(imap_iter, timeout=timeout, pool=pool,
+                                                         label="distance-chunk (shard {})".format(shard_id)):
                 results.extend(chunk_results)
                 done_calcs += len(chunk_results)
                 progressbar(done_calcs, n_jobs)
@@ -975,17 +987,18 @@ class TransportProcesses:
 
             # compute transformation matrices from caver PDB files
             num_raw_paths = 0
+            timeout = self.parameters["worker_task_timeout_s"]
             with Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 tunnel_transform_mat = dict()
                 for md_label in self.caver_input_folders:
                     md_folder = os.path.join(self.parameters["caver_results_path"], md_label)
                     in_pdb_file = utils.get_filepath(md_folder, self.parameters["caver_relative_pdb_file"])
-                    processing.append(pool.apply_async(get_transform_matrix,
-                                                       args=(in_pdb_file, self.reference_pdb_file, md_label)))
+                    processing.append(("caver-transform[{}]".format(md_label),
+                                       pool.apply_async(get_transform_matrix,
+                                                        args=(in_pdb_file, self.reference_pdb_file, md_label))))
 
-                for p in processing:
-                    matrix, md_label = p.get()
+                for matrix, md_label in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
                     tunnel_transform_mat[md_label] = matrix
                     progress_counter += 1
                     progressbar(progress_counter, num_folders2process)
@@ -998,10 +1011,10 @@ class TransportProcesses:
                 for md_label in self.caver_input_folders:
                     md_folder = os.path.join(self.parameters["caver_results_path"], md_label)
                     in_origin_file = utils.get_filepath(md_folder, self.parameters["caver_relative_origin_file"])
-                    processing.append(pool.apply_async(average_starting_point, args=(in_origin_file, md_label)))
+                    processing.append(("avg-starting-point[{}]".format(md_label),
+                                       pool.apply_async(average_starting_point, args=(in_origin_file, md_label))))
 
-                for i, p in enumerate(processing):
-                    md_original_sp, md_label = p.get()
+                for md_original_sp, md_label in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
                     transformed_sp = tunnel_transform_mat[md_label].dot(md_original_sp)
                     transformed_average_sp_x.append(transformed_sp[0])
                     transformed_average_sp_y.append(transformed_sp[1])
@@ -1028,13 +1041,14 @@ class TransportProcesses:
                 for md_label in self.aquaduct_input_folders:
                     md_folder = os.path.join(self.aquaduct_md_to_roots[md_label][0], md_label)
                     tar_file = utils.get_filepath(md_folder, self.parameters["aquaduct_results_relative_tarfile"])
-                    processing.append(pool.apply_async(transform_aquaduct,
-                                                       args=(md_label, tar_file,
-                                                             self.parameters["aquaduct_results_pdb_filename"],
-                                                             self.reference_pdb_file)))
+                    processing.append(("aquaduct-transform[{}]".format(md_label),
+                                       pool.apply_async(transform_aquaduct,
+                                                        args=(md_label, tar_file,
+                                                              self.parameters["aquaduct_results_pdb_filename"],
+                                                              self.reference_pdb_file))))
 
-                for i, p in enumerate(processing):
-                    matrix, md_label, _num_raw_paths = p.get()
+                for matrix, md_label, _num_raw_paths in utils.iter_pool_results(processing, timeout=timeout,
+                                                                                pool=pool):
                     num_raw_paths += _num_raw_paths
                     aquaduct_transform_mat[md_label] = matrix
                     progress_counter += 1
@@ -1095,13 +1109,14 @@ class TransportProcesses:
             with Pool(processes=self.parameters["num_cpus"]) as pool:
                 processing = list()
                 for md_label in self.caver_input_folders:
-                    processing.append(pool.apply_async(self._pre_process_single_tunnel_network,
-                                                       args=(md_label, self.parameters)))
+                    processing.append(("tunnel-network[{}]".format(md_label),
+                                       pool.apply_async(self._pre_process_single_tunnel_network,
+                                                        args=(md_label, self.parameters))))
 
                 items2process = len(processing)
                 progressbar(0, items2process)
-                for i, p in enumerate(processing):
-                    p.get()
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                     progressbar(i + 1, items2process)
 
     def create_layered_description4tunnel_networks(self):
@@ -1123,7 +1138,8 @@ class TransportProcesses:
                     tunnel_network.load_orig_network()
                     cls_ids2process4md_label[md_label] = list()
                     for cluster in tunnel_network.get_clusters4layering():
-                        processing.append(pool.apply_async(cluster.create_layered_cluster))
+                        processing.append(("layer-tunnel-cluster[{}/{}]".format(md_label, cluster.cluster_id),
+                                           pool.apply_async(cluster.create_layered_cluster)))
                         cls_ids2process4md_label[md_label].append(cluster.cluster_id)
 
                 items2process = len(processing)
@@ -1135,8 +1151,9 @@ class TransportProcesses:
                                                     process_count(self.parameters["num_cpus"])))
 
                 progressbar(0, items2process)
-                for i, p in enumerate(processing):
-                    cls_id, md_label, layered_path_set = p.get()
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                    cls_id, md_label, layered_path_set = result
                     if layered_path_set.is_empty():
                         logger.warning("Cluster {} of {} cannot be layered".format(cls_id, md_label))
                         cls_ids2process4md_label[md_label].remove(cls_id)  # do not include in completeness testing
@@ -1214,12 +1231,13 @@ class TransportProcesses:
                 with Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     for md_label in self.aquaduct_input_folders:
-                        processing.append(pool.apply_async(
-                            self._pre_process_single_aquaduct_network,
-                            args=(md_label, self.parameters, self.aquaduct_md_to_roots[md_label], False)))
+                        processing.append(("aquaduct-network[{}]".format(md_label),
+                                           pool.apply_async(self._pre_process_single_aquaduct_network,
+                                                            args=(md_label, self.parameters,
+                                                                  self.aquaduct_md_to_roots[md_label], False))))
 
-                    for i, p in enumerate(processing):
-                        p.get()
+                    timeout = self.parameters["worker_task_timeout_s"]
+                    for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                         progressbar(i + 1, items2process)
             else:
                 for i, md_label in enumerate(self.aquaduct_input_folders):
@@ -1246,7 +1264,8 @@ class TransportProcesses:
                     aquanet.load_orig_network()
                     event_ids2process4md_label[md_label] = list()
                     for event in aquanet.get_events4layering():
-                        processing.append(pool.apply_async(event.create_layered_event))
+                        processing.append(("layer-aquaduct-event[{}/{}]".format(md_label, event.entity_label),
+                                           pool.apply_async(event.create_layered_event)))
                         event_ids2process4md_label[md_label].append(event.entity_label)
 
                 items2process = len(processing)
@@ -1258,8 +1277,9 @@ class TransportProcesses:
                     raise RuntimeError("Not enough transport events are available to perform their layering")
 
                 progressbar(0, items2process)
-                for i, p in enumerate(processing):
-                    event_id, md_label, layered_path_set = p.get()
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                    event_id, md_label, layered_path_set = result
                     if layered_path_set.is_empty():
                         logger.warning("Event {} of {} cannot be layered".format(event_id, md_label))
                         event_ids2process4md_label[md_label].remove(event_id)  # do not include in completeness testing
@@ -1293,14 +1313,16 @@ class TransportProcesses:
 
                 processing = list()
                 for super_cluster in self._super_clusters.values():
-                    processing.append(pool.apply_async(super_cluster.process_cluster_profile))
+                    processing.append(("sc-profile[sc_id={}]".format(super_cluster.sc_id),
+                                       pool.apply_async(super_cluster.process_cluster_profile)))
 
                 if not len(processing) > 0:
                     raise RuntimeError("Not enough superclusters are available to create their profiles")
 
                 progressbar(0, len(processing))
-                for i, p in enumerate(processing):
-                    sc_id, sc_properties, sc_residues_freq, retained_tunnel_clusters = p.get()
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                    sc_id, sc_properties, sc_residues_freq, retained_tunnel_clusters = result
                     # assign initial computed properties of SC to this SC
                     self._super_clusters[sc_id].set_properties(sc_properties)
                     self._super_clusters[sc_id].set_bottleneck_residue_freq(sc_residues_freq)
@@ -1365,17 +1387,19 @@ class TransportProcesses:
 
                 for super_cluster in self._super_clusters.values():
                     super_cluster.properties = dict()
-                    processing.append(pool.apply_async(super_cluster.filter_super_cluster,
-                                                       args=(self._events_assigned, self._active_filters,
-                                                             self.filter_flag)))
+                    processing.append(("sc-filter[sc_id={},flag={}]".format(super_cluster.sc_id, self.filter_flag),
+                                       pool.apply_async(super_cluster.filter_super_cluster,
+                                                        args=(self._events_assigned, self._active_filters,
+                                                              self.filter_flag))))
                 num_retained_sc = 0
                 if not len(processing) > 0:
                     raise RuntimeError("Not enough superclusters are available to filter their profiles")
 
                 progressbar(0, len(processing))
-                for i, p in enumerate(processing):
+                timeout = self.parameters["worker_task_timeout_s"]
+                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                     # SC properties cannot be directly assigned within the object since SC are copied during processing
-                    sc_id, sc_properties, sc_residues_freq, retained_tunnel_clusters = p.get()
+                    sc_id, sc_properties, sc_residues_freq, retained_tunnel_clusters = result
                     self._super_clusters[sc_id].set_properties(sc_properties)  # update with new properties
                     self._super_clusters[sc_id].set_bottleneck_residue_freq(sc_residues_freq)
                     self._super_clusters[sc_id].update_caver_clusters_validity(retained_tunnel_clusters)
@@ -1595,7 +1619,7 @@ class TransportProcesses:
                         if vis_data is None:
                             continue
                         out_stream.writelines(script_lines)
-                        data4vis.append(vis_data)
+                        data4vis.append((prio_sc_id, vis_data))
 
                     # visualize unassigned transport events
                     if self._outlier_transport_events.exist():
@@ -1615,16 +1639,17 @@ class TransportProcesses:
                 with Pool(processes=self.parameters["num_cpus"]) as pool:
                     processing = list()
                     # parallel generation of SC visualization
-                    for vis_data in data4vis:
+                    for prio_sc_id, vis_data in data4vis:
                         path_set, params = vis_data
-                        processing.append(pool.apply_async(path_set.visualize_cgo, args=(params[0], params[1],
-                                                                                         params[2], params[3],
-                                                                                         params[4], surface_cgo)))
+                        processing.append(("sc-visualize[prio_sc_id={},md={}]".format(prio_sc_id, md_label),
+                                           pool.apply_async(path_set.visualize_cgo,
+                                                            args=(params[0], params[1], params[2], params[3],
+                                                                  params[4], surface_cgo))))
                     if len(processing) > 0:
                         items2process = len(processing)
                         progressbar(0, items2process)
-                        for i, p in enumerate(processing):
-                            p.get()
+                        timeout = self.parameters["worker_task_timeout_s"]
+                        for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                             progressbar(i + 1, items2process)
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict, sc_id: int | None = None,

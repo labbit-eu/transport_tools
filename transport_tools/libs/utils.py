@@ -43,6 +43,69 @@ def configure_multiprocessing_start_method() -> None:
         mp.set_start_method("spawn", force=True)
 
 
+def iter_pool_results(labeled_tasks, *, timeout, pool):
+    """
+    Iterate (label, AsyncResult) pairs in submission order with a per-task timeout and
+    structured error reporting. Used by every pool.apply_async() + p.get() call site in
+    place of an unwrapped for-loop, so a hang or a worker exception fails loudly with the
+    offending task's identity instead of stalling indefinitely or aborting anonymously.
+
+    On multiprocessing.TimeoutError, logs the failing task's label plus the timeout that was
+    exceeded, calls pool.terminate() so the program does not hang waiting for an unresponsive
+    worker, and re-raises. On any other worker exception, logs the failing task's label and
+    re-raises so the caller can pinpoint which item caused the failure.
+
+    :param labeled_tasks: iterable of (label, AsyncResult) pairs; the label is a short string
+        identifying the task (e.g. md_label, sc_id, event_specification) used in error logs
+    :param timeout: per-task timeout in seconds, or None to disable
+    :param pool: the multiprocessing.Pool that produced the AsyncResults; terminated on timeout
+    :return: generator yielding the worker's return value for each task, in submission order
+    """
+
+    import multiprocessing as mp
+    for label, async_result in labeled_tasks:
+        try:
+            yield async_result.get(timeout=timeout)
+        except mp.TimeoutError:
+            logger.error("Pool worker exceeded %ss timeout on task '%s'; terminating pool.",
+                         timeout, label)
+            pool.terminate()
+            raise
+        except Exception as exc:
+            logger.error("Pool worker failed on task '%s': %s", label, exc)
+            raise
+
+
+def iter_imap_results(imap_iterator, *, timeout, pool, label: str = "imap_unordered"):
+    """
+    Iterate a pool.imap_unordered() result iterator with a per-task timeout and structured
+    error reporting. Functionally analogous to iter_pool_results() but for the streaming
+    imap_unordered pattern; results arrive out of order so the failing task's identity is
+    not available - the caller-supplied label is used in error logs instead.
+
+    :param imap_iterator: iterator returned by pool.imap_unordered(...)
+    :param timeout: per-task timeout in seconds, or None to disable
+    :param pool: the multiprocessing.Pool that produced the iterator; terminated on timeout
+    :param label: short string identifying this iteration in error logs
+    :return: generator yielding successive worker results until the iterator is exhausted
+    """
+
+    import multiprocessing as mp
+    while True:
+        try:
+            yield imap_iterator.next(timeout=timeout)
+        except StopIteration:
+            return
+        except mp.TimeoutError:
+            logger.error("Pool worker exceeded %ss timeout during '%s'; terminating pool.",
+                         timeout, label)
+            pool.terminate()
+            raise
+        except Exception as exc:
+            logger.error("Pool worker failed during '%s': %s", label, exc)
+            raise
+
+
 def cap_blas_threads_for_worker(allocated_cpus: int = 1, pool_size: int = 1) -> None:
     """
     Cap the BLAS thread budget of the calling worker process so that
