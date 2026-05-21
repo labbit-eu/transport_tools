@@ -26,7 +26,7 @@ import numpy as np
 import fastcluster
 from typing import List, Dict, Tuple
 from scipy.cluster.hierarchy import fcluster
-from multiprocessing import Pool, get_context
+from multiprocessing import Pool, get_context, parent_process
 from transport_tools.libs.config import AnalysisConfig
 from logging import getLogger
 from transport_tools.libs.ui import progressbar, TimeProcess, process_count
@@ -1164,6 +1164,15 @@ class TransportProcesses:
                            aquaduct_allow_empty_folders)
         :param parallel_processing: if we process the raw_paths in parallel
         """
+
+        # Guard against nested-pool deadlocks: if this function is invoked from inside a
+        # multiprocessing worker (parent_process() is non-None), the inner per-raw-path Pool
+        # would create children that the worker process cannot schedule. The caller is
+        # responsible for passing parallel_processing=False in that case; fail loudly otherwise.
+        if parallel_processing and parent_process() is not None:
+            raise RuntimeError("_pre_process_single_aquaduct_network was called from a Pool "
+                               "worker with parallel_processing=True; pass parallel_processing="
+                               "False when invoking from inside a Pool to avoid a nested pool.")
 
         logger.debug("Processing AQUA-DUCT network from {} ({} source(s)).".format(md_label, len(root_paths)))
         with AquaductNetwork(parameters, md_label, root_path=root_paths[0]) as aquanet:

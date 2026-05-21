@@ -24,6 +24,7 @@ __mail__ = 'janbre@amu.edu.pl'
 from transport_tools.libs.tools import TransportProcesses, save_checkpoint, load_checkpoint
 from transport_tools.libs.ui import license_printer, init_parser
 from transport_tools.libs.config import AnalysisConfig
+from transport_tools.libs.utils import configure_multiprocessing_start_method
 from logging import getLogger
 from os.path import join, exists
 
@@ -42,6 +43,10 @@ def test_checkpoint(checkpoint_file: str):
 
 
 if __name__ == "__main__":
+    # Set the multiprocessing start method before any Pool is constructed in this process,
+    # so all worker pools (local + SLURM-shard inner pools) are spawned rather than forked.
+    configure_multiprocessing_start_method()
+
     parser = init_parser()
     args = parser.parse_args()
 

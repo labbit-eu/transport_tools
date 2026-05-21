@@ -29,6 +29,20 @@ from logging import getLogger
 logger = getLogger(__name__)
 
 
+def configure_multiprocessing_start_method() -> None:
+    """
+    Set the multiprocessing start method to 'spawn' if it has not been chosen yet in this process.
+    Must be called at the top of every process entry point (the launcher script, every SLURM
+    shard runner) before any Pool/Process/Queue is constructed. Avoids the fork-with-threads
+    deadlock that intermittently hangs child workers when they are forked from a parent that
+    has multi-threaded numpy/BLAS state.
+    """
+
+    import multiprocessing as mp
+    if mp.get_start_method(allow_none=True) is None:
+        mp.set_start_method("spawn", force=True)
+
+
 def get_caver_color(color_id: int | None) -> List[float]:
     """
     Converts Pymol color IDs to RGB format, keeping within the set of 'reasonable' colors from CAVER rgb.py

@@ -97,6 +97,12 @@ def _run_distance_shard(config_file: str, num_shards: int, shard_id: int) -> int
     :return: number of cluster pairs this shard computed
     """
 
+    # The shard is a fresh Python interpreter launched by srun and does not inherit the
+    # launcher's multiprocessing start-method choice; pin it to spawn before the inner pool
+    # in compute_distance_shard() is constructed (see utils.configure_multiprocessing_start_method).
+    from transport_tools.libs.utils import configure_multiprocessing_start_method
+    configure_multiprocessing_start_method()
+
     from transport_tools.libs.config import AnalysisConfig
     from transport_tools.libs.tools import TransportProcesses
 
