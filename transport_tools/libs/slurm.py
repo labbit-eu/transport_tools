@@ -26,6 +26,7 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import os
 import json
+import time
 import numpy as np
 from typing import List, Optional, Tuple
 from logging import getLogger
@@ -241,17 +242,65 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
                                   [config_file] * len(missing_shards),
                                   [num_shards] * len(missing_shards),
                                   missing_shards)
-        logger.info("SLURM array job submitted as %d task(s); waiting for completion.", len(jobs))
+        # Poll shards in completion order with a per-shard runtime timeout. The timeout is derived
+        # from the SLURM wall-time limit: 2 * slurm_timeout_min + 5 min covers the actual run time
+        # plus the SLURM-reporting latency that can delay a "done" notification after the job has
+        # exited. The clock only starts ticking once we observe the shard transition into RUNNING,
+        # so shards that legitimately spend a long time in the SLURM queue (e.g. limited array
+        # parallelism on a busy cluster) are never abandoned for queueing alone. A shard that runs
+        # past its deadline is logged, cancelled, and skipped; the atomic per-shard result files
+        # plus the resumability path in _prepare_shard_results() let the next stage-4 invocation
+        # pick up the abandoned shards without recomputing the finished ones. Failed shards (state
+        # FAILED, OOM, etc.) are reported via job.result() raising and do not abort collection.
+        shard_wait_timeout_s = parameters["slurm_timeout_min"] * 2 * 60 + 5 * 60
+        poll_interval_s = 60
+        pending: List[Tuple[int, "submitit.Job"]] = list(zip(missing_shards, jobs))
+        running_since: dict = {}  # job_id -> monotonic time of first observed RUNNING state
+        logger.info("SLURM array job submitted as %d task(s); waiting for completion "
+                    "(per-shard runtime timeout: %ds, measured from RUNNING state).",
+                    len(jobs), shard_wait_timeout_s)
 
-        # wait for every submitted shard; a failed shard is logged but does not abort collection -
-        # the shards that did finish wrote their result files and will be reused on the next run
-        for shard_id, job in zip(missing_shards, jobs):
-            try:
-                num_pairs = job.result()
-                logger.info("SLURM shard %d/%d finished (%d distances).",
-                            shard_id + 1, num_shards, num_pairs)
-            except Exception as error:
-                logger.error("SLURM shard %d (job %s) failed: %s", shard_id, job.job_id, error)
+        while pending:
+            now = time.monotonic()
+            still_pending: List[Tuple[int, "submitit.Job"]] = []
+            for shard_id, job in pending:
+                if job.done():
+                    try:
+                        num_pairs = job.result()
+                        logger.info("SLURM shard %d/%d finished (%d distances).",
+                                    shard_id + 1, num_shards, num_pairs)
+                    except Exception as error:
+                        logger.error("SLURM shard %d (job %s) failed: %s", shard_id, job.job_id, error)
+                    continue
+
+                # Record the first time we observe this shard as RUNNING; once recorded, the
+                # per-shard runtime clock starts. Shards that are still PENDING in the queue are
+                # left alone (no deadline yet) - that matches the user's expectation that the
+                # timeout caps actual compute time, not queue waiting.
+                if job.job_id not in running_since:
+                    try:
+                        state = job.state
+                    except Exception:
+                        state = None
+                    if state == "RUNNING":
+                        running_since[job.job_id] = now
+
+                if (job.job_id in running_since
+                        and now - running_since[job.job_id] > shard_wait_timeout_s):
+                    logger.error("SLURM shard %d (job %s) ran for more than %ds without finishing; "
+                                 "abandoning it and continuing with the shards that already finished. "
+                                 "Re-run stage 4 to resume.",
+                                 shard_id, job.job_id, shard_wait_timeout_s)
+                    try:
+                        job.cancel()
+                    except Exception as cancel_error:
+                        logger.warning("Failed to cancel SLURM job %s: %s", job.job_id, cancel_error)
+                    continue
+
+                still_pending.append((shard_id, job))
+            pending = still_pending
+            if pending:
+                time.sleep(poll_interval_s)
 
     # assemble the matrix entries from the per-shard result files written by the shards
     # themselves; the shards already store their pairs as compact (K, 3) float64 arrays, so they
