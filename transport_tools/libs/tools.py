@@ -361,7 +361,8 @@ class TransportProcesses:
             # for the SLURM shard processes (see compute_distance_shard)
             with get_context("spawn").Pool(processes=num_cpus, initializer=init_distance_worker,
                                            initargs=(path_sets, cluster_specifications, precision,
-                                                     self.parameters["clustering_cutoff"])) as pool:
+                                                     self.parameters["clustering_cutoff"],
+                                                     num_cpus, num_cpus)) as pool:
                 for chunk_results in pool.imap_unordered(calc_distance_chunk,
                                                          iter_pair_chunks(num_clusters, chunk_size)):
                     # scatter the chunk's pairs straight into the condensed vector - the dense
@@ -855,7 +856,8 @@ class TransportProcesses:
         # the worker processes here would intermittently deadlock the children on inherited locks
         with get_context("spawn").Pool(processes=num_cpus, initializer=init_distance_worker,
                                        initargs=(path_sets, cluster_specifications,
-                                                 precision, cutoff)) as pool:
+                                                 precision, cutoff,
+                                                 num_cpus, num_cpus)) as pool:
             for chunk_results in pool.imap_unordered(calc_distance_chunk,
                                                      iter_shard_pair_chunks(num_clusters, num_shards,
                                                                             shard_id, chunk_size)):

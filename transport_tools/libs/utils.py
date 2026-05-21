@@ -43,6 +43,31 @@ def configure_multiprocessing_start_method() -> None:
         mp.set_start_method("spawn", force=True)
 
 
+def cap_blas_threads_for_worker(allocated_cpus: int = 1, pool_size: int = 1) -> None:
+    """
+    Cap the BLAS thread budget of the calling worker process so that
+    pool_size * threads_per_worker <= allocated_cpus. Must be called inside the Pool
+    initializer, before the worker issues any BLAS-backed numpy operation.
+
+    Caller-supplied budget:
+      - allocated_cpus: the CPU budget the parent actually has, e.g.
+            - num_cpus config parameter on the local backend
+            - slurm_cpus_per_task config parameter inside a SLURM shard
+      - pool_size: number of worker processes in this pool (equal to allocated_cpus for the
+        existing pools; the formula generalises to future stages with a different split).
+    For the current pool_size == allocated_cpus design, this collapses to 1 thread per worker.
+
+    Sets OMP_NUM_THREADS / OPENBLAS_NUM_THREADS / MKL_NUM_THREADS / NUMEXPR_NUM_THREADS /
+    BLIS_NUM_THREADS via setdefault, so any value the user (or SLURM, or the cluster admin's
+    job prolog) already exported is respected.
+    """
+
+    threads = str(max(1, allocated_cpus // max(1, pool_size)))
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS"):
+        os.environ.setdefault(var, threads)
+
+
 def get_caver_color(color_id: int | None) -> List[float]:
     """
     Converts Pymol color IDs to RGB format, keeping within the set of 'reasonable' colors from CAVER rgb.py

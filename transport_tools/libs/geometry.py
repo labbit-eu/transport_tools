@@ -2339,7 +2339,8 @@ _DIST_WORKER_STATE: dict = {}
 
 def init_distance_worker(path_sets: Dict[Tuple[str, int], LayeredPathSet],
                          cluster_specifications: List[Tuple[str, int]],
-                         precision: int, cutoff: float):
+                         precision: int, cutoff: float,
+                         allocated_cpus: int = 1, pool_size: int = 1):
     """
     Initializer for the cluster-distance multiprocessing Pool; stores data shared by all jobs
     once per worker process, so individual jobs need to carry only lightweight cluster index
@@ -2348,7 +2349,15 @@ def init_distance_worker(path_sets: Dict[Tuple[str, int], LayeredPathSet],
     :param cluster_specifications: definition of clusters, indexed by their order ID
     :param precision: number of decimals with which the calculated distances are reported
     :param cutoff: clustering cutoff
+    :param allocated_cpus: total CPU budget the parent has (num_cpus on local, slurm_cpus_per_task
+                           inside a SLURM shard); used to cap this worker's BLAS thread count so
+                           pool_size * threads_per_worker stays within the parent's allocation
+    :param pool_size: number of worker processes in this pool, used in the BLAS-thread cap
     """
+
+    # Cap BLAS threads first, before any numpy operation in this worker triggers BLAS-pool init.
+    from transport_tools.libs.utils import cap_blas_threads_for_worker
+    cap_blas_threads_for_worker(allocated_cpus, pool_size)
 
     _DIST_WORKER_STATE["path_sets"] = path_sets
     _DIST_WORKER_STATE["cluster_specifications"] = cluster_specifications
