@@ -1003,18 +1003,37 @@ class TransportProcesses:
                     progress_counter += 1
                     progressbar(progress_counter, num_folders2process)
 
-                # compute overall average starting point across all MD simulations
-                processing = list()
+                # Batch 2 (avg-starting-point) and batch 3 (aquaduct-transform) are independent of
+                # each other - both only depend on batch 1's per-md_label transform matrices, which
+                # are now in tunnel_transform_mat. Submit both up front so the pool's workers can
+                # process them concurrently: batch 2 is small/fast (one tiny PDB read per md_label),
+                # batch 3 is slow (tar.gz extraction + matrix computation). Draining batch 2 first
+                # lets the launcher compute overall_starting_point and transform_mat2starting_point
+                # while batch 3 is still running on the pool's other workers.
+                batch2_processing = list()
                 transformed_average_sp_x = list()
                 transformed_average_sp_y = list()
                 transformed_average_sp_z = list()
                 for md_label in self.caver_input_folders:
                     md_folder = os.path.join(self.parameters["caver_results_path"], md_label)
                     in_origin_file = utils.get_filepath(md_folder, self.parameters["caver_relative_origin_file"])
-                    processing.append(("avg-starting-point[{}]".format(md_label),
-                                       pool.apply_async(average_starting_point, args=(in_origin_file, md_label))))
+                    batch2_processing.append(("avg-starting-point[{}]".format(md_label),
+                                              pool.apply_async(average_starting_point,
+                                                               args=(in_origin_file, md_label))))
 
-                for md_original_sp, md_label in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
+                batch3_processing = list()
+                aquaduct_transform_mat = dict()
+                for md_label in self.aquaduct_input_folders:
+                    md_folder = os.path.join(self.aquaduct_md_to_roots[md_label][0], md_label)
+                    tar_file = utils.get_filepath(md_folder, self.parameters["aquaduct_results_relative_tarfile"])
+                    batch3_processing.append(("aquaduct-transform[{}]".format(md_label),
+                                              pool.apply_async(transform_aquaduct,
+                                                               args=(md_label, tar_file,
+                                                                     self.parameters["aquaduct_results_pdb_filename"],
+                                                                     self.reference_pdb_file))))
+
+                for md_original_sp, md_label in utils.iter_pool_results(batch2_processing,
+                                                                        timeout=timeout, pool=pool):
                     transformed_sp = tunnel_transform_mat[md_label].dot(md_original_sp)
                     transformed_average_sp_x.append(transformed_sp[0])
                     transformed_average_sp_y.append(transformed_sp[1])
@@ -1035,20 +1054,9 @@ class TransportProcesses:
                     [0, 0, 0, -overall_starting_point[2]],
                     [0, 0, 0, 0]])
 
-                # compute transformation matrices from AquaDuct PDB files (use first available root)
-                processing = list()
-                aquaduct_transform_mat = dict()
-                for md_label in self.aquaduct_input_folders:
-                    md_folder = os.path.join(self.aquaduct_md_to_roots[md_label][0], md_label)
-                    tar_file = utils.get_filepath(md_folder, self.parameters["aquaduct_results_relative_tarfile"])
-                    processing.append(("aquaduct-transform[{}]".format(md_label),
-                                       pool.apply_async(transform_aquaduct,
-                                                        args=(md_label, tar_file,
-                                                              self.parameters["aquaduct_results_pdb_filename"],
-                                                              self.reference_pdb_file))))
-
-                for matrix, md_label, _num_raw_paths in utils.iter_pool_results(processing, timeout=timeout,
-                                                                                pool=pool):
+                # batch 3 has been running on pool workers in parallel with batch 2; drain it now
+                for matrix, md_label, _num_raw_paths in utils.iter_pool_results(batch3_processing,
+                                                                                timeout=timeout, pool=pool):
                     num_raw_paths += _num_raw_paths
                     aquaduct_transform_mat[md_label] = matrix
                     progress_counter += 1
