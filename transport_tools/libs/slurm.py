@@ -253,7 +253,6 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
         # pick up the abandoned shards without recomputing the finished ones. Failed shards (state
         # FAILED, OOM, etc.) are reported via job.result() raising and do not abort collection.
         shard_wait_timeout_s = parameters["slurm_timeout_min"] * 2 * 60 + 5 * 60
-        poll_interval_s = 60
         pending: List[Tuple[int, "submitit.Job"]] = list(zip(missing_shards, jobs))
         running_since: dict = {}  # job_id -> monotonic time of first observed RUNNING state
         logger.info("SLURM array job submitted as %d task(s); waiting for completion "
@@ -300,7 +299,7 @@ def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
                 still_pending.append((shard_id, job))
             pending = still_pending
             if pending:
-                time.sleep(poll_interval_s)
+                time.sleep(parameters["slurm_poll_wait_seconds"])
 
     # assemble the matrix entries from the per-shard result files written by the shards
     # themselves; the shards already store their pairs as compact (K, 3) float64 arrays, so they

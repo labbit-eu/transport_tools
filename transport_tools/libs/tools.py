@@ -32,7 +32,7 @@ from logging import getLogger
 from transport_tools.libs.ui import progressbar, TimeProcess, process_count
 from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
-    subsample_events, get_md_membership4groups
+    TransportEvent, subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
     iter_shard_pair_chunks, condensed_pair_index
@@ -559,17 +559,30 @@ class TransportProcesses:
                         initializer=init_event_assigner_worker,
                         initargs=(self.parameters, self._super_clusters, self._active_filters,
                                   num_cpus, num_cpus)) as pool:
-                    processing = list()
                     progressbar(0, items2process)
-                    for event_specification, event_path_set in path_sets.items():
-                        processing.append(("event={}/{}".format(event_specification[0], event_specification[1]),
-                                           pool.apply_async(assign_event_worker,
-                                                            args=((event_specification, event_path_set),))))
-
+                    tasks = [(event_specification, event_path_set)
+                             for event_specification, event_path_set in path_sets.items()]
                     timeout = self.parameters["worker_task_timeout_s"]
-                    for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout,
-                                                                       pool=pool)):
-                        event_specification, assigned_sc_ids, max_buriedness, max_depth = result
+                    imap_iter = pool.imap_unordered(assign_event_worker, tasks)
+                    # Workers return (event_specification, ...); first element identifies the task.
+                    results_iter = utils.iter_imap_results(
+                        imap_iter, timeout=timeout, pool=pool, label="event-assignment",
+                        extract_task_label=lambda r: "{}/{}".format(r[0][0], r[0][1]))
+                    # imap_unordered yields in completion order, but add_transport_event() appends
+                    # to lists inside each SuperCluster and OutlierTransportEvents - the insertion
+                    # order is observable downstream (e.g. in the visualization scripts). Buffer
+                    # results during streaming, then apply them in submission order (= the order
+                    # of path_sets.keys()) so the produced state is stable regardless of worker
+                    # scheduling and matches the integration-test reference data.
+                    buffered_assignments: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                               Tuple] = dict()
+                    for i, result in enumerate(results_iter):
+                        event_specification = result[0]
+                        buffered_assignments[event_specification] = result
+                        progressbar(i + 1, items2process)
+
+                    for event_specification in path_sets.keys():
+                        _, assigned_sc_ids, max_buriedness, max_depth = buffered_assignments[event_specification]
                         md_label = event_specification[0]
                         event_path_id, event_type = event_specification[1].split("_")[-2:]
                         traced_event = event_specification[2]
@@ -596,8 +609,6 @@ class TransportProcesses:
                                     self._outlier_transport_events.add_transport_event(md_label, event_path_id,
                                                                                        event_type, traced_event,
                                                                                        globally_unassigned=False)
-
-                        progressbar(i + 1, items2process)
 
                 self._events_assigned = True
 
@@ -1139,8 +1150,11 @@ class TransportProcesses:
         """
 
         with TimeProcess("Layering"):
-            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
-                processing = list()
+            num_cpus = self.parameters["num_cpus"]
+            with get_context("spawn").Pool(processes=num_cpus,
+                                           initializer=utils.cap_blas_threads_for_worker,
+                                           initargs=(num_cpus, num_cpus)) as pool:
+                clusters_to_process: list = list()
                 cls_ids2process4md_label = dict()
                 tunnel_networks = dict()
                 for md_label in self.caver_input_folders:
@@ -1152,35 +1166,56 @@ class TransportProcesses:
                     tunnel_network.load_orig_network()
                     cls_ids2process4md_label[md_label] = list()
                     for cluster in tunnel_network.get_clusters4layering():
-                        processing.append(("layer-tunnel-cluster[{}/{}]".format(md_label, cluster.cluster_id),
-                                           pool.apply_async(cluster.create_layered_cluster)))
+                        clusters_to_process.append(cluster)
                         cls_ids2process4md_label[md_label].append(cluster.cluster_id)
 
-                items2process = len(processing)
+                items2process = len(clusters_to_process)
                 if not items2process > 0:
                     raise RuntimeError("Not enough tunnel clusters are available to perform their layering")
 
                 logger.info("Computing layered representation for {:d} tunnel clusters "
-                            "using {:d} {}:".format(items2process, self.parameters["num_cpus"],
-                                                    process_count(self.parameters["num_cpus"])))
+                            "using {:d} {}:".format(items2process, num_cpus, process_count(num_cpus)))
 
                 progressbar(0, items2process)
                 timeout = self.parameters["worker_task_timeout_s"]
-                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                imap_iter = pool.imap_unordered(create_layered_cluster_worker, clusters_to_process)
+                # On timeout/failure, log the last few completed identities to point at the region
+                # of the workload where the stall happened (workers return (cls_id, md_label, ...)).
+                results_iter = utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool, label="layer-tunnel-cluster",
+                    extract_task_label=lambda r: "{}/{}".format(r[1], r[0]))
+                # imap_unordered yields in completion order, but the saved layered_entities dict
+                # must be inserted in submission order so its pickled byte layout (and therefore
+                # the integration-test reference data) is stable regardless of worker scheduling.
+                # Buffer per-md_label results as they stream in and commit each md_label's entities
+                # in the original cls_id order as soon as the last cluster for that md_label
+                # arrives - this preserves the per-md_label save+free memory profile of the prior
+                # streaming implementation.
+                buffered_layered_paths: Dict[str, Dict[int, LayeredPathSet]] = {
+                    md: {} for md in self.caver_input_folders}
+                expected_count: Dict[str, int] = {
+                    md: len(cls_ids2process4md_label[md]) for md in self.caver_input_folders}
+                seen_count: Dict[str, int] = {md: 0 for md in self.caver_input_folders}
+                for i, result in enumerate(results_iter):
                     cls_id, md_label, layered_path_set = result
+                    seen_count[md_label] += 1
                     if layered_path_set.is_empty():
                         logger.warning("Cluster {} of {} cannot be layered".format(cls_id, md_label))
-                        cls_ids2process4md_label[md_label].remove(cls_id)  # do not include in completeness testing
+                        cls_ids2process4md_label[md_label].remove(cls_id)
                     else:
-                        tunnel_networks[md_label].add_layered_entity(cls_id, layered_path_set)
+                        buffered_layered_paths[md_label][cls_id] = layered_path_set
 
-                    # save complete layered network
-                    if tunnel_networks[md_label].is_layering_complete(cls_ids2process4md_label[md_label]):
+                    if seen_count[md_label] == expected_count[md_label]:
+                        # All workers for this md_label have reported; commit in submission order.
+                        for c_id in cls_ids2process4md_label[md_label]:
+                            tunnel_networks[md_label].add_layered_entity(
+                                c_id, buffered_layered_paths[md_label][c_id])
                         logger.debug("Finished layering of network for '{}'.".format(md_label))
                         if self.parameters["visualize_layered_clusters"]:
                             tunnel_networks[md_label].save_layered_visualization(save_pdb_files=True)
                         tunnel_networks[md_label].save_layered_network()
                         del tunnel_networks[md_label]
+                        del buffered_layered_paths[md_label]
 
                     progressbar(i + 1, items2process)
 
@@ -1242,16 +1277,23 @@ class TransportProcesses:
         with TimeProcess("Processing"):
             progressbar(0, items2process)
             if self._aquaduct_single_event_inputs:
-                with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
-                    processing = list()
-                    for md_label in self.aquaduct_input_folders:
-                        processing.append(("aquaduct-network[{}]".format(md_label),
-                                           pool.apply_async(self._pre_process_single_aquaduct_network,
-                                                            args=(md_label, self.parameters,
-                                                                  self.aquaduct_md_to_roots[md_label], False))))
-
+                num_cpus = self.parameters["num_cpus"]
+                with get_context("spawn").Pool(processes=num_cpus,
+                                               initializer=utils.cap_blas_threads_for_worker,
+                                               initargs=(num_cpus, num_cpus)) as pool:
+                    tasks = [(md_label, self.parameters, self.aquaduct_md_to_roots[md_label], False)
+                             for md_label in self.aquaduct_input_folders]
+                    # Submitted md_labels in submission order, so the i-th task corresponds to
+                    # aquaduct_input_folders[i] for the timeout extract_task_label callback.
+                    submitted = [md_label for md_label in self.aquaduct_input_folders]
                     timeout = self.parameters["worker_task_timeout_s"]
-                    for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                    imap_iter = pool.imap_unordered(process_aquaduct_network_worker, tasks)
+                    # The worker returns None (it just writes results to disk), so identity has to
+                    # come from completion count - we report it via "N task(s) completed" suffix.
+                    results_iter = utils.iter_imap_results(
+                        imap_iter, timeout=timeout, pool=pool,
+                        label="aquaduct-network[{} MD label(s)]".format(len(submitted)))
+                    for i, _ in enumerate(results_iter):
                         progressbar(i + 1, items2process)
             else:
                 for i, md_label in enumerate(self.aquaduct_input_folders):
@@ -1265,8 +1307,11 @@ class TransportProcesses:
         """
 
         with TimeProcess("Layering"):
-            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
-                processing = list()
+            num_cpus = self.parameters["num_cpus"]
+            with get_context("spawn").Pool(processes=num_cpus,
+                                           initializer=utils.cap_blas_threads_for_worker,
+                                           initargs=(num_cpus, num_cpus)) as pool:
+                events_to_process: list = list()
                 event_ids2process4md_label = dict()
                 aqua_networks = dict()
                 for md_label in self.aquaduct_input_folders:
@@ -1278,30 +1323,48 @@ class TransportProcesses:
                     aquanet.load_orig_network()
                     event_ids2process4md_label[md_label] = list()
                     for event in aquanet.get_events4layering():
-                        processing.append(("layer-aquaduct-event[{}/{}]".format(md_label, event.entity_label),
-                                           pool.apply_async(event.create_layered_event)))
+                        events_to_process.append(event)
                         event_ids2process4md_label[md_label].append(event.entity_label)
 
-                items2process = len(processing)
+                items2process = len(events_to_process)
                 logger.info("Computing layered representation for {:d} transport events "
-                            "using {:d} {}:".format(items2process, self.parameters["num_cpus"],
-                                                    process_count(self.parameters["num_cpus"])))
+                            "using {:d} {}:".format(items2process, num_cpus, process_count(num_cpus)))
 
                 if not items2process > 0:
                     raise RuntimeError("Not enough transport events are available to perform their layering")
 
                 progressbar(0, items2process)
                 timeout = self.parameters["worker_task_timeout_s"]
-                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                imap_iter = pool.imap_unordered(create_layered_event_worker, events_to_process)
+                # Workers return (event_id, md_label, ...); use that for last-completed labels.
+                results_iter = utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool, label="layer-aquaduct-event",
+                    extract_task_label=lambda r: "{}/{}".format(r[1], r[0]))
+                # imap_unordered yields in completion order, but the saved layered_entities dict
+                # must be inserted in submission order so its pickled byte layout (and the
+                # integration-test reference data) is stable regardless of worker scheduling.
+                # Buffer per-md_label results and commit each md_label's entries in the original
+                # event order once its last event arrives - same pattern as the tunnel-layering
+                # site above; preserves the per-md_label save+free memory profile.
+                buffered_layered_paths: Dict[str, Dict[str, LayeredPathSet]] = {
+                    md: {} for md in self.aquaduct_input_folders}
+                expected_count: Dict[str, int] = {
+                    md: len(event_ids2process4md_label[md]) for md in self.aquaduct_input_folders}
+                seen_count: Dict[str, int] = {md: 0 for md in self.aquaduct_input_folders}
+                for i, result in enumerate(results_iter):
                     event_id, md_label, layered_path_set = result
+                    seen_count[md_label] += 1
                     if layered_path_set.is_empty():
                         logger.warning("Event {} of {} cannot be layered".format(event_id, md_label))
-                        event_ids2process4md_label[md_label].remove(event_id)  # do not include in completeness testing
+                        event_ids2process4md_label[md_label].remove(event_id)
                     else:
-                        aqua_networks[md_label].add_layered_entity(event_id, layered_path_set)
+                        buffered_layered_paths[md_label][event_id] = layered_path_set
 
-                    # save complete layered network
-                    if aqua_networks[md_label].is_layering_complete(event_ids2process4md_label[md_label]):
+                    if seen_count[md_label] == expected_count[md_label]:
+                        # All workers for this md_label have reported; commit in submission order.
+                        for e_id in event_ids2process4md_label[md_label]:
+                            aqua_networks[md_label].add_layered_entity(
+                                e_id, buffered_layered_paths[md_label][e_id])
                         logger.debug("Finished layering of network for '{}'.".format(md_label))
                         # always saving layered visualizations to enable visualization of assigned events later
                         aqua_networks[md_label].get_pdb_file()
@@ -1309,6 +1372,7 @@ class TransportProcesses:
                         aqua_networks[md_label].save_layered_network()
                         aqua_networks[md_label].clean_tempfile()
                         del aqua_networks[md_label]
+                        del buffered_layered_paths[md_label]
 
                     progressbar(i + 1, items2process)
 
@@ -1319,37 +1383,39 @@ class TransportProcesses:
 
         with TimeProcess("Creating"):
             os.makedirs(os.path.join(self.parameters["super_cluster_profiles_folder"], "initial"), exist_ok=True)
-            # Use the spawn context with init_supercluster_worker so each worker pins its BLAS
-            # thread budget to the parent's CPU allocation. Submitting process_supercluster_profile_worker
-            # (a top-level function) instead of super_cluster.process_cluster_profile (a bound method)
-            # keeps the per-task pickle to the SuperCluster only.
+            # Use the spawn context with cap_blas_threads_for_worker as the initializer so each
+            # worker pins its BLAS thread budget to the parent's CPU allocation. Submitting
+            # process_supercluster_profile_worker (a top-level function) instead of
+            # super_cluster.process_cluster_profile (a bound method) keeps the per-task pickle
+            # to the SuperCluster only.
             num_cpus = self.parameters["num_cpus"]
             with get_context("spawn").Pool(processes=num_cpus,
-                                           initializer=init_supercluster_worker,
+                                           initializer=utils.cap_blas_threads_for_worker,
                                            initargs=(num_cpus, num_cpus)) as pool:
                 logger.info("Creating {:d} supercluster tunnel profiles "
                             "using {:d} {}:".format(len(self._super_clusters.keys()), num_cpus,
                                                     process_count(num_cpus)))
                 logger.debug(self._report_filters())
 
-                processing = list()
-                for super_cluster in self._super_clusters.values():
-                    processing.append(("sc-profile[sc_id={}]".format(super_cluster.sc_id),
-                                       pool.apply_async(process_supercluster_profile_worker,
-                                                        args=(super_cluster,))))
-
-                if not len(processing) > 0:
+                superclusters_to_process = list(self._super_clusters.values())
+                items2process = len(superclusters_to_process)
+                if items2process == 0:
                     raise RuntimeError("Not enough superclusters are available to create their profiles")
 
-                progressbar(0, len(processing))
+                progressbar(0, items2process)
                 timeout = self.parameters["worker_task_timeout_s"]
-                for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
+                imap_iter = pool.imap_unordered(process_supercluster_profile_worker, superclusters_to_process)
+                # Workers return (sc_id, ...); identify completions by sc_id in error logs.
+                results_iter = utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool, label="sc-profile",
+                    extract_task_label=lambda r: "sc_id={}".format(r[0]))
+                for i, result in enumerate(results_iter):
                     sc_id, sc_properties, sc_residues_freq, retained_tunnel_clusters = result
                     # assign initial computed properties of SC to this SC
                     self._super_clusters[sc_id].set_properties(sc_properties)
                     self._super_clusters[sc_id].set_bottleneck_residue_freq(sc_residues_freq)
                     self._super_clusters[sc_id].update_caver_clusters_validity(retained_tunnel_clusters)
-                    progressbar(i + 1, len(processing))
+                    progressbar(i + 1, items2process)
 
             self._prioritize_super_clusters()
             self._report_super_cluster_details("initial_super_cluster_details.txt")
@@ -1395,13 +1461,14 @@ class TransportProcesses:
         with TimeProcess("Filtering"):
             os.makedirs(os.path.join(self.parameters["super_cluster_profiles_folder"],
                                      "filtered{:02d}".format(self.filter_flag)), exist_ok=True)
-            # Use the spawn context with init_supercluster_worker so each worker pins its BLAS
-            # thread budget to the parent's CPU allocation. Submitting filter_supercluster_worker
-            # (a top-level function) instead of super_cluster.filter_super_cluster (a bound method)
-            # keeps the per-task pickle to the SuperCluster plus the small filter args making the worker SLURM-ready
+            # Use the spawn context with cap_blas_threads_for_worker as the initializer so each
+            # worker pins its BLAS thread budget to the parent's CPU allocation. Submitting
+            # filter_supercluster_worker (a top-level function) instead of
+            # super_cluster.filter_super_cluster (a bound method) keeps the per-task pickle to the
+            # SuperCluster plus the small filter args, making the worker SLURM-ready.
             num_cpus = self.parameters["num_cpus"]
             with get_context("spawn").Pool(processes=num_cpus,
-                                           initializer=init_supercluster_worker,
+                                           initializer=utils.cap_blas_threads_for_worker,
                                            initargs=(num_cpus, num_cpus)) as pool:
                 logger.info("Filtering {:d} supercluster profiles "
                             "using {:d} {}:".format(self.enumerate_valid_super_clusters(), num_cpus,
@@ -2117,22 +2184,6 @@ def assign_event_worker(task: Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]]
     return assigner.perform_assignment()
 
 
-def init_supercluster_worker(allocated_cpus: int, pool_size: int):
-    """
-    Initializer for the supercluster-profile and supercluster-filter multiprocessing Pools. The
-    per-task pickle for these pools is small (tunnel_clusters is dropped from each SuperCluster by
-    _precompute_cumulative_super_cluster_data() before these pools run, and the heavy
-    CumulativeTunnelProfile is loaded from disk inside the worker), so no shared state needs to be
-    injected here. The initializer's sole responsibility is to cap the worker's BLAS thread budget
-    so pool_size * threads_per_worker stays within the parent's CPU allocation.
-    :param allocated_cpus: total CPU budget the parent has (num_cpus on local, slurm_cpus_per_task
-                           inside a SLURM shard); used by cap_blas_threads_for_worker()
-    :param pool_size: number of worker processes in this pool, used by cap_blas_threads_for_worker()
-    """
-
-    utils.cap_blas_threads_for_worker(allocated_cpus, pool_size)
-
-
 def process_supercluster_profile_worker(super_cluster: SuperCluster) -> Tuple[int, Dict[str, Dict[str, float | int]],
                                                                               Dict[str, Dict[str, float]],
                                                                               Dict[str, List[int]]]:
@@ -2164,6 +2215,46 @@ def filter_supercluster_worker(super_cluster: SuperCluster, consider_transport_e
     """
 
     return super_cluster.filter_super_cluster(consider_transport_events, active_filters, flag)
+
+
+def create_layered_cluster_worker(cluster: TunnelCluster) -> Tuple[int, str, LayeredPathSet]:
+    """
+    Top-level worker that delegates to TunnelCluster.create_layered_cluster(). Lives at module
+    scope (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
+    surrounding TransportProcesses instance, and so that pool.imap_unordered can consume an
+    iterable of clusters directly.
+    :param cluster: the TunnelCluster being layered
+    :return: same as TunnelCluster.create_layered_cluster()
+    """
+
+    return cluster.create_layered_cluster()
+
+
+def create_layered_event_worker(event: TransportEvent) -> Tuple[str, str, LayeredPathSet]:
+    """
+    Top-level worker that delegates to TransportEvent.create_layered_event(). Lives at module
+    scope (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
+    surrounding TransportProcesses instance, and so that pool.imap_unordered can consume an
+    iterable of events directly.
+    :param event: the TransportEvent being layered
+    :return: same as TransportEvent.create_layered_event()
+    """
+
+    return event.create_layered_event()
+
+
+def process_aquaduct_network_worker(task: Tuple[str, dict, List[str], bool]) -> None:
+    """
+    Top-level worker that unpacks a (md_label, parameters, root_paths, parallel_processing) tuple
+    and delegates to TransportProcesses._pre_process_single_aquaduct_network(). Used with
+    pool.imap_unordered() (which only supports single-argument workers); the staticmethod itself
+    cannot be passed directly because it takes multiple positional arguments.
+    :param task: (md_label, parameters, root_paths, parallel_processing) tuple
+    """
+
+    md_label, parameters, root_paths, parallel_processing = task
+    TransportProcesses._pre_process_single_aquaduct_network(md_label, parameters, root_paths,
+                                                            parallel_processing)
 
 
 def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int, end_frame: int, caver_traj_offset: int,

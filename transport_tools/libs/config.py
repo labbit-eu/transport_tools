@@ -131,6 +131,7 @@ class AnalysisConfig:
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
             "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
             "slurm_srun_args": None,  # extra args for the srun call inside the array job; None => ['--cpu-bind=none']
+            "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling 
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -292,7 +293,8 @@ class AnalysisConfig:
             "slurm_timeout_min",
             "slurm_cpus_per_task",
             "slurm_num_shards",
-            "slurm_array_parallelism"
+            "slurm_array_parallelism",
+            "slurm_poll_wait_seconds"
         ]
 
         self.float_params = [
@@ -606,6 +608,10 @@ class AnalysisConfig:
                                "task that legitimately takes longer will abort the run. Set to None to disable the "
                                "timeout.".format(self.parameters["worker_task_timeout_s"]))
 
+        if self.parameters["slurm_poll_wait_seconds"] > 600:
+                logger.warning("\nParameter 'slurm_poll_wait_seconds' is set to a rather large value ({:d}s); " \
+                                "possibly compromising effective job processing".format(self.parameters["slurm_poll_wait_seconds"]))
+
         import fastcluster
         valid_linkage = fastcluster.mthidx.copy()
 
@@ -654,6 +660,8 @@ class AnalysisConfig:
         self._test_parameter_sanity("event_assignment_cutoff", 0, 1)
         self._test_parameter_sanity("clustering_max_num_rep_frag", 0, sys.maxsize)
         self._test_parameter_sanity("max_events_per_cluster4visualization", 0, sys.maxsize)
+        self._test_parameter_sanity("slurm_poll_wait_seconds", 1, sys.maxsize)
+
 
         caver_paths, traj_paths, aquaduct_paths = self.get_input_folders()
         if self.parameters["perform_comparative_analysis"] \

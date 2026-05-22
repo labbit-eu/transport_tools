@@ -47,6 +47,7 @@ class TestTransportProcesses(unittest.TestCase):
         cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
         print(cls.config)
         cls.config.set_parameter("output_path", cls.out_path)
+        cls.config.set_parameter("slurm_poll_wait_seconds", 10)
         os.makedirs(os.path.join(cls.out_path, "temp"), exist_ok=True)
 
     @classmethod

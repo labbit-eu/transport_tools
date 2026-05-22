@@ -1154,15 +1154,32 @@ class AquaductNetwork(Network):
         tar_handle.close()
 
         if parallel_processing:
-            with get_context("spawn").Pool(processes=self.parameters["num_cpus"]) as pool:
-                processing = list()
-                for path_label, traced_residue, cgo_object in items2process:
-                    processing.append(("raw-path[{}/{}]".format(self.md_label, path_label),
-                                       pool.apply_async(self._process_single_raw_path,
-                                                        args=(path_label, self.parameters, traced_residue,
-                                                              self.transform_mat, self.md_label, cgo_object))))
+            num_cpus = self.parameters["num_cpus"]
+            with get_context("spawn").Pool(processes=num_cpus,
+                                           initializer=utils.cap_blas_threads_for_worker,
+                                           initargs=(num_cpus, num_cpus)) as pool:
+                tasks = [(path_label, self.parameters, traced_residue,
+                          self.transform_mat, self.md_label, cgo_object)
+                         for path_label, traced_residue, cgo_object in items2process]
                 timeout = self.parameters["worker_task_timeout_s"]
-                for tmp_path in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
+                imap_iter = pool.imap_unordered(process_raw_path_worker, tasks)
+                # The worker returns an AquaductPath whose .path_label is the unique identifier;
+                # surface it on timeout to help operators pinpoint where the stall happened.
+                results_iter = utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool,
+                    label="raw-path[md={}]".format(self.md_label),
+                    extract_task_label=lambda r: r.path_label)
+                # imap_unordered yields in completion order, but self.orig_entities is appended
+                # to a list whose order is observable downstream (e.g. it feeds visualization
+                # scripts that reference 'raw_paths_<N>_cgo.dump.gz' in iteration order). Buffer
+                # results by path_label and append in submission order so the produced state is
+                # stable regardless of worker scheduling.
+                buffered_paths: Dict[str, "AquaductPath"] = dict()
+                for tmp_path in results_iter:
+                    buffered_paths[tmp_path.path_label] = tmp_path
+
+                for path_label, _, _ in items2process:
+                    tmp_path = buffered_paths[path_label]
                     if tmp_path.has_transport_event():
                         self.orig_entities.append(tmp_path)
         else:
@@ -1184,6 +1201,22 @@ class AquaductNetwork(Network):
             events += path.get_events4layering()
 
         return events
+
+
+def process_raw_path_worker(task: Tuple[str, dict, Tuple[str, int, Tuple[int, int], Tuple[int, int]],
+                                        np.ndarray, str, list]) -> "AquaductPath":
+    """
+    Top-level worker that unpacks a raw-path task tuple and delegates to
+    AquaductNetwork._process_single_raw_path. Used with pool.imap_unordered() (which only supports
+    single-argument workers); the underlying staticmethod takes six positional arguments and so
+    cannot be passed directly.
+    :param task: (path_label, parameters, traced_residue, transform_mat, md_label, cgo_object) tuple
+    :return: same as AquaductNetwork._process_single_raw_path()
+    """
+
+    path_label, parameters, traced_residue, transform_mat, md_label, cgo_object = task
+    return AquaductNetwork._process_single_raw_path(path_label, parameters, traced_residue,
+                                                    transform_mat, md_label, cgo_object)
 
 
 class TransportEvent:

@@ -76,34 +76,64 @@ def iter_pool_results(labeled_tasks, *, timeout, pool):
             raise
 
 
-def iter_imap_results(imap_iterator, *, timeout, pool, label: str = "imap_unordered"):
+def iter_imap_results(imap_iterator, *, timeout, pool, label: str = "imap_unordered",
+                      extract_task_label=None, last_n_labels: int = 3):
     """
-    Iterate a pool.imap_unordered() result iterator with a per-task timeout and structured
-    error reporting. Functionally analogous to iter_pool_results() but for the streaming
-    imap_unordered pattern; results arrive out of order so the failing task's identity is
-    not available - the caller-supplied label is used in error logs instead.
+    Iterate a pool.imap_unordered() result iterator with an inter-completion timeout and
+    structured error reporting. Functionally analogous to iter_pool_results() but for the
+    streaming imap_unordered pattern; results arrive out of order, so the failing task's
+    identity is not directly available - the caller-supplied iteration label, a count of
+    successfully completed tasks, and (optionally) the most recent task identities are
+    used to narrow down where in the workload a stall happened.
+
+    Note on timeout semantics: `imap_iterator.next(timeout)` blocks up to `timeout` seconds
+    for the next result from any worker (the timer resets on each yield). A timeout therefore
+    fires on "the pool went `timeout` seconds without any task completing", not on "a specific
+    task took `timeout` seconds".
 
     :param imap_iterator: iterator returned by pool.imap_unordered(...)
-    :param timeout: per-task timeout in seconds, or None to disable
+    :param timeout: inter-completion timeout in seconds, or None to disable
     :param pool: the multiprocessing.Pool that produced the iterator; terminated on timeout
     :param label: short string identifying this iteration in error logs
+    :param extract_task_label: optional callable result -> str that pulls a short identity
+        out of a worker's return value (e.g. lambda r: "sc_id={}".format(r[0])); when
+        provided, the last `last_n_labels` completed identities are appended to the
+        error log on timeout/failure to give operators a region to investigate
+    :param last_n_labels: how many recent task identities to retain when extract_task_label
+        is supplied (default 3); ignored when extract_task_label is None
     :return: generator yielding successive worker results until the iterator is exhausted
     """
 
     import multiprocessing as mp
+    from collections import deque
+    completed = 0
+    recent_labels: deque = deque(maxlen=max(1, last_n_labels))
     while True:
         try:
-            yield imap_iterator.next(timeout=timeout)
+            result = imap_iterator.next(timeout=timeout)
         except StopIteration:
             return
         except mp.TimeoutError:
-            logger.error("Pool worker exceeded %ss timeout during '%s'; terminating pool.",
-                         timeout, label)
+            suffix = " {} task(s) completed before the stall.".format(completed)
+            if recent_labels:
+                suffix += " Last completed: {}.".format(", ".join(reversed(recent_labels)))
+            logger.error("Pool worker exceeded %ss inter-completion timeout during '%s';"
+                         " terminating pool.%s", timeout, label, suffix)
             pool.terminate()
             raise
         except Exception as exc:
-            logger.error("Pool worker failed during '%s': %s", label, exc)
+            suffix = " {} task(s) completed before the failure.".format(completed)
+            if recent_labels:
+                suffix += " Last completed: {}.".format(", ".join(reversed(recent_labels)))
+            logger.error("Pool worker failed during '%s': %s%s", label, exc, suffix)
             raise
+        completed += 1
+        if extract_task_label is not None:
+            try:
+                recent_labels.append(str(extract_task_label(result)))
+            except Exception:
+                pass  # label extraction must never break the iteration
+        yield result
 
 
 def cap_blas_threads_for_worker(allocated_cpus: int = 1, pool_size: int = 1) -> None:
