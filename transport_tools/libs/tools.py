@@ -300,6 +300,17 @@ class TransportProcesses:
         for supercluster in self._super_clusters.values():
             supercluster.parameters.update(self.parameters)
 
+    def _resolve_stage_backend(self, stage_knob: str) -> str:
+        """
+        Return the effective execution backend ('local' or 'slurm') for a SLURM-capable stage.
+        Mirrors AnalysisConfig.resolve_stage_backend but operates on the cached parameters dict
+        so TransportProcesses callers don't need to retain a reference to the original config.
+        Per-stage override (e.g. parameters['stage04_backend']) wins over the global
+        compute_backend default; both are validated at config load time.
+        """
+
+        return str(self.parameters.get(stage_knob) or self.parameters["compute_backend"]).lower()
+
     def _condensed_distances_path(self) -> str:
         """
         :return: path of the condensed pairwise-distance .npy file in the clustering folder
@@ -517,6 +528,111 @@ class TransportProcesses:
                     del self._super_clusters[sc_id].tunnel_clusters  # remove extensive data
                     progressbar(i + 1, items2process)
 
+    def _validate_event_resids_in_trajectory_topologies(
+            self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]], "LayeredPathSet"]):
+        """
+        Pre-flight check for exact-matching: verifies that every event's traced residue is
+        actually present in its md_label's trajectory topology before any worker tries to
+        strip it. Without this guard, a stripped trajectory (e.g. only some waters retained)
+        produces an empty-topology error inside pytraj/mdtraj that surfaces as a cryptic
+        worker exception ("need to have non-empty Topology") and kills the whole assignment
+        pool partway through. Topologies are loaded once per md_label and reused across all
+        of that md_label's events to keep the check cheap. All offending events are
+        collected and reported in a single RuntimeError so the user can fix or filter them
+        in one pass instead of one-per-rerun.
+        :param path_sets: same mapping that assign_transport_events feeds into the Pool;
+                          keys are (md_label, event_label, (resname:resid, frames))
+        """
+
+        # Validation is only meaningful when exact matching will actually run for some event.
+        if not (self.parameters.get("perform_exact_matching_analysis")
+                or self.parameters.get("ambiguous_event_assignment_resolution") == "exact_matching"):
+            return
+
+        if not path_sets:
+            return
+
+        engine = self.parameters.get("trajectory_engine")
+        if engine not in ("pytraj", "mdtraj"):
+            # Other engines don't enter the strip path in _exact_event_tunnel_matching.
+            return
+
+        # Group events by md_label so we open each topology only once.
+        events_by_md: Dict[str, List[Tuple[str, str, int]]] = dict()
+        for (md_label, event_label, traced_event) in path_sets.keys():
+            try:
+                resname, resid_str = traced_event[0].split(":")
+                resid = int(resid_str)
+            except (ValueError, AttributeError):
+                # Unparseable traced_event[0] - record it so the user sees it instead of
+                # the worker crashing on it later.
+                events_by_md.setdefault(md_label, []).append((event_label, str(traced_event[0]), -1))
+                continue
+            events_by_md.setdefault(md_label, []).append((event_label, resname, resid))
+
+        missing: List[Tuple[str, str, str, int, str]] = []  # (md_label, event_label, resname, resid, reason)
+        for md_label, events in events_by_md.items():
+            trajectory = TrajectoryFactory(self.parameters, md_label)
+            if not trajectory.inputs_exists():
+                # No trajectory configured for this md_label - exact matching would silently
+                # return empty buriedness, which is the existing behaviour; nothing to flag.
+                continue
+
+            if engine == "pytraj":
+                try:
+                    import pytraj as pt  # type: ignore[import-untyped]
+                except ModuleNotFoundError:
+                    raise RuntimeError("Requested to use 'pytraj' as 'trajectory_engine' but pytraj "
+                                       "package cannot be imported.")
+                topology = pt.load_topology(trajectory.top)
+                n_residues = topology.n_residues
+                for event_label, resname, resid in events:
+                    if resid < 0:
+                        missing.append((md_label, event_label, resname, resid,
+                                        "unparseable traced_event[0]"))
+                        continue
+                    pytraj_resid = resid + 1  # AquaDuct -> PyTraj 1-based offset
+                    mask = ":{}".format(pytraj_resid)
+                    if topology.select(mask).size == 0:
+                        reason = ("residue index {} not in topology (n_residues={})".format(
+                                  pytraj_resid, n_residues))
+                        missing.append((md_label, event_label, resname, resid, reason))
+            else:  # mdtraj
+                try:
+                    import mdtraj  # type: ignore[import-untyped]
+                except ModuleNotFoundError:
+                    raise RuntimeError("Requested to use 'mdtraj' as 'trajectory_engine' but mdtraj "
+                                       "package cannot be imported.")
+                topology = mdtraj.load_topology(trajectory.top)
+                n_residues = topology.n_residues
+                for event_label, resname, resid in events:
+                    if resid < 0:
+                        missing.append((md_label, event_label, resname, resid,
+                                        "unparseable traced_event[0]"))
+                        continue
+                    mask = "resid {}".format(resid)
+                    if len(topology.select(mask)) == 0:
+                        reason = ("resid {} not in topology (n_residues={})".format(resid, n_residues))
+                        missing.append((md_label, event_label, resname, resid, reason))
+
+        if not missing:
+            return
+
+        # Sort for stable, scannable output.
+        missing.sort(key=lambda t: (t[0], t[1]))
+        lines = ["{:d} transport event(s) reference residues that are NOT present in their "
+                 "trajectory topology - exact matching cannot run for them and would otherwise "
+                 "crash the assignment pool with 'need to have non-empty Topology'. Offending "
+                 "events (md_label / event_label / resname:resid / reason):".format(len(missing))]
+        for md_label, event_label, resname, resid, reason in missing:
+            lines.append("  {} / {} / {}:{} - {}".format(md_label, event_label, resname, resid, reason))
+        lines.append("This typically happens when 'trajectory_relative_file' / "
+                     "'topology_relative_file' point to a trajectory that has been stripped of "
+                     "atoms (e.g. only some waters retained) while AQUA-DUCT was run on the full "
+                     "system. Provide the unstripped trajectory/topology for exact matching, or "
+                     "filter the affected residues out of the AQUA-DUCT input.")
+        raise RuntimeError("\n".join(lines))
+
     def assign_transport_events(self, md_labels: List[str] | None = None):
         """
         Finds superclusters (SCs) through evaluated transport event happened, and assigns remaining events as outliers;
@@ -540,6 +656,22 @@ class TransportProcesses:
                 for event_label, layered_path_set in aquanet.layered_entities.items():
                     event_specification = (md_label, event_label, layered_path_set.traced_event)
                     path_sets[event_specification] = layered_path_set
+
+            # Per-event log dump so a stale/inconsistent layered_paths.dump (e.g. residues not in
+            # the trajectory loaded for exact matching) can be diagnosed without rerunning the
+            # whole stage; emitted only at DEBUG so production runs aren't spammed.
+            if path_sets and logger.isEnabledFor(10):  # logging.DEBUG == 10
+                logger.debug("Assembled {:d} transport event(s) for assignment "
+                             "(md_label / event_label / traced_residue):".format(len(path_sets)))
+                for (md_label, event_label, traced_event) in path_sets.keys():
+                    logger.debug("  {} / {} / {}".format(md_label, event_label, traced_event[0]))
+
+            # When exact matching is in play, every event's traced residue must be present in
+            # its md_label's trajectory topology; otherwise pytraj/mdtraj will silently strip
+            # to an empty topology in _exact_event_tunnel_matching and crash the whole pool
+            # with a cryptic "need to have non-empty Topology" deep inside a worker. Fail loudly
+            # up front with the full list of bad (md_label, event, residue) instead.
+            self._validate_event_resids_in_trajectory_topologies(path_sets)
 
             items2process = len(path_sets.keys())
 
@@ -789,7 +921,7 @@ class TransportProcesses:
         """
 
         with TimeProcess("Cluster-cluster distances calculation"):
-            backend = self.parameters["distance_backend"]
+            backend = self._resolve_stage_backend("stage04_backend")
             # the SLURM launcher does not need the path-sets in this process - the compute nodes
             # rebuild them themselves - so we avoid loading them here to save memory
             cluster_specifications, path_sets, cluster_characteristics = \
@@ -843,7 +975,7 @@ class TransportProcesses:
             if np.isinf(condensed_distances).any():
                 raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
                                    "shards; inspect the shard logs in "
-                                   "'{}'.".format(self.parameters["slurm_folder"]))
+                                   "'{}'.".format(slurm.DistanceShardStage.get_slurm_folder(self.parameters)))
 
         return condensed_distances
 

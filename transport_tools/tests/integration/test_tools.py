@@ -191,8 +191,8 @@ class TestTransportProcesses(unittest.TestCase):
 
         # the SLURM shards rebuild the analysis from the config file, so it must carry an absolute
         # output_path matching this test run (the shared test config uses a relative one) and the
-        # same slurm_folder as the launcher - kept outside the clustering folder compared below
-        slurm_folder = os.path.join(self.out_path, "temp", "slurm_shards")
+        # same slurm_root_folder as the launcher - kept outside the clustering folder compared below
+        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards")
         slurm_config = os.path.join(self.out_path, "config_slurm.ini")
         with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
                 open(slurm_config, "w") as out_stream:
@@ -201,15 +201,15 @@ class TestTransportProcesses(unittest.TestCase):
                     line = "output_path = {}\n".format(self.out_path)
                 out_stream.write(line)
                 if line.strip() == "[CALCULATIONS_SETTINGS]":
-                    out_stream.write("slurm_folder = {}\n".format(slurm_folder))
+                    out_stream.write("slurm_root_folder = {}\n".format(slurm_root_folder))
         mol_system.config_file = slurm_config
 
-        mol_system.parameters["distance_backend"] = "slurm"
+        mol_system.parameters["stage04_backend"] = "slurm"
         mol_system.parameters["slurm_num_shards"] = 3
         mol_system.parameters["slurm_cpus_per_task"] = 2
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
-        mol_system.parameters["slurm_folder"] = slurm_folder
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
 
         mol_system.compute_tunnel_clusters_distances()
         mol_system.merge_tunnel_clusters2super_clusters()

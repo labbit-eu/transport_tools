@@ -469,7 +469,7 @@ class TestStrMethod(unittest.TestCase):
             "visualize_transformed_transport_events": False,
             "visualize_exact_matching_outcomes": False,
             "trajectory_engine": "mdtraj",  # Required by __str__
-            "distance_backend": "local",
+            "compute_backend": "local",
             "msms": None,  # Required by __str__
         }
         self.config.source_file = "/test/config.ini"
@@ -547,7 +547,8 @@ class TestAquaductTracedResiduesFilterParsing(unittest.TestCase):
             "comparative_groups_definition": None,
             "trajectory_path": None,
             "legacy_pymol_support": False,
-            "slurm_folder": None,
+            "slurm_root_folder": None,
+            "internal_folder": "/tmp/ignored_internal",
             "clustering_folder": "/tmp/ignored_clustering",
         }
         return config
@@ -699,6 +700,79 @@ class TestGetInputFoldersAquaductDict(unittest.TestCase):
                         if "e10s14_empty" in str(call)]
             self.assertEqual(1, len(warnings),
                              "expected exactly one warning across two calls, got: {}".format(warnings))
+
+
+class TestStageBackendResolution(unittest.TestCase):
+    """resolve_stage_backend() + per-stage backend override + compute_backend fallback."""
+
+    def _make_config(self, compute_backend="local", stage04_backend=None):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {
+            "compute_backend": compute_backend,
+            "stage04_backend": stage04_backend,
+        }
+        return config
+
+    def test_falls_back_to_compute_backend_when_override_is_none(self):
+        config = self._make_config(compute_backend="slurm", stage04_backend=None)
+        self.assertEqual("slurm", config.resolve_stage_backend("stage04_backend"))
+
+    def test_per_stage_override_wins_over_compute_backend(self):
+        config = self._make_config(compute_backend="local", stage04_backend="slurm")
+        self.assertEqual("slurm", config.resolve_stage_backend("stage04_backend"))
+
+    def test_per_stage_override_is_normalised_to_lowercase(self):
+        config = self._make_config(compute_backend="local", stage04_backend="SLURM")
+        self.assertEqual("slurm", config.resolve_stage_backend("stage04_backend"))
+
+    def test_unknown_knob_raises_key_error(self):
+        config = self._make_config()
+        with self.assertRaises(KeyError):
+            config.resolve_stage_backend("stage99_unknown_backend")
+
+
+class TestSlurmRootFolderDefault(unittest.TestCase):
+    """slurm_root_folder defaults to <internal_folder>/_slurm when unset."""
+
+    def test_autocompletes_under_internal_folder(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {
+            "stop_after_stage": 5,
+            "num_cpus": 1,
+            "pdb_reference_structure": "/tmp/ignored.pdb",
+            "snapshots_per_simulation": 100,
+            "perform_comparative_analysis": False,
+            "comparative_groups_definition": None,
+            "trajectory_path": None,
+            "legacy_pymol_support": False,
+            "aquaduct_traced_residues_filter": None,
+            "slurm_root_folder": None,
+            "internal_folder": "/tmp/results/_internal",
+            "clustering_folder": "/tmp/ignored_clustering",
+        }
+        config._autocomplete_parameters()
+        self.assertEqual("/tmp/results/_internal/_slurm",
+                         config.parameters["slurm_root_folder"])
+
+    def test_explicit_value_is_respected(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {
+            "stop_after_stage": 5,
+            "num_cpus": 1,
+            "pdb_reference_structure": "/tmp/ignored.pdb",
+            "snapshots_per_simulation": 100,
+            "perform_comparative_analysis": False,
+            "comparative_groups_definition": None,
+            "trajectory_path": None,
+            "legacy_pymol_support": False,
+            "aquaduct_traced_residues_filter": None,
+            "slurm_root_folder": "/scratch/run42/_slurm",
+            "internal_folder": "/tmp/results/_internal",
+            "clustering_folder": "/tmp/ignored_clustering",
+        }
+        config._autocomplete_parameters()
+        self.assertEqual("/scratch/run42/_slurm",
+                         config.parameters["slurm_root_folder"])
 
 
 if __name__ == '__main__':

@@ -119,19 +119,22 @@ class AnalysisConfig:
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
             "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
-            # Stage 4 - computing distances among layered clusters
-            "distance_backend": "local",  # 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit)
-            "slurm_partition": None,  # SLURM partition for the distance-shard array job
-            "slurm_account": None,  # SLURM account for the distance-shard array job
+            # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
+            "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
+            "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend
+
+            # Shared SLURM submission parameters (apply to every stage that runs on SLURM)
+            "slurm_partition": None,  # SLURM partition
+            "slurm_account": None,  # SLURM account
             "slurm_timeout_min": 240,  # wall-time limit per array task, in minutes
             "slurm_mem_gb": 8.0,  # memory limit per array task, in GB
             "slurm_cpus_per_task": 4,  # CPU cores requested and used per array task
             "slurm_num_shards": None,  # number of array tasks; None => derived automatically from the job size
-            "slurm_folder": None,  # shared dir for submitit logs/artifacts; None => <clustering_folder>/stage4_shards
+            "slurm_root_folder": None,  # shared parent dir for per-stage SLURM subfolders; None => <internal_folder>/_slurm. Each stage's shards land in <slurm_root_folder>/stage<NN>_<name>/ (e.g. stage04_distances/).
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
             "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
             "slurm_srun_args": None,  # extra args for the srun call inside the array job; None => ['--cpu-bind=none']
-            "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling 
+            "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -242,10 +245,11 @@ class AnalysisConfig:
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
             "msms",
+            "stage04_backend",
             "slurm_partition",
             "slurm_account",
             "slurm_num_shards",
-            "slurm_folder",
+            "slurm_root_folder",
             "slurm_array_parallelism",
             "slurm_setup",
             "slurm_srun_args"
@@ -323,6 +327,14 @@ class AnalysisConfig:
         self.list_params = [
             "slurm_setup",
             "slurm_srun_args"
+        ]
+
+        # registry of per-stage SLURM backend override knobs. Each row is (knob_name, label) -
+        # the label is only used in log messages and error reporting; the knob_name must match
+        # a parameter declared above with default None. Add one row per SLURM-capable stage as
+        # it lands; _validate_parameter_values() and resolve_stage_backend() walk this list.
+        self._stage_backend_keys: List[Tuple[str, str]] = [
+            ("stage04_backend", "stage 4 / distance shards"),
         ]
 
     def _load_configuration(self, path2configfile: str):
@@ -542,8 +554,8 @@ class AnalysisConfig:
             self.parameters["pickle_protocol"] = 2
             self.internal_settings["pickle_protocol"] = 2
 
-        if self.parameters["slurm_folder"] is None:
-            self.parameters["slurm_folder"] = os.path.join(self.parameters["clustering_folder"], "stage4_shards")
+        if self.parameters["slurm_root_folder"] is None:
+            self.parameters["slurm_root_folder"] = os.path.join(self.parameters["internal_folder"], "_slurm")
 
     def _test_parameter_sanity(self, param_name: str, min_val: int | float, max_val: int | float):
         """
@@ -623,11 +635,36 @@ class AnalysisConfig:
             logger.warning("\nUse of 'single' for 'cluster_linkage' parameter is discouraged as it often leads to "
                            "rather poorly defined superclusters. PLEASE, consider using 'average' or 'complete'.")
 
-        if self.parameters["distance_backend"].lower() not in ("local", "slurm"):
-            raise ValueError("\nUnsupported value '{}' for 'distance_backend' parameter.\n Valid options are "
-                             "'local' and 'slurm'.".format(self.parameters["distance_backend"]))
+        # validate compute_backend + per-stage overrides; resolve each stage's effective backend.
+        # _stage_backend_keys lists every (stage_knob_name, human_label) recognised by the
+        # SlurmShardStage framework. Adding a new SLURM-capable stage means adding both its
+        # config knob above (default None) and a row here, with no other validation changes.
+        valid_backends = ("local", "slurm")
+        if str(self.parameters["compute_backend"]).lower() not in valid_backends:
+            raise ValueError("\nUnsupported value '{}' for 'compute_backend' parameter.\n Valid options are "
+                             "'local' and 'slurm'.".format(self.parameters["compute_backend"]))
 
-        if self.parameters["distance_backend"] == "slurm":
+        any_slurm = str(self.parameters["compute_backend"]).lower() == "slurm"
+        for stage_knob, _label in self._stage_backend_keys:
+            value = self.parameters.get(stage_knob)
+            if value is None:
+                continue
+            if str(value).lower() not in valid_backends:
+                raise ValueError("\nUnsupported value '{}' for '{}' parameter.\n Valid options are "
+                                 "'local' and 'slurm'.".format(value, stage_knob))
+            if str(value).lower() == "slurm":
+                any_slurm = True
+
+        if any_slurm:
+            # any stage running on SLURM needs the optional submitit package; fail at config
+            # load time (not three stages in) so the user can install it before launching
+            from transport_tools.libs.slurm import submitit_available
+            if not submitit_available():
+                raise RuntimeError("\nA SLURM backend is enabled ('compute_backend = slurm' or a "
+                                   "stage-specific '*_backend = slurm'), but the optional "
+                                   "'submitit' package is not installed.\nInstall it with "
+                                   "'pip install submitit' or 'conda install -c conda-forge "
+                                   "submitit', or set the backend to 'local'.")
             self._test_parameter_sanity("slurm_timeout_min", 1, sys.maxsize)
             self._test_parameter_sanity("slurm_cpus_per_task", 1, sys.maxsize)
             if self.parameters["slurm_mem_gb"] <= 0:
@@ -1037,9 +1074,14 @@ class AnalysisConfig:
                                    "imported. Please ensure that it is properly installed in the current "
                                    "environment--for example by running 'conda install ambertools -c conda-forge'.")
         msg += "\nJob configuration loaded from file: '{}'\n".format(self.source_file)
-        if self.parameters["distance_backend"].lower() == "slurm":
+        # report submitit's version when any stage is set to run on SLURM; the validation in
+        # _validate_parameter_values() has already guaranteed it is importable in that case
+        any_slurm = str(self.parameters.get("compute_backend", "local")).lower() == "slurm" or any(
+            str(self.parameters.get(knob, None) or "local").lower() == "slurm"
+            for knob, _ in getattr(self, "_stage_backend_keys", []))
+        if any_slurm:
             try:
-                import submitit # type: ignore[import-untyped]
+                import submitit  # type: ignore[import-untyped]
                 msg += "submitit {}\n".format(version('submitit'))
             except (PackageNotFoundError, ModuleNotFoundError):
                 raise RuntimeError("Requested to use SLURM via submitit but required module cannot be imported.\n"
@@ -1133,6 +1175,25 @@ class AnalysisConfig:
         """
 
         return self.parameters[par_name]
+
+    def resolve_stage_backend(self, stage_knob: str) -> str:
+        """
+        Resolve a stage's effective execution backend ('local' or 'slurm') from the per-stage
+        override knob (if set) and the global compute_backend default. Used by callers that
+        need to dispatch between a local Pool and the SLURM backend for a given parallelized
+        stage; the knob name must match one of the rows registered in `self._stage_backend_keys`.
+        :param stage_knob: name of the per-stage backend parameter (e.g. 'stage04_backend')
+        :return: lowercase 'local' or 'slurm'
+        """
+
+        registered = {knob for knob, _ in self._stage_backend_keys}
+        if stage_knob not in registered:
+            raise KeyError("Unknown stage backend knob '{}'; registered knobs are {}".format(
+                stage_knob, sorted(registered)))
+        override = self.parameters.get(stage_knob)
+        if override is not None:
+            return str(override).lower()
+        return str(self.parameters["compute_backend"]).lower()
 
     def get_filters(self) -> Tuple[float, float, float, float, float, float, int, int, float, int, int, int]:
         """
@@ -1250,8 +1311,8 @@ class AnalysisConfig:
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
             "min_tunnel_radius4clustering": "# Clustering of tunnel clusters into superclusters",
-            "distance_backend": "# Stage 4 - computing distances among layered clusters "
-                                "(the 'slurm' backend requires the optional 'submitit' package)",
+            "compute_backend": "# SLURM execution backend "
+                               "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",
             "event_min_distance": "# Processing of transport events from AQUA-DUCT results, "
                                   "and their assignment to superclusters",
