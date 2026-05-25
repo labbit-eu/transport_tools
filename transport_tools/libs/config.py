@@ -121,6 +121,7 @@ class AnalysisConfig:
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
+            "stage03_backend": None,  # stage-3 (create_layered_description4tunnel_networks) backend override; None => use compute_backend
             "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend
 
             # Shared SLURM submission parameters (apply to every stage that runs on SLURM)
@@ -245,6 +246,7 @@ class AnalysisConfig:
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
             "msms",
+            "stage03_backend",
             "stage04_backend",
             "slurm_partition",
             "slurm_account",
@@ -334,6 +336,7 @@ class AnalysisConfig:
         # a parameter declared above with default None. Add one row per SLURM-capable stage as
         # it lands; _validate_parameter_values() and resolve_stage_backend() walk this list.
         self._stage_backend_keys: List[Tuple[str, str]] = [
+            ("stage03_backend", "stage 3 / tunnel layering"),
             ("stage04_backend", "stage 4 / distance shards"),
         ]
 

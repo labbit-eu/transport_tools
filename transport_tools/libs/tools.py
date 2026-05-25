@@ -946,7 +946,10 @@ class TransportProcesses:
         """
         Computes the inter-cluster distance matrix by distributing the pairwise calculations over
         SLURM array jobs (one task per shard) using submitit. The rounding precision is applied by
-        the shards themselves (see compute_distance_shard).
+        the shards themselves (see compute_distance_shard). Each shard writes a compact (K, 3)
+        float64 array of (cluster1_id, cluster2_id, distance) rows atomically; the launcher
+        concatenates them and scatters the pairs into the condensed upper-triangle vector
+        (the dense N x N matrix is never materialised).
         :param cluster_specifications: definition of clusters
         :return: condensed (upper-triangle) vector of pairwise cluster distances for clustering
         """
@@ -959,23 +962,42 @@ class TransportProcesses:
 
         num_clusters = len(cluster_specifications)
         condensed_distances = self._allocate_condensed_distances(num_clusters * (num_clusters - 1) // 2)
+        if num_clusters <= 1:
+            return condensed_distances
 
-        if num_clusters > 1:
-            results, num_shards = slurm.run_distance_shards_on_slurm(self.config_file, num_clusters,
-                                                                     self.parameters)
-            # scatter the shard pairs straight into the condensed vector in one vectorized
-            # assignment - the dense N x N matrix is never materialized
-            rows = results[:, 0].astype(np.intp)
-            cols = results[:, 1].astype(np.intp)
-            condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = results[:, 2]
-            logger.info("Assembled distance matrix from {:d} SLURM shards.".format(num_shards))
+        # 1) Submit and wait via the generic launcher; framework handles fingerprint check,
+        #    completion-order polling, and per-shard runtime timeout.
+        stage = slurm.DistanceShardStage(num_clusters)
+        slurm_folder = stage.get_slurm_folder(self.parameters)
+        num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file, self.parameters)
+        if still_missing:
+            raise RuntimeError("SLURM distance shard(s) {} did not produce results; inspect "
+                               "their logs in '{}'. {}/{} shard(s) completed - re-run stage 4 "
+                               "to resume from them.".format(
+                                   still_missing, slurm_folder,
+                                   num_shards - len(still_missing), num_shards))
 
-            # verify completeness cheaply on the 1-D vector: any pair the shards failed to
-            # compute is still set to its initial infinity
-            if np.isinf(condensed_distances).any():
-                raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
-                                   "shards; inspect the shard logs in "
-                                   "'{}'.".format(slurm.DistanceShardStage.get_slurm_folder(self.parameters)))
+        # 2) Load the per-shard (K, 3) float64 arrays and concatenate; the shards already store
+        #    their pairs in this compact form, so concatenating directly avoids the ~150 B/pair
+        #    Python-tuple expansion that would cost tens of GB for large studies.
+        shard_arrays: List[np.ndarray] = [
+            np.load(stage.shard_result_path(slurm_folder, sid)) for sid in range(num_shards)
+        ]
+        results = np.concatenate(shard_arrays) if shard_arrays \
+            else np.empty((0, 3), dtype=np.float64)
+
+        # 3) Scatter the shard pairs straight into the condensed vector in one vectorised
+        #    assignment - the dense N x N matrix is never materialised.
+        rows = results[:, 0].astype(np.intp)
+        cols = results[:, 1].astype(np.intp)
+        condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = results[:, 2]
+        logger.info("Assembled distance matrix from {:d} SLURM shards.".format(num_shards))
+
+        # 4) Verify completeness cheaply on the 1-D vector: any pair the shards failed to
+        #    compute is still set to its initial +inf sentinel.
+        if np.isinf(condensed_distances).any():
+            raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
+                               "shards; inspect the shard logs in '{}'.".format(slurm_folder))
 
         return condensed_distances
 
@@ -1027,6 +1049,95 @@ class TransportProcesses:
                 progressbar(done_calcs, n_jobs)
 
         return results
+
+    def compute_tunnel_layering_shard(self, num_shards: int, shard_id: int) -> int:
+        """
+        Compute one shard of the stage-3 tunnel-layering work - the strided subset of the
+        (md_label, cluster_id) enumeration assigned to shard_id. Used by the SLURM stage-3
+        backend; executed on a SLURM compute node. The enumeration itself was written by the
+        launcher into <slurm_folder>/items.json; we read it from there instead of re-deriving
+        it from orig_network files (which would multiply per-shard I/O by num_shards). For
+        each (md_label, cls_id) pair we own, we load the cluster's TunnelCluster object from
+        the corresponding orig_network.dump (orig_networks are loaded once per md_label even
+        when the shard touches many clusters from the same md_label), run the existing
+        `create_layered_cluster_worker` over an inner spawn-Pool sized to slurm_cpus_per_task,
+        and write the per-shard results as a single pickle. The launcher concatenates the
+        per-shard pickles and applies the same submission-order commit as the local backend.
+        :param num_shards: total number of shards the layering is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :return: number of (md_label, cluster_id) pairs this shard layered
+        """
+
+        from transport_tools.libs.slurm import TunnelLayeringShardStage
+
+        slurm_folder = TunnelLayeringShardStage.get_slurm_folder(self.parameters)
+        all_items = TunnelLayeringShardStage.load_items(slurm_folder)
+
+        # strided assignment: shard i gets every Nth item from the enumeration. The
+        # enumeration was built in stable submission order by the launcher, so this slicing
+        # is deterministic across launcher + shard processes
+        my_items: List[List[Any]] = all_items[shard_id::num_shards]
+        if not my_items:
+            logger.info("SLURM tunnel-layering shard %d/%d: nothing to do.", shard_id + 1, num_shards)
+            self._write_tunnel_layering_shard_result(slurm_folder, shard_id, [])
+            return 0
+
+        # group by md_label so we load each orig_network.dump at most once even when the
+        # shard touches many clusters from the same MD simulation
+        clusters_by_md: Dict[str, set] = dict()
+        for md_label, cls_id in my_items:
+            clusters_by_md.setdefault(md_label, set()).add(int(cls_id))
+
+        clusters_to_layer: list = list()
+        for md_label, wanted_ids in clusters_by_md.items():
+            tunnel_network = TunnelNetwork(self.parameters, md_label)
+            tunnel_network.load_orig_network()
+            for cluster in tunnel_network.get_clusters4layering():
+                if cluster.cluster_id in wanted_ids:
+                    clusters_to_layer.append(cluster)
+
+        n_jobs = len(clusters_to_layer)
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        logger.info("SLURM tunnel-layering shard %d/%d: layering %d cluster(s) using %d %s.",
+                    shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
+
+        results: List[Tuple[int, str, LayeredPathSet]] = list()
+        done = 0
+        progressbar(done, n_jobs)
+
+        # 'spawn' inner pool with the BLAS thread cap - identical pattern to compute_distance_shard
+        with get_context("spawn").Pool(processes=num_cpus,
+                                       initializer=utils.cap_blas_threads_for_worker,
+                                       initargs=(num_cpus, num_cpus)) as pool:
+            timeout = self.parameters["worker_task_timeout_s"]
+            imap_iter = pool.imap_unordered(create_layered_cluster_worker, clusters_to_layer)
+            for result in utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool,
+                    label="layer-tunnel-cluster (shard {})".format(shard_id),
+                    extract_task_label=lambda r: "{}/{}".format(r[1], r[0])):
+                results.append(result)
+                done += 1
+                progressbar(done, n_jobs)
+
+        self._write_tunnel_layering_shard_result(slurm_folder, shard_id, results)
+        return len(results)
+
+    def _write_tunnel_layering_shard_result(self, slurm_folder: str, shard_id: int,
+                                            results: List[Tuple[int, str, "LayeredPathSet"]]):
+        """
+        Atomically persist a tunnel-layering shard's results to its per-shard pickle file
+        (write to `.tmp.pkl`, then os.replace). Used by `compute_tunnel_layering_shard()`;
+        kept separate so the empty-shard fast path can reuse it without duplicating the
+        atomic-write idiom.
+        """
+
+        from transport_tools.libs.slurm import TunnelLayeringShardStage
+
+        out_file = TunnelLayeringShardStage.shard_result_path(slurm_folder, shard_id)
+        tmp_file = out_file + ".tmp.pkl"
+        with open(tmp_file, "wb") as out_stream:
+            pickle.dump(results, out_stream, protocol=self.parameters["pickle_protocol"])
+        os.replace(tmp_file, out_file)
 
     def merge_tunnel_clusters2super_clusters(self):
         """
@@ -1281,6 +1392,11 @@ class TransportProcesses:
         Creates layered representation of tunnel networks for all MD simulations
         """
 
+        backend = self._resolve_stage_backend("stage03_backend")
+        if backend == "slurm":
+            self._create_layered_description4tunnel_networks_slurm()
+            return
+
         with TimeProcess("Layering"):
             num_cpus = self.parameters["num_cpus"]
             with get_context("spawn").Pool(processes=num_cpus,
@@ -1350,6 +1466,103 @@ class TransportProcesses:
                         del buffered_layered_paths[md_label]
 
                     progressbar(i + 1, items2process)
+
+    def _create_layered_description4tunnel_networks_slurm(self):
+        """
+        SLURM-backed counterpart to `create_layered_description4tunnel_networks`. The launcher
+        enumerates the (md_label, cluster_id) pairs once (in the same submission order the
+        local backend uses), persists them to `<slurm_folder>/items.json` so every shard reads
+        a single artifact instead of re-deriving the enumeration from the orig_network.dump
+        files, runs the SLURM array via `run_stage_on_slurm()`, then assembles the per-shard
+        pickles into the same per-md_label `layered_network.dump` artifacts the local backend
+        produces (and the integration test compares byte-for-byte).
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' stage-3 backend requires the analysis to be run "
+                               "from a configuration file - the SLURM compute nodes need it "
+                               "to rebuild the analysis state.")
+
+        with TimeProcess("Layering"):
+            # 1) Enumerate (md_label, cluster_id) pairs in stable submission order.
+            #    Mirrors the local path's enumeration so produced artifacts are byte-identical.
+            items: List[Tuple[str, int]] = list()
+            cls_ids2process4md_label: Dict[str, List[int]] = dict()
+            for md_label in self.caver_input_folders:
+                tunnel_network = TunnelNetwork(self.parameters, md_label)
+                tunnel_network.load_orig_network()
+                cls_ids2process4md_label[md_label] = list()
+                for cluster in tunnel_network.get_clusters4layering():
+                    items.append((md_label, int(cluster.cluster_id)))
+                    cls_ids2process4md_label[md_label].append(int(cluster.cluster_id))
+
+            items2process = len(items)
+            if not items2process > 0:
+                raise RuntimeError("Not enough tunnel clusters are available to perform their layering")
+
+            logger.info("Computing layered representation for {:d} tunnel clusters via SLURM "
+                        "array job:".format(items2process))
+
+            # 2) Hand the enumeration to the stage; run_stage_on_slurm will write items.json
+            #    (prepare_state hook), check the fingerprint, submit only missing shards,
+            #    and poll in completion order.
+            stage = slurm.TunnelLayeringShardStage(items)
+            slurm_folder = stage.get_slurm_folder(self.parameters)
+            num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file,
+                                                                 self.parameters)
+            if still_missing:
+                raise RuntimeError("SLURM tunnel-layering shard(s) {} did not produce results; "
+                                   "inspect their logs in '{}'. {}/{} shard(s) completed - "
+                                   "re-run stage 3 to resume from them.".format(
+                                       still_missing, slurm_folder,
+                                       num_shards - len(still_missing), num_shards))
+
+            # 3) Stream the per-shard pickles back. Each result is (cls_id, md_label,
+            #    LayeredPathSet); buffer per md_label and commit in original submission order
+            #    so the saved layered_network.dump matches the local backend byte-for-byte.
+            buffered_layered_paths: Dict[str, Dict[int, LayeredPathSet]] = {
+                md: {} for md in self.caver_input_folders}
+            empty_clusters: List[Tuple[str, int]] = list()
+            total_received = 0
+            for shard_id in range(num_shards):
+                with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
+                    shard_results: List[Tuple[int, str, LayeredPathSet]] = pickle.load(in_stream)
+                for cls_id, md_label, layered_path_set in shard_results:
+                    total_received += 1
+                    if layered_path_set.is_empty():
+                        empty_clusters.append((md_label, cls_id))
+                    else:
+                        buffered_layered_paths[md_label][cls_id] = layered_path_set
+
+            if total_received != items2process:
+                raise RuntimeError("SLURM tunnel-layering shards returned {} result(s) but the "
+                                   "launcher enumerated {} (md_label, cluster_id) pair(s); some "
+                                   "shards likely failed silently. Inspect the shard logs in "
+                                   "'{}'.".format(total_received, items2process, slurm_folder))
+
+            # report and drop empty clusters from the per-md_label order so the local-path
+            # save_layered_network() path sees the same list it would have seen locally
+            for md_label, cls_id in empty_clusters:
+                logger.warning("Cluster {} of {} cannot be layered".format(cls_id, md_label))
+                cls_ids2process4md_label[md_label].remove(cls_id)
+
+            # 4) Commit per md_label in submission order, save layered networks/visualisations.
+            #    Progress is reported per md_label (not per cluster) - clusters are already
+            #    finished at this point, and the heavy work that remains is the
+            #    save_layered_network() pickle dump which has md_label granularity.
+            num_md = len(self.caver_input_folders)
+            progressbar(0, num_md)
+            for i, md_label in enumerate(self.caver_input_folders):
+                tunnel_network = TunnelNetwork(self.parameters, md_label)
+                for cls_id in cls_ids2process4md_label[md_label]:
+                    tunnel_network.add_layered_entity(cls_id, buffered_layered_paths[md_label][cls_id])
+                logger.debug("Finished layering of network for '{}'.".format(md_label))
+                if self.parameters["visualize_layered_clusters"]:
+                    tunnel_network.save_layered_visualization(save_pdb_files=True)
+                tunnel_network.save_layered_network()
+                progressbar(i + 1, num_md)
 
     @staticmethod
     def _pre_process_single_aquaduct_network(md_label: str, parameters: dict, root_paths: List[str],

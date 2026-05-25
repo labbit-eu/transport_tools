@@ -19,9 +19,10 @@
 # Reusable framework for distributing TransportTools stages over SLURM array jobs. Each stage is
 # implemented as a SlurmShardStage subclass that owns its per-shard work; the generic launcher
 # run_stage_on_slurm() handles fingerprint-based resumability, missing-shard discovery, submitit
-# submission, completion-order polling with per-shard runtime timeouts, and stderr triage on
-# failure. The legacy entry point run_distance_shards_on_slurm() is preserved as a thin wrapper
-# around DistanceShardStage for backwards compatibility with existing call sites.
+# submission, completion-order polling with per-shard runtime timeouts, and per-shard
+# cancellation. Concrete adapters in this module:
+#   * DistanceShardStage         - stage 4 (compute_tunnel_clusters_distances)
+#   * TunnelLayeringShardStage   - stage 3 (create_layered_description4tunnel_networks)
 #
 # Submission is handled by the optional 'submitit' package (an extra dependency); it is imported
 # lazily so that the rest of TransportTools installs and runs without it.
@@ -33,6 +34,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import os
 import json
 import time
+import hashlib
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple
@@ -40,12 +42,10 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
-# average number of pairwise comparisons targeted per shard when the shard count is auto-derived
-_TARGET_PAIRS_PER_SHARD = 20000
 # default upper bound on the auto-derived number of shards, to keep the SLURM array reasonably
 # sized; only applied when the user did not set slurm_array_parallelism (which then governs
 # the shard count instead, regardless of whether it is larger or smaller than this default)
-_MAX_AUTO_SHARDS = 200
+_DEFAULT_MAX_AUTO_SHARDS = 200
 # filename recording the parameters a set of partial shard results was computed for
 _SHARDS_INFO_FILE = "shards_info.json"
 
@@ -62,19 +62,23 @@ def submitit_available() -> bool:
     return True
 
 
-def derive_num_shards(n_jobs: int, array_parallelism: Optional[int] = None,
-                      target_per_shard: int = _TARGET_PAIRS_PER_SHARD,
-                      max_auto_shards: int = _MAX_AUTO_SHARDS) -> int:
+def derive_num_shards(n_jobs: int, *, target_per_shard: int,
+                      array_parallelism: Optional[int] = None,
+                      max_auto_shards: int = _DEFAULT_MAX_AUTO_SHARDS) -> int:
     """
     Derive a sensible number of SLURM array tasks for a job, aiming for roughly
-    `target_per_shard` work items per shard while keeping the array size bounded.
+    `target_per_shard` work items per shard while keeping the array size bounded. Each stage's
+    natural work-item unit is different (pairwise comparisons for distances, (md_label, cls_id)
+    pairs for tunnel layering, ...), so `target_per_shard` is a required keyword-only argument -
+    every caller picks the value that matches its workload.
+
     When `array_parallelism` is provided, it governs the cap directly (the user already expressed
     their preferred array size, and there is no benefit to deriving more shards than tasks that
     can run concurrently); otherwise the count falls back to `max_auto_shards`.
     :param n_jobs: total number of work items to perform
+    :param target_per_shard: average number of work items per shard the heuristic aims for
     :param array_parallelism: user-configured maximum number of concurrent array tasks; when set,
                               it replaces `max_auto_shards` as the cap on the derived shard count
-    :param target_per_shard: average number of work items per shard the heuristic aims for
     :param max_auto_shards: fallback upper bound used when `array_parallelism` is None
     :return: number of shards to use
     """
@@ -127,6 +131,19 @@ class SlurmShardStage(ABC):
 
         return os.path.join(parameters["slurm_root_folder"], cls.folder_name)
 
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Optional hook called once in the launcher (after the SLURM folder is created and before
+        the fingerprint check), giving the stage a chance to write any per-stage state artifact
+        the shards will load on startup. Default: no-op. Stages that need the launcher to share
+        a work-item enumeration (e.g. the (md_label, cluster_id) list for tunnel layering)
+        override this to write a single artifact next to the per-shard result files; shards
+        then read that artifact in `run_shard()` instead of re-deriving the enumeration from
+        scratch in every shard process.
+        """
+
+        return None
+
     @abstractmethod
     def num_shards(self, parameters: dict) -> int:
         """
@@ -135,20 +152,29 @@ class SlurmShardStage(ABC):
         :param parameters: job configuration parameters
         """
 
+    @classmethod
     @abstractmethod
-    def shard_result_path(self, slurm_folder: str, shard_id: int) -> str:
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
         """
         Path of the per-shard result file that this shard's worker writes and the launcher
         reads back during assembly. Must be deterministic given (slurm_folder, shard_id) and
         must include `shard_id` to keep concurrent shards from clobbering each other.
+        Declared as a `@classmethod` so SLURM-shard workers (which only have a config_file +
+        shard_id, no stage instance with runtime state) can derive the output path directly
+        from the class, the same way `get_slurm_folder()` works.
         """
 
+    @classmethod
     @abstractmethod
-    def run_shard(self, config_file: str, num_shards: int, shard_id: int) -> Any:
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> Any:
         """
-        Execute one shard. Runs inside a SLURM compute-node Python process; must be a
-        top-level callable so that submitit can pickle it. The implementation is responsible
-        for writing `shard_result_path()` atomically (write to `<path>.tmp`, then os.replace).
+        Execute one shard. Runs inside a SLURM compute-node Python process. Declared as a
+        `@classmethod` so submitit pickles only a class-qualified function reference (plus
+        the args), not the launcher's runtime state on the stage instance - on a large run
+        with many shards, pickling instance state like the tunnel-layering items list into
+        every task's submitit payload would be wasted bytes (the shards rebuild that state
+        from disk anyway). The implementation is responsible for writing
+        `shard_result_path()` atomically (write to a `.tmp` neighbour, then os.replace).
         :param config_file: path to the INI configuration file of the analysis
         :param num_shards: total number of shards the calculation is split into
         :param shard_id: 0-based ID of the shard to compute
@@ -348,6 +374,7 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
     slurm_folder = stage.get_slurm_folder(parameters)
     os.makedirs(slurm_folder, exist_ok=True)
     num_shards = stage.num_shards(parameters)
+    stage.prepare_state(parameters, slurm_folder)
 
     missing = _missing_shards(stage, slurm_folder, num_shards, parameters)
     num_done = num_shards - len(missing)
@@ -377,37 +404,23 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
 
 
 # ---------------------------------------------------------------------------
-# Stage 4 adapter: DistanceShardStage + back-compat wrapper
+# Shared shard-process bootstrap
 # ---------------------------------------------------------------------------
 
 
-def shard_result_path(slurm_folder: str, shard_id: int) -> str:
+def _rebuild_mol_system(config_file: str):
     """
-    Path of the per-shard result file written by the distance shard runner. Kept as a
-    module-level helper for backwards compatibility with callers that import it directly.
-    """
-
-    return os.path.join(slurm_folder, "shard_result_{:05d}.npy".format(shard_id))
-
-
-def _run_distance_shard(config_file: str, num_shards: int, shard_id: int) -> int:
-    """
-    Compute one shard of the inter-cluster distance matrix. This is executed on a SLURM compute
-    node and must remain a top-level function so that submitit can pickle it.
-
-    The analysis state is rebuilt from the configuration file - the layered networks the shard
-    needs are already present on the shared filesystem - so the stage-3 checkpoint is not required.
-    The result is written atomically to a per-shard file in the SLURM folder (keyed by shard_id),
-    so that a run interrupted partway can be resumed without recomputing finished shards.
+    Boilerplate shared by every SLURM shard's `run_shard()` entry point: pin the multiprocessing
+    start method to spawn (so the inner Pool the shard's compute_* method will construct does not
+    fork from a multi-threaded BLAS parent), load the analysis configuration from the INI file,
+    and rebuild the TransportProcesses state. The shard process is a fresh Python interpreter
+    launched by srun and does not inherit the launcher's start-method choice, so the spawn pin
+    must happen here even though the launcher already ran it.
     :param config_file: path to the INI configuration file of the analysis
-    :param num_shards: total number of shards the calculation is split into
-    :param shard_id: 0-based ID of the shard to compute
-    :return: number of cluster pairs this shard computed
+    :return: (AnalysisConfig, TransportProcesses) - the config is returned alongside the
+             TransportProcesses so callers can also read out the per-stage SLURM folder, etc.
     """
 
-    # The shard is a fresh Python interpreter launched by srun and does not inherit the
-    # launcher's multiprocessing start-method choice; pin it to spawn before the inner pool
-    # in compute_distance_shard() is constructed (see utils.configure_multiprocessing_start_method).
     from transport_tools.libs.utils import configure_multiprocessing_start_method
     configure_multiprocessing_start_method()
 
@@ -415,17 +428,12 @@ def _run_distance_shard(config_file: str, num_shards: int, shard_id: int) -> int
     from transport_tools.libs.tools import TransportProcesses
 
     config = AnalysisConfig(config_file, logging=False)
-    mol_system = TransportProcesses(config)
-    results = mol_system.compute_distance_shard(num_shards, shard_id)
+    return config, TransportProcesses(config)
 
-    array = np.array(results, dtype=np.float64) if results else np.empty((0, 3), dtype=np.float64)
-    slurm_folder = DistanceShardStage.get_slurm_folder(config.parameters)
-    out_file = shard_result_path(slurm_folder, shard_id)
-    tmp_file = out_file + ".tmp.npy"  # write to a temporary file, then atomically rename it
-    np.save(tmp_file, array)
-    os.replace(tmp_file, out_file)
 
-    return len(results)
+# ---------------------------------------------------------------------------
+# Stage 4 adapter: DistanceShardStage
+# ---------------------------------------------------------------------------
 
 
 class DistanceShardStage(SlurmShardStage):
@@ -436,8 +444,12 @@ class DistanceShardStage(SlurmShardStage):
     """
 
     folder_name = "stage04_distances"
-    stage_name = "distance shards"
+    stage_name = "distance"
     job_name = "tt_distances"
+    # heuristic granularity when auto-deriving the shard count: aim for ~20000 cluster pairs
+    # per shard (cluster-cluster comparisons are cheap individually but plentiful for large
+    # supercluster counts; smaller shards would inflate SLURM array overhead)
+    target_items_per_shard = 20000
     # parameters that affect distance results: changing any of them invalidates the
     # already-computed shards. num_clusters is added in `fingerprint()` from runtime state.
     fingerprint_keys: Tuple[str, ...] = ("clustering_cutoff", "calculate_exact_path_distances")
@@ -449,14 +461,28 @@ class DistanceShardStage(SlurmShardStage):
     def num_shards(self, parameters: dict) -> int:
         num_shards = parameters["slurm_num_shards"]
         if num_shards is None:
-            num_shards = derive_num_shards(self.n_jobs, parameters["slurm_array_parallelism"])
+            num_shards = derive_num_shards(
+                self.n_jobs, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
         return max(1, min(num_shards, self.n_jobs))
 
-    def shard_result_path(self, slurm_folder: str, shard_id: int) -> str:
-        return shard_result_path(slurm_folder, shard_id)
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.npy".format(shard_id))
 
-    def run_shard(self, config_file: str, num_shards: int, shard_id: int) -> int:
-        return _run_distance_shard(config_file, num_shards, shard_id)
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        config, mol_system = _rebuild_mol_system(config_file)
+        results = mol_system.compute_distance_shard(num_shards, shard_id)
+
+        # write the per-shard (K, 3) float64 array atomically (tmp + os.replace)
+        array = np.array(results, dtype=np.float64) if results \
+            else np.empty((0, 3), dtype=np.float64)
+        out_file = cls.shard_result_path(cls.get_slurm_folder(config.parameters), shard_id)
+        tmp_file = out_file + ".tmp.npy"
+        np.save(tmp_file, array)
+        os.replace(tmp_file, out_file)
+        return len(results)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
         info = super().fingerprint(parameters, num_shards)
@@ -464,48 +490,110 @@ class DistanceShardStage(SlurmShardStage):
         return info
 
 
-def run_distance_shards_on_slurm(config_file: str, num_clusters: int,
-                                 parameters: dict) -> Tuple[np.ndarray, int]:
+# ---------------------------------------------------------------------------
+# Stage 3 adapter: TunnelLayeringShardStage
+# ---------------------------------------------------------------------------
+
+_TUNNEL_LAYERING_ITEMS_FILE = "items.json"
+
+
+class TunnelLayeringShardStage(SlurmShardStage):
     """
-    Compute the inter-cluster distances as a SLURM array job (one task per shard) via submitit.
-    Only the shards whose results are not already present on disk are (re)submitted, so a run that
-    was interrupted - or in which some shards failed - can be resumed by simply running stage 4
-    again, without recomputing the shards that already succeeded.
-    :param config_file: path to the INI configuration file of the analysis
-    :param num_clusters: total number of tunnel clusters
-    :param parameters: job configuration parameters
-    :return: (P, 3) float64 array of (cluster1_id, cluster2_id, distance) rows concatenated from
-             all shards, and the number of shards that were used
+    Stage-3 adapter: distributes `create_layered_description4tunnel_networks` over a SLURM
+    array. Each shard takes a strided subset of the flat (md_label, cluster_id) enumeration
+    (so sklearn-heavy clusters balance across shards regardless of their position in the
+    enumeration) and writes a per-shard `.pkl` file containing `[(cls_id, md_label,
+    LayeredPathSet), ...]`. The launcher streams shard pickles back, buffers per md_label,
+    and commits each md_label's layered entities in original submission order so the saved
+    `layered_network.dump` is byte-identical to what the local backend produces.
+
+    The (md_label, cluster_id) enumeration is built once in the launcher (by walking the
+    orig_network.dump files from stage 2) and persisted to `<slurm_folder>/items.json`. Each
+    shard reads that single artifact instead of re-deriving the enumeration in every shard
+    process, so on a 200-shard run the orig_network files are not parsed 200 times just to
+    discover work-item ids.
     """
 
-    stage = DistanceShardStage(num_clusters)
-    slurm_folder = stage.get_slurm_folder(parameters)
+    folder_name = "stage03_tunnel_layering"
+    stage_name = "tunnel-layering"
+    job_name = "tt_tunnel_layering"
+    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # Layering tasks have very variable per-task cost (sklearn DBSCAN/KMeans/IsolationForest/
+    # hdbscan), so striding inside the shard plus 200/shard hits a reasonable load balance
+    # without inflating SLURM overhead.
+    target_items_per_shard = 200
+    # parameters that affect tunnel-layering output: changing any of them invalidates the
+    # already-computed shards. The items-list hash is added in `fingerprint()` so changes to
+    # the upstream stage-2 orig_networks (different MD labels, different cluster counts) also
+    # invalidate stale shards.
+    fingerprint_keys: Tuple[str, ...] = (
+        "layer_thickness",
+        "min_tunnel_radius4clustering",
+        "min_tunnel_length4clustering",
+        "max_tunnel_curvature4clustering",
+        "random_seed",
+        "clustering_max_num_rep_frag",
+        "use_cluster_spread",
+    )
 
-    if num_clusters <= 1:
-        # nothing to distribute; preserve the original empty-return contract
-        return np.empty((0, 3), dtype=np.float64), 1
+    def __init__(self, items: List[Tuple[str, int]]):
+        # canonicalise to lists-of-lists so JSON round-trip yields the same hash (tuples
+        # serialise to lists, and json.load returns lists); also detaches the cached list
+        # from the caller's mutable state
+        self.items: List[List[Any]] = [[md, int(cls)] for md, cls in items]
 
-    num_shards, still_missing = run_stage_on_slurm(stage, config_file, parameters)
+    def num_shards(self, parameters: dict) -> int:
+        num_shards = parameters["slurm_num_shards"]
+        n_items = len(self.items)
+        if num_shards is None:
+            num_shards = derive_num_shards(
+                n_items, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
+        return max(1, min(num_shards, max(n_items, 1)))
 
-    # assemble the matrix entries from the per-shard result files written by the shards
-    # themselves; the shards already store their pairs as compact (K, 3) float64 arrays, so they
-    # are concatenated directly instead of being expanded into a Python list of tuples (which
-    # would cost ~150 B/pair, i.e. tens of GB for large studies)
-    shard_arrays: List[np.ndarray] = []
-    for shard_id in range(num_shards):
-        if shard_id in still_missing:
-            continue
-        shard_arrays.append(np.load(stage.shard_result_path(slurm_folder, shard_id)))
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.pkl".format(shard_id))
 
-    if still_missing:
-        raise RuntimeError("SLURM shard(s) {} did not produce results; inspect their logs in '{}'. "
-                           "{}/{} shard(s) completed - re-run stage 4 to resume from "
-                           "them.".format(still_missing, slurm_folder,
-                                          num_shards - len(still_missing), num_shards))
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        _config, mol_system = _rebuild_mol_system(config_file)
+        return mol_system.compute_tunnel_layering_shard(num_shards, shard_id)
 
-    if shard_arrays:
-        results = np.concatenate(shard_arrays)
-    else:
-        results = np.empty((0, 3), dtype=np.float64)
+    def fingerprint(self, parameters: dict, num_shards: int) -> dict:
+        info = super().fingerprint(parameters, num_shards)
+        info["num_items"] = len(self.items)
+        info["items_hash"] = hashlib.sha256(
+            json.dumps(self.items, sort_keys=False).encode("utf-8")).hexdigest()
+        return info
 
-    return results, num_shards
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Write the canonical (md_label, cluster_id) enumeration into the SLURM folder so every
+        shard can read its strided assignment from a single source. The launcher always
+        overwrites this file so it reflects the current run; stale enumerations from earlier
+        runs are detected by the `items_hash` fingerprint key, not by trusting the file's age.
+        """
+
+        items_file = os.path.join(slurm_folder, _TUNNEL_LAYERING_ITEMS_FILE)
+        tmp_file = items_file + ".tmp"
+        with open(tmp_file, "w") as out_stream:
+            json.dump(self.items, out_stream)
+        os.replace(tmp_file, items_file)
+
+    @classmethod
+    def load_items(cls, slurm_folder: str) -> List[List[Any]]:
+        """
+        Read back the `(md_label, cluster_id)` enumeration that the launcher wrote via
+        `prepare_state()`. Called by each shard process at startup to recover its assignment.
+        Returns a list of `[md_label, cls_id]` pairs (JSON tuples are deserialised as lists).
+        """
+
+        items_file = os.path.join(slurm_folder, _TUNNEL_LAYERING_ITEMS_FILE)
+        if not os.path.exists(items_file):
+            raise FileNotFoundError(
+                "Tunnel-layering items file not found at '{}'. The SLURM launcher writes this "
+                "via TunnelLayeringShardStage.prepare_state() before submitting shards.".format(
+                    items_file))
+        with open(items_file) as in_stream:
+            return json.load(in_stream)

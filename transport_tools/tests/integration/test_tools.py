@@ -130,6 +130,71 @@ class TestTransportProcesses(unittest.TestCase):
                                            "paths"), self)
         save_checkpoint(mol_system, self._get_dumpfile(3), overwrite=True)
 
+    def test_03create_layered_description4tunnel_networks_slurm(self):
+        """Same checks as test_03create_layered..., but stage-3 layering is computed via the SLURM
+        backend (submitit). Runs only when a SLURM environment with submitit is detected."""
+        import shutil
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(2))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+
+        # The SLURM shards rebuild the analysis from the config file, so it must carry an
+        # absolute output_path matching this test run (the shared test config uses a relative
+        # one) and the same slurm_root_folder as the launcher - kept outside the layered_data
+        # folders compared below.
+        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage03")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage03.ini")
+        with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
+                open(slurm_config, "w") as out_stream:
+            for line in in_stream:
+                if line.startswith("output_path"):
+                    line = "output_path = {}\n".format(self.out_path)
+                out_stream.write(line)
+                if line.strip() == "[CALCULATIONS_SETTINGS]":
+                    out_stream.write("slurm_root_folder = {}\n".format(slurm_root_folder))
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage03_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Remove the outputs that test_03 (local backend) already wrote so that a silent
+        # no-op in the SLURM path would cause compare_test_folders to fail rather than
+        # silently pass against stale local-backend files.
+        for _stale_dir in [
+            os.path.join(self.out_path, "_internal", "layered_data", "caver"),
+            os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1"),
+        ]:
+            if os.path.isdir(_stale_dir):
+                shutil.rmtree(_stale_dir)
+
+        mol_system.create_layered_description4tunnel_networks()
+        compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "caver"),
+                              os.path.join(self.out_path, "_internal", "layered_data", "caver"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1"),
+                              self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
+                                           "nodes"),
+                              os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1",
+                                           "nodes"), self)
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1",
+                                           "paths"),
+                              os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1",
+                                           "paths"), self)
+
     def test_04distance_shard_consistency(self):
         """SLURM-shard distance calculation must reproduce the local distance matrix exactly"""
         import numpy as np
@@ -210,6 +275,16 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Remove the outputs that test_04 (local backend) already wrote so that a silent
+        # no-op in the SLURM path would cause compare_test_folders to fail rather than
+        # silently pass against stale local-backend files.
+        for _stale_dir in [
+            os.path.join(self.out_path, "_internal", "clustering"),
+            os.path.join(self.out_path, "data", "clustering"),
+        ]:
+            if os.path.isdir(_stale_dir):
+                shutil.rmtree(_stale_dir)
 
         mol_system.compute_tunnel_clusters_distances()
         mol_system.merge_tunnel_clusters2super_clusters()

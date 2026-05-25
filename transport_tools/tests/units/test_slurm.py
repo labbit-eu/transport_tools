@@ -32,30 +32,40 @@ import unittest
 from transport_tools.libs.slurm import (
     DistanceShardStage,
     SlurmShardStage,
+    TunnelLayeringShardStage,
     _missing_shards,
     derive_num_shards,
-    shard_result_path,
     submitit_available,
 )
 
 
 class TestDeriveNumShards(unittest.TestCase):
-    """Granularity heuristic with optional array-parallelism cap."""
+    """Granularity heuristic with optional array-parallelism cap. target_per_shard is a
+    required keyword-only arg so every caller picks the value that matches its workload -
+    there is no stage-4-flavoured default lurking in the framework."""
 
     def test_returns_at_least_one_shard(self):
-        self.assertEqual(1, derive_num_shards(0))
-        self.assertEqual(1, derive_num_shards(1))
+        self.assertEqual(1, derive_num_shards(0, target_per_shard=20))
+        self.assertEqual(1, derive_num_shards(1, target_per_shard=20))
 
     def test_aims_for_target_per_shard(self):
         self.assertEqual(5, derive_num_shards(100, target_per_shard=20))
 
     def test_array_parallelism_caps_count(self):
-        # would derive ~50 shards at default target; cap to 10
-        self.assertEqual(10, derive_num_shards(50 * 20000, array_parallelism=10))
+        # would derive ~50 shards at target=20000; cap to 10
+        self.assertEqual(10, derive_num_shards(50 * 20000, target_per_shard=20000,
+                                                array_parallelism=10))
 
     def test_max_auto_shards_caps_count_when_no_parallelism(self):
         # very large n_jobs without array_parallelism is capped to max_auto_shards
-        self.assertEqual(7, derive_num_shards(1_000_000, max_auto_shards=7))
+        self.assertEqual(7, derive_num_shards(1_000_000, target_per_shard=1,
+                                               max_auto_shards=7))
+
+    def test_target_per_shard_is_keyword_only(self):
+        # passing positionally raises - the parameter is keyword-only so adding new optional
+        # args later doesn't shift positions or silently change behaviour for existing callers
+        with self.assertRaises(TypeError):
+            derive_num_shards(100, 20)  # type: ignore[misc]
 
 
 class TestSubmititAvailable(unittest.TestCase):
@@ -76,14 +86,12 @@ class TestDistanceShardStageFolderLayout(unittest.TestCase):
         self.assertEqual("/scratch/run/_slurm/stage04_distances", path)
 
     def test_shard_result_path_includes_shard_id(self):
-        stage = DistanceShardStage(num_clusters=10)
-        path = stage.shard_result_path("/tmp/folder", 7)
-        # %05d formatting must yield a zero-padded shard id so lexicographic sort matches
-        # numeric order; this guarantees that re-running an interrupted job sees the same
-        # filenames it wrote before
-        self.assertEqual("/tmp/folder/shard_result_00007.npy", path)
-        # consistent with module-level helper used by external callers
-        self.assertEqual(path, shard_result_path("/tmp/folder", 7))
+        # %05d formatting yields a zero-padded shard id so lexicographic sort matches numeric
+        # order; this guarantees that re-running an interrupted job sees the same filenames
+        # it wrote before. Callable as a classmethod without instantiating the stage so
+        # SLURM-shard workers can derive the output path from just (params, shard_id).
+        self.assertEqual("/tmp/folder/shard_result_00007.npy",
+                         DistanceShardStage.shard_result_path("/tmp/folder", 7))
 
 
 class TestDistanceShardStageNumShards(unittest.TestCase):
@@ -211,10 +219,12 @@ class _DummyStage(SlurmShardStage):
     def num_shards(self, parameters):
         return 3
 
-    def shard_result_path(self, slurm_folder, shard_id):
+    @classmethod
+    def shard_result_path(cls, slurm_folder, shard_id):
         return os.path.join(slurm_folder, "dummy_{}.bin".format(shard_id))
 
-    def run_shard(self, config_file, num_shards, shard_id):
+    @classmethod
+    def run_shard(cls, config_file, num_shards, shard_id):
         return shard_id
 
 
@@ -238,6 +248,136 @@ class TestSlurmShardStageDefaults(unittest.TestCase):
         # the @abstractmethod hooks must raise TypeError
         with self.assertRaises(TypeError):
             SlurmShardStage()  # type: ignore[abstract]
+
+
+class TestTunnelLayeringShardStageFolderLayout(unittest.TestCase):
+    """TunnelLayeringShardStage publishes its folder under slurm_root_folder."""
+
+    def test_folder_name_uses_stage_number(self):
+        self.assertEqual("stage03_tunnel_layering", TunnelLayeringShardStage.folder_name)
+
+    def test_get_slurm_folder_joins_root_and_folder_name(self):
+        path = TunnelLayeringShardStage.get_slurm_folder({"slurm_root_folder": "/scratch/run/_slurm"})
+        self.assertEqual("/scratch/run/_slurm/stage03_tunnel_layering", path)
+
+    def test_shard_result_path_is_pickle_extension(self):
+        # tunnel-layering shard results contain LayeredPathSet instances - pickle, not npy
+        path = TunnelLayeringShardStage.shard_result_path("/tmp/folder", 3)
+        self.assertEqual("/tmp/folder/shard_result_00003.pkl", path)
+
+    def test_shard_result_path_is_classmethod(self):
+        # callable without instantiating (so SLURM shard workers can derive their output path
+        # from just the parameters dict + shard_id without needing the runtime items list)
+        path = TunnelLayeringShardStage.shard_result_path("/x", 0)
+        self.assertTrue(path.endswith("shard_result_00000.pkl"))
+
+
+class TestTunnelLayeringShardStageNumShards(unittest.TestCase):
+    """num_shards() honors user override, caps at item count, auto-derives at 200/shard."""
+
+    def _params(self, slurm_num_shards=None, slurm_array_parallelism=None):
+        return {
+            "slurm_num_shards": slurm_num_shards,
+            "slurm_array_parallelism": slurm_array_parallelism,
+        }
+
+    def test_empty_items_yields_single_shard(self):
+        stage = TunnelLayeringShardStage([])
+        self.assertEqual(1, stage.num_shards(self._params()))
+
+    def test_user_count_capped_at_item_count(self):
+        # 5 items, asking for 100 shards is silly - cap to 5
+        stage = TunnelLayeringShardStage([("md{}".format(i), 1) for i in range(5)])
+        self.assertEqual(5, stage.num_shards(self._params(slurm_num_shards=100)))
+
+    def test_auto_derives_at_200_per_shard(self):
+        # 600 items / 200 per shard => 3 shards
+        stage = TunnelLayeringShardStage([("md{}".format(i), j) for i in range(60) for j in range(10)])
+        self.assertEqual(3, stage.num_shards(self._params()))
+
+    def test_array_parallelism_caps_auto_derived(self):
+        # 1000 items / 200 per shard would be 5 shards; cap to 2
+        stage = TunnelLayeringShardStage([("md{}".format(i), j) for i in range(100) for j in range(10)])
+        self.assertEqual(2, stage.num_shards(self._params(slurm_array_parallelism=2)))
+
+
+class TestTunnelLayeringShardStageFingerprint(unittest.TestCase):
+    """Fingerprint identifies the parameters AND the work-item enumeration."""
+
+    def _params(self, **overrides):
+        params = {
+            "layer_thickness": 1.5,
+            "min_tunnel_radius4clustering": 0.75,
+            "min_tunnel_length4clustering": 5.0,
+            "max_tunnel_curvature4clustering": 2.0,
+            "random_seed": 4,
+            "clustering_max_num_rep_frag": 3,
+            "use_cluster_spread": True,
+        }
+        params.update(overrides)
+        return params
+
+    def test_fingerprint_includes_items_hash_and_count(self):
+        stage = TunnelLayeringShardStage([("a", 1), ("b", 2)])
+        info = stage.fingerprint(self._params(), num_shards=2)
+        self.assertEqual(2, info["num_items"])
+        self.assertEqual(64, len(info["items_hash"]))  # sha256 hex digest
+
+    def test_fingerprint_changes_when_items_differ(self):
+        stage1 = TunnelLayeringShardStage([("a", 1), ("b", 2)])
+        stage2 = TunnelLayeringShardStage([("a", 1), ("b", 3)])
+        self.assertNotEqual(stage1.fingerprint(self._params(), num_shards=2),
+                            stage2.fingerprint(self._params(), num_shards=2))
+
+    def test_fingerprint_changes_when_clustering_param_differs(self):
+        stage = TunnelLayeringShardStage([("a", 1)])
+        fp1 = stage.fingerprint(self._params(layer_thickness=1.5), num_shards=1)
+        fp2 = stage.fingerprint(self._params(layer_thickness=2.0), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_is_stable_across_tuple_vs_list_input(self):
+        # the constructor canonicalises tuples to lists so JSON round-trips preserve the hash
+        stage_from_tuples = TunnelLayeringShardStage([("a", 1), ("b", 2)])
+        stage_from_lists = TunnelLayeringShardStage([["a", 1], ["b", 2]])
+        self.assertEqual(stage_from_tuples.fingerprint(self._params(), num_shards=2),
+                         stage_from_lists.fingerprint(self._params(), num_shards=2))
+
+
+class TestTunnelLayeringShardStateRoundTrip(unittest.TestCase):
+    """prepare_state writes items.json; load_items reads it back unchanged."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def test_prepare_state_writes_items_json(self):
+        items = [("md_alpha", 7), ("md_beta", 0), ("md_alpha", 13)]
+        stage = TunnelLayeringShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        items_file = os.path.join(self._tmp, "items.json")
+        self.assertTrue(os.path.exists(items_file))
+
+    def test_load_items_returns_canonicalised_pairs(self):
+        items = [("md_alpha", 7), ("md_beta", 0)]
+        stage = TunnelLayeringShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        loaded = TunnelLayeringShardStage.load_items(self._tmp)
+        # JSON normalises tuples to lists; consumers iterate as `for md, cls in loaded`
+        self.assertEqual([["md_alpha", 7], ["md_beta", 0]], loaded)
+
+    def test_load_items_missing_raises_with_diagnostic(self):
+        with self.assertRaises(FileNotFoundError) as cm:
+            TunnelLayeringShardStage.load_items(self._tmp)
+        # message must point at the missing file and explain who writes it
+        self.assertIn("items.json", str(cm.exception))
+        self.assertIn("prepare_state", str(cm.exception))
+
+    def test_prepare_state_overwrites_stale_items_atomically(self):
+        # writing must use a tmp+rename so a partially-written items.json is not visible
+        TunnelLayeringShardStage([("a", 1)]).prepare_state({}, self._tmp)
+        TunnelLayeringShardStage([("b", 2), ("c", 3)]).prepare_state({}, self._tmp)
+        self.assertEqual([["b", 2], ["c", 3]],
+                         TunnelLayeringShardStage.load_items(self._tmp))
 
 
 if __name__ == "__main__":
