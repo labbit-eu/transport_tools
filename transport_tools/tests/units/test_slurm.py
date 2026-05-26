@@ -38,6 +38,7 @@ from transport_tools.libs.slurm import (
     TunnelLayeringShardStage,
     TunnelNetworksShardStage,
     _missing_shards,
+    cleanup_stage_folder,
     derive_num_shards,
     submitit_available,
 )
@@ -1326,6 +1327,83 @@ class TestEventAssignmentShardStageFingerprint(unittest.TestCase):
         with self.assertRaises(RuntimeError) as cm:
             stage.fingerprint(self._params(), num_shards=1)
         self.assertIn("prepare_state", str(cm.exception))
+
+
+class TestCleanupStageFolder(unittest.TestCase):
+    """`cleanup_stage_folder()` discards the per-stage SLURM tree after a successful
+    assembly, gated by the `slurm_keep_shard_results` parameter (default False = clean)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+        # use a real stage class so get_slurm_folder + folder_name behave the same as in
+        # production; the distance stage is the simplest (no items list, fingerprint_keys
+        # only needs num_clusters)
+        self._stage = DistanceShardStage(num_clusters=2)
+        self._slurm_folder = self._stage.get_slurm_folder(
+            {"slurm_root_folder": self._tmp})
+        os.makedirs(self._slurm_folder)
+        # populate the folder with a representative mix of artefacts the launcher creates:
+        # per-shard result, manifest companion, side-effects archive, items.json,
+        # partial_shards_info.json, and a fake submitit log file
+        self._artefacts = [
+            os.path.join(self._slurm_folder, "shard_result_00000.npy"),
+            os.path.join(self._slurm_folder, "shard_result_00000.manifest.json"),
+            os.path.join(self._slurm_folder, "shard_result_00000.side_effects.tar.gz"),
+            os.path.join(self._slurm_folder, "items.json"),
+            os.path.join(self._slurm_folder, "partial_shards_info.json"),
+            os.path.join(self._slurm_folder, "12345_0_log.out"),
+        ]
+        for path in self._artefacts:
+            open(path, "wb").close()
+
+    def test_removes_stage_folder_when_keep_is_false(self):
+        # default behaviour: the whole stage folder is wiped on success
+        cleanup_stage_folder(self._stage,
+                              {"slurm_root_folder": self._tmp,
+                               "slurm_keep_shard_results": False})
+        self.assertFalse(os.path.exists(self._slurm_folder))
+
+    def test_keeps_folder_when_keep_is_true(self):
+        cleanup_stage_folder(self._stage,
+                              {"slurm_root_folder": self._tmp,
+                               "slurm_keep_shard_results": True})
+        self.assertTrue(os.path.isdir(self._slurm_folder))
+        # every artefact must still be present - the helper is a no-op in this mode
+        for path in self._artefacts:
+            self.assertTrue(os.path.exists(path), path)
+
+    def test_default_is_clean(self):
+        # the helper falls back to keep=False when the key is missing, matching the config
+        # default (we don't want a typo in the parameters dict to silently keep gigabytes of
+        # cache around)
+        cleanup_stage_folder(self._stage, {"slurm_root_folder": self._tmp})
+        self.assertFalse(os.path.exists(self._slurm_folder))
+
+    def test_is_idempotent_when_folder_missing(self):
+        # second cleanup call after the folder is already gone must not raise
+        cleanup_stage_folder(self._stage,
+                              {"slurm_root_folder": self._tmp,
+                               "slurm_keep_shard_results": False})
+        cleanup_stage_folder(self._stage,
+                              {"slurm_root_folder": self._tmp,
+                               "slurm_keep_shard_results": False})  # would raise if not idempotent
+
+    def test_does_not_touch_sibling_stage_folders(self):
+        # cleanup is scoped to this stage's get_slurm_folder() only; another stage's folder
+        # under the same slurm_root_folder must survive
+        sibling = TunnelNetworksShardStage(["md1"]).get_slurm_folder(
+            {"slurm_root_folder": self._tmp})
+        os.makedirs(sibling)
+        sibling_file = os.path.join(sibling, "shard_result_00000.pkl")
+        open(sibling_file, "wb").close()
+
+        cleanup_stage_folder(self._stage,
+                              {"slurm_root_folder": self._tmp,
+                               "slurm_keep_shard_results": False})
+
+        self.assertFalse(os.path.exists(self._slurm_folder))
+        self.assertTrue(os.path.exists(sibling_file))
 
 
 if __name__ == "__main__":

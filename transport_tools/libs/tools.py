@@ -866,6 +866,13 @@ class TransportProcesses:
 
         self._apply_event_assignments(path_sets.keys(), buffered_assignments)
 
+        # Assembly succeeded end-to-end (every event is assigned and applied to
+        # `_super_clusters` / `_outlier_transport_events`); drop the per-shard cache unless
+        # the user opted in to keep it. The state.pkl artifact is part of this folder, so
+        # dropping the whole tree also clears the (potentially hundreds-of-MB) supercluster
+        # pickle along with it.
+        slurm.cleanup_stage_folder(stage, self.parameters)
+
     def clear_results(self, overwrite: bool = False, output_folders: List[str] | None = None):
         """
         Removes output folder
@@ -1108,6 +1115,10 @@ class TransportProcesses:
             raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
                                "shards; inspect the shard logs in '{}'.".format(slurm_folder))
 
+        # 5) Assembly succeeded end-to-end; drop the per-shard cache unless the user opted in
+        #    to keep it via slurm_keep_shard_results. The condensed_distances memmap above is
+        #    already on disk under the clustering folder, outside the SLURM tree.
+        slurm.cleanup_stage_folder(stage, self.parameters)
         return condensed_distances
 
     def compute_distance_shard(self, num_shards: int, shard_id: int,
@@ -1793,6 +1804,11 @@ class TransportProcesses:
                                    "of md_labels. Missing: {}. Unexpected: {}. Inspect the "
                                    "shard logs in '{}'.".format(missing, extra, slurm_folder))
 
+            # Assembly succeeded end-to-end (every md_label is accounted for and its dump +
+            # optional visualisation files are on disk in the user-facing folders); drop the
+            # per-shard cache unless the user opted in to keep it.
+            slurm.cleanup_stage_folder(stage, self.parameters)
+
     def compute_tunnel_networks_shard(self, num_shards: int, shard_id: int) -> int:
         """
         Compute one shard of the stage-2 tunnel-networks work - the strided subset of the
@@ -2068,6 +2084,11 @@ class TransportProcesses:
                 tunnel_network.save_layered_network()
                 progressbar(i + 1, num_md)
 
+            # Assembly succeeded end-to-end (every md_label's layered_network.dump and
+            # optional per-cluster visualisations are on disk); drop the per-shard cache
+            # unless the user opted in to keep it.
+            slurm.cleanup_stage_folder(stage, self.parameters)
+
     @staticmethod
     def _pre_process_single_aquaduct_network(md_label: str, parameters: dict, root_paths: List[str],
                                              parallel_processing: bool = True):
@@ -2215,6 +2236,11 @@ class TransportProcesses:
                                    "set of md_labels. Missing: {}. Unexpected: {}. Inspect "
                                    "the shard logs in '{}'.".format(missing, extra,
                                                                      slurm_folder))
+
+            # Assembly succeeded end-to-end (every md_label's aqua.dump and optional
+            # visualisation files are on disk in the user-facing folders); drop the per-shard
+            # cache unless the user opted in to keep it.
+            slurm.cleanup_stage_folder(stage, self.parameters)
 
     def compute_aquaduct_networks_shard(self, num_shards: int, shard_id: int) -> int:
         """
@@ -2505,6 +2531,11 @@ class TransportProcesses:
                 aqua_networks[md_label].save_layered_network()
                 aqua_networks[md_label].clean_tempfile()
                 progressbar(i + 1, num_md)
+
+            # Assembly succeeded end-to-end (every md_label's aqua_layered_network.dump and
+            # visualisations are on disk); drop the per-shard cache unless the user opted in
+            # to keep it.
+            slurm.cleanup_stage_folder(stage, self.parameters)
 
     def create_super_cluster_profiles(self):
         """

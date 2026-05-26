@@ -38,6 +38,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import os
 import json
 import pickle
+import shutil
 import tarfile
 import time
 import hashlib
@@ -661,6 +662,51 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
     still_missing = [sid for sid in range(num_shards)
                      if not os.path.exists(stage.shard_result_path(slurm_folder, sid))]
     return num_shards, still_missing
+
+
+def cleanup_stage_folder(stage: SlurmShardStage, parameters: dict) -> None:
+    """
+    Discard the per-stage SLURM folder after a successful stage assembly. Without this, the
+    `_slurm/` tree accumulates per-shard pickles, manifests, side-effects tarballs,
+    `items.json` / `state.pkl` artifacts, and submitit per-job logs across every stage * run *
+    resubmission - on a large analysis the folder can grow into the GB range with no
+    automatic mitigation. Cleanup only fires after the launcher's assembly step has succeeded
+    end-to-end (the real outputs are already in their final destinations under the analysis
+    folder), so resumability of an interrupted run is unaffected.
+
+    The behaviour is gated by `parameters["slurm_keep_shard_results"]`: when False (default)
+    the entire `<slurm_root_folder>/<stage.folder_name>/` tree is removed; when True the
+    folder is left untouched. Callers invoke this at the very end of each `_slurm` assembler
+    in `tools.py`, after every check that could raise has already passed - a partial assembly
+    must not delete the cache.
+
+    Idempotent and tolerant of a missing folder; removal failures are logged but never
+    raised, so a transient I/O hiccup during teardown does not mask the (already successful)
+    stage result.
+
+    :param stage: the SLURM stage whose folder is being cleaned up
+    :param parameters: job configuration parameters
+    """
+
+    if parameters.get("slurm_keep_shard_results", False):
+        return
+    slurm_folder = stage.get_slurm_folder(parameters)
+    if not os.path.isdir(slurm_folder):
+        return
+    try:
+        shutil.rmtree(slurm_folder)
+    except OSError as exc:
+        # Don't raise: the stage already succeeded and the user has their outputs. A failure
+        # here is purely a disk-hygiene issue, and surfacing it as an error would convert a
+        # successful run into a spurious failure.
+        logger.warning("Failed to clean up SLURM %s folder '%s' after successful assembly: "
+                       "%s. The folder can be removed manually; set slurm_keep_shard_results"
+                       "=True to disable automatic cleanup.",
+                       stage.stage_name, slurm_folder, exc)
+        return
+    logger.info("Removed SLURM %s shard cache at '%s' after successful assembly "
+                "(set slurm_keep_shard_results=True to keep it).",
+                stage.stage_name, slurm_folder)
 
 
 # ---------------------------------------------------------------------------

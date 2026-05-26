@@ -140,6 +140,7 @@ class AnalysisConfig:
             "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
             "slurm_srun_args": None,  # extra args for the srun call inside the array job; None => ['--cpu-bind=none']
             "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling
+            "slurm_keep_shard_results": False,  # when False (default), the per-stage SLURM folder (shard pickles, manifests, side-effects tarballs, items.json, state.pkl, submitit per-job artifacts) is deleted as soon as the launcher's assembly succeeds, so the `_slurm/` tree does not grow without bound across many runs. Set to True to keep the cache after a successful run (useful for debugging shard outputs or for iterative re-runs that change only the assembly step). Resumability of an interrupted run is unaffected either way - cleanup only fires after the stage has completed successfully end-to-end.
 
             # Filters applied on superclusters before event assignment (-1 => inactive filter)
             "min_length": -1,  # filter on minimum tunnel length
@@ -284,6 +285,7 @@ class AnalysisConfig:
             "visualize_exact_matching_outcomes",
             "legacy_pymol_support",
             "aquaduct_allow_empty_folders",
+            "slurm_keep_shard_results",
         ]
 
         self.integer_params = [

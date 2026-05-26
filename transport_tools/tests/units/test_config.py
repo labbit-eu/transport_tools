@@ -523,6 +523,18 @@ class TestAquaductNewParameterDefaults(unittest.TestCase):
         self.assertIn("aquaduct_allow_empty_folders", config.calculations_settings)
         self.assertFalse(config.calculations_settings["aquaduct_allow_empty_folders"])
 
+    def test_slurm_keep_shard_results_default_is_false(self):
+        # cleanup-on-success is the default; users must opt in to keep the SLURM cache
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_keep_shard_results", config.calculations_settings)
+        self.assertFalse(config.calculations_settings["slurm_keep_shard_results"])
+
+    def test_slurm_keep_shard_results_is_boolean_param(self):
+        # registered as a boolean so ConfigParser correctly coerces "true" / "false" strings
+        # from the INI file (otherwise the launcher would compare strings and never clean up)
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_keep_shard_results", config.boolean_params)
+
     def test_logged_empty_folders_is_set(self):
         """The warn-once cache for empty AQUA-DUCT folders must be a set instance."""
         config = AnalysisConfig(file2load_from=None, logging=False)

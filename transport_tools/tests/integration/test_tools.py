@@ -149,6 +149,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that test_02 (local backend) already wrote so that a silent
         # no-op in the SLURM path would cause compare_test_folders to fail rather than
@@ -206,6 +209,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Snapshot the submitit log files before the resume call; if the framework correctly
         # restores from backup, no new SLURM job is submitted and the set must be unchanged
@@ -283,6 +289,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # ---- Scenario (a): delete one per-shard pickle. The missing-shard check sees it
         # gone immediately and the launcher must resubmit a fresh SLURM array.
@@ -405,6 +414,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that test_03 (local backend) already wrote so that a silent
         # no-op in the SLURM path would cause compare_test_folders to fail rather than
@@ -477,6 +489,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Snapshot the submitit log files before the resume call; if the framework correctly
         # restores from backup, no new SLURM job is submitted and the set must be unchanged
@@ -565,6 +580,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # ---- Scenario (a): delete one per-shard pickle. The missing-shard check sees it
         # gone immediately and the launcher must resubmit a fresh SLURM array.
@@ -705,6 +723,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that test_04 (local backend) already wrote so that a silent
         # no-op in the SLURM path would cause compare_test_folders to fail rather than
@@ -762,6 +783,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # delete one per-shard .npy; the missing-shard check must detect it and resubmit
         os.remove(shard_results[0])
@@ -972,6 +996,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that test_09 (local backend) already wrote so that a silent
         # no-op in the SLURM path would cause compare_test_folders to fail rather than
@@ -1031,6 +1058,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Snapshot the submitit log files before the resume call; if the framework correctly
         # restores from backup, no new SLURM job is submitted and the set must be unchanged
@@ -1109,6 +1139,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # ---- Scenario (a): delete one per-shard pickle. The missing-shard check sees it
         # gone immediately and the launcher must resubmit a fresh SLURM array.
@@ -1237,6 +1270,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that test_10 (local backend) already wrote so that a silent
         # no-op in the SLURM path would cause compare_test_folders to fail rather than
@@ -1301,6 +1337,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Snapshot the submitit log-file set before the resume call; if the framework
         # correctly restores from backup, no new SLURM job is submitted and the set must be
@@ -1379,6 +1418,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # ---- Scenario (a): delete one per-shard pickle, force resubmission
         os.remove(shard_pickles[0])
@@ -1590,6 +1632,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # Remove the outputs that the local test_11 above already wrote so a silent no-op in
         # the SLURM path would cause the comparisons to fail rather than silently pass against
@@ -1781,6 +1826,9 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.parameters["slurm_timeout_min"] = 15
         mol_system.parameters["slurm_mem_gb"] = 2.0
         mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+        # keep the per-shard cache so the resume + restart tests in this chain have something
+        # to operate on; default behaviour wipes the cache after a successful assembly
+        mol_system.parameters["slurm_keep_shard_results"] = True
 
         # delete one per-shard pickle to force resubmission; the launcher's missing-shard
         # check immediately treats it as missing because the result file is the only artefact
