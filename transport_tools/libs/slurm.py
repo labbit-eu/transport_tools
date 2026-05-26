@@ -21,8 +21,11 @@
 # run_stage_on_slurm() handles fingerprint-based resumability, missing-shard discovery, submitit
 # submission, completion-order polling with per-shard runtime timeouts, and per-shard
 # cancellation. Concrete adapters in this module:
-#   * DistanceShardStage         - stage 4 (compute_tunnel_clusters_distances)
-#   * TunnelLayeringShardStage   - stage 3 (create_layered_description4tunnel_networks)
+#   * TunnelNetworksShardStage     - stage 2 (process_tunnel_networks)
+#   * TunnelLayeringShardStage     - stage 3 (create_layered_description4tunnel_networks)
+#   * DistanceShardStage           - stage 4 (compute_tunnel_clusters_distances)
+#   * AquaductLayeringShardStage   - stage 8 (create_layered_description4aquaduct_networks)
+#   * EventAssignmentShardStage    - stage 9 (assign_transport_events)
 #
 # Submission is handled by the optional 'submitit' package (an extra dependency); it is imported
 # lazily so that the rest of TransportTools installs and runs without it.
@@ -33,6 +36,8 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import os
 import json
+import pickle
+import tarfile
 import time
 import hashlib
 import numpy as np
@@ -46,9 +51,6 @@ logger = getLogger(__name__)
 # sized; only applied when the user did not set slurm_array_parallelism (which then governs
 # the shard count instead, regardless of whether it is larger or smaller than this default)
 _DEFAULT_MAX_AUTO_SHARDS = 200
-# filename recording the parameters a set of partial shard results was computed for
-_SHARDS_INFO_FILE = "shards_info.json"
-
 
 def submitit_available() -> bool:
     """
@@ -120,6 +122,197 @@ class SlurmShardStage(ABC):
     stage_name: str = "stage"
     #: SLURM job name (also the prefix of submitit's per-task log files)
     job_name: str = "tt_stage"
+
+    items_filename: str = "items.json"
+
+    #: subclasses with worker-side side-effect files (e.g. layering stages writing per-cluster
+    #: .py + nodes/*.pdb) set this to True. Toggles the resume-path side-effect validation in
+    #: `_missing_shards()`: when True, the launcher requires a per-shard manifest + tarball
+    #: backup and will try to restore side-effects from the backup before resubmitting any
+    #: shard whose visualisation files have been wiped between runs. Default False matches the
+    #: distance-shard backend whose workers produce nothing besides the result pickle.
+    has_side_effects: bool = False
+
+    @classmethod
+    def shard_manifest_path(cls, slurm_folder: str, shard_id: int) -> str:
+        """
+        Companion to `shard_result_path`: the per-shard "side-effects manifest" - a tiny JSON
+        file listing every on-disk side-effect (e.g. visualisation .py / .pdb files written by
+        the inner-Pool workers) the shard produced beyond its main result pickle. The default
+        layout is `<slurm_folder>/shard_result_<id>.manifest.json`; subclasses that don't want
+        the default companion-suffix can override.
+
+        Why it exists: the resume optimisation in `_missing_shards()` skips submitting a shard
+        whose result file is already on disk with a matching fingerprint. But for stages whose
+        workers also write side-effect files (e.g. layering writes per-cluster Pymol scripts +
+        per-layer node PDBs), those side-effects can be wiped by the user (clearing the output
+        folder) or by a test between runs while the result pickle stays in the SLURM cache.
+        Without a manifest, the resume optimisation would silently reuse a stale shard and the
+        side-effect files would never be regenerated. With a manifest, `_missing_shards()`
+        treats any shard with a missing side-effect file as missing and resubmits it.
+
+        Stages with no worker-side side-effects (e.g. the distance stage, whose workers only
+        return numbers) don't write a manifest and don't need to override anything; the
+        default `expected_side_effect_files()` returns an empty list and the resume check
+        validates only the result pickle, preserving the existing fast-path.
+        """
+
+        return os.path.join(slurm_folder, "shard_result_{:05d}.manifest.json".format(shard_id))
+
+    def expected_side_effect_files(self, parameters: dict, slurm_folder: str,
+                                   shard_id: int) -> Optional[List[str]]:
+        """
+        Hook reporting the per-shard side-effect files this shard is expected to have produced.
+        Default: `None` - no manifest is expected, resume check validates only the result
+        pickle (preserves the existing behaviour for stages without worker-side side-effects,
+        e.g. the distance stage).
+
+        A stage that has worker-side side-effects (e.g. visualisation files) overrides this
+        to return either an empty list (manifest is expected but stage's parameters mean no
+        side-effects produced for this run) or the list of files read from a per-shard
+        manifest written by `run_shard()`. The launcher's `_missing_shards()` uses this to
+        decide whether to invalidate a shard whose result pickle is present but whose
+        side-effect files have been wiped between runs.
+
+        :param parameters: job configuration parameters
+        :param slurm_folder: shared folder for this stage's SLURM execution
+        :param shard_id: 0-based ID of the shard whose side-effects are being checked
+        :return: list of absolute side-effect file paths the shard is expected to have
+                 written; `None` if this stage has no concept of side-effect files (don't
+                 perform the side-effect check at all)
+        """
+
+        return None
+
+    @classmethod
+    def write_shard_manifest(cls, slurm_folder: str, shard_id: int,
+                             side_effect_files: List[str]) -> None:
+        """
+        Atomically persist a shard's side-effect manifest to
+        `shard_manifest_path(slurm_folder, shard_id)` (write to `.tmp`, then os.replace). Called
+        by a stage's `run_shard()` after all its workers have completed but before the result
+        pickle is written, so that on resume the manifest is always at least as up-to-date as
+        the result pickle - never the other way round (which would risk a stale manifest
+        invalidating a fresh result).
+        """
+
+        manifest_path = cls.shard_manifest_path(slurm_folder, shard_id)
+        tmp_path = manifest_path + ".tmp"
+        with open(tmp_path, "w") as out_stream:
+            json.dump({"side_effect_files": list(side_effect_files)}, out_stream)
+        os.replace(tmp_path, manifest_path)
+
+    @classmethod
+    def read_shard_manifest(cls, slurm_folder: str, shard_id: int) -> Optional[List[str]]:
+        """
+        Read back the side-effect manifest written by `write_shard_manifest`. Returns the list
+        of side-effect file paths if the manifest is present and well-formed; returns `None` if
+        it's absent or unreadable (signal to the caller that the side-effect check cannot be
+        performed - typically meaning the shard was produced by a TT version that did not
+        write manifests, OR that the manifest was wiped along with the side-effects).
+        """
+
+        manifest_path = cls.shard_manifest_path(slurm_folder, shard_id)
+        if not os.path.exists(manifest_path):
+            return None
+        try:
+            with open(manifest_path) as in_stream:
+                data = json.load(in_stream)
+            return list(data["side_effect_files"])
+        except (json.JSONDecodeError, OSError, KeyError, TypeError):
+            return None
+
+    @classmethod
+    def shard_side_effects_archive_path(cls, slurm_folder: str, shard_id: int) -> str:
+        """
+        Path of the per-shard side-effects archive: a gzipped tarball that bundles all on-disk
+        side-effect files the shard produced (per-cluster .py scripts, per-layer node PDBs,
+        per-event exact-matching dumps, etc.). The archive serves as a local backup that
+        survives accidental wipes of the user-facing output folder. On resume, when the manifest
+        check finds any side-effect missing on disk, the launcher extracts the archive back to
+        original paths instead of resubmitting the shard - so the heavy per-cluster sklearn /
+        per-event trajectory work is not repeated.
+
+        Default layout: `<slurm_folder>/shard_result_<id>.side_effects.tar.gz`. Compressed
+        (text-heavy side-effects compress ~3-5x), atomically written with tmp + os.replace.
+        """
+
+        return os.path.join(slurm_folder,
+                            "shard_result_{:05d}.side_effects.tar.gz".format(shard_id))
+
+    @classmethod
+    def write_side_effects_archive(cls, slurm_folder: str, shard_id: int,
+                                   file_paths: List[str]) -> None:
+        """
+        Bundle the listed side-effect files into a per-shard tarball at
+        `shard_side_effects_archive_path()`. Each file is stored with its absolute path encoded
+        as the tar member name (leading `/` stripped) so `restore_side_effects_from_archive()`
+        can place the bytes back at exactly the same location later. Empty file_paths produces
+        an empty archive (so the missing-shard check always finds an artefact to inspect).
+
+        Atomic via tmp + os.replace: a partially-written archive is never visible to the
+        resume check.
+
+        :param slurm_folder: shared folder for this stage's SLURM execution
+        :param shard_id: 0-based shard ID
+        :param file_paths: list of absolute paths to side-effect files this shard produced;
+                           caller must ensure every path exists on disk at call time
+        """
+
+        archive_path = cls.shard_side_effects_archive_path(slurm_folder, shard_id)
+        tmp_path = archive_path + ".tmp"
+        with tarfile.open(tmp_path, "w:gz") as tar:
+            for path in file_paths:
+                # strip leading '/' so the tar member name is a relative path; restore adds it
+                # back. Using arcname (instead of the default which uses the absolute path
+                # verbatim) makes the tarball self-describing and portable across machines
+                # that share the same target tree structure.
+                tar.add(path, arcname=path.lstrip(os.sep))
+        os.replace(tmp_path, archive_path)
+
+    @classmethod
+    def restore_side_effects_from_archive(cls, slurm_folder: str, shard_id: int,
+                                          expected_files: List[str]) -> bool:
+        """
+        Extract the per-shard side-effects archive back to its original absolute paths so a
+        wiped output folder can be reconstructed WITHOUT re-running the heavy shard work
+        (per-cluster sklearn for layering; per-event trajectory scans for assignment).
+
+        :param slurm_folder: shared folder for this stage's SLURM execution
+        :param shard_id: 0-based shard ID
+        :param expected_files: list of absolute paths that the caller expects to be restored;
+                               returns False if any one of them is missing from the archive
+                               or fails to extract (caller should treat the shard as missing
+                               and resubmit)
+        :return: True if every entry in `expected_files` was successfully written back to its
+                 original path; False if anything went wrong (archive missing, corrupt, or
+                 missing an expected member). The caller can then invalidate the shard and
+                 fall back to resubmission.
+        """
+
+        archive_path = cls.shard_side_effects_archive_path(slurm_folder, shard_id)
+        if not os.path.exists(archive_path):
+            return False
+        expected_arcnames = {p.lstrip(os.sep) for p in expected_files}
+        try:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                members = {m.name: m for m in tar.getmembers() if m.isfile()}
+                if not expected_arcnames.issubset(members.keys()):
+                    return False
+                for path in expected_files:
+                    arcname = path.lstrip(os.sep)
+                    member = members[arcname]
+                    src = tar.extractfile(member)
+                    if src is None:
+                        return False
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    tmp_path = path + ".tmp.restore"
+                    with open(tmp_path, "wb") as out:
+                        out.write(src.read())
+                    os.replace(tmp_path, path)
+        except (tarfile.TarError, OSError):
+            return False
+        return True
 
     @classmethod
     def get_slurm_folder(cls, parameters: dict) -> str:
@@ -242,8 +435,12 @@ def _missing_shards(stage: SlurmShardStage, slurm_folder: str, num_shards: int,
     """
     Validate any partial shard results already present in the SLURM folder and report which
     shards still need to be computed. Partial results are reused only if they were produced for
-    the same fingerprint (same num_shards, same fingerprint_keys values, same TT version);
-    otherwise the stale result files are discarded so the calculation starts fresh.
+    the same fingerprint (same num_shards, same fingerprint_keys values, same TT version) AND
+    every side-effect file the shard was expected to produce (per its on-disk manifest) is
+    still present; otherwise the stale result files are discarded so the calculation starts
+    fresh. The side-effect check handles the case where the user (or a test) wipes an output
+    folder between runs without also clearing this SLURM cache - without it, the launcher
+    would silently reuse a stale shard and the wiped side-effects would never be regenerated.
     :param stage: the SLURM stage providing the fingerprint and result-path layout
     :param slurm_folder: shared folder used for this stage's SLURM execution
     :param num_shards: total number of shards
@@ -252,7 +449,8 @@ def _missing_shards(stage: SlurmShardStage, slurm_folder: str, num_shards: int,
     """
 
     info = stage.fingerprint(parameters, num_shards)
-    info_file = os.path.join(slurm_folder, _SHARDS_INFO_FILE)
+    # filename recording the parameters a set of partial shard results was computed for
+    info_file = os.path.join(slurm_folder, "partial_shards_info.json")
 
     previous_info = None
     if os.path.exists(info_file):
@@ -265,20 +463,81 @@ def _missing_shards(stage: SlurmShardStage, slurm_folder: str, num_shards: int,
     if previous_info != info:
         # absent or stale partial results - discard them and start a fresh calculation. Only
         # files that look like shard results are removed; user files dropped into the folder
-        # (e.g. submitit's own *.pkl / *_log files) are left alone.
-        existing_paths = {stage.shard_result_path(slurm_folder, sid) for sid in range(max(
-            num_shards, previous_info.get("num_shards", 0) if previous_info else 0))}
+        # (e.g. submitit's own *.pkl / *_log files) are left alone. Manifest + side-effects
+        # archive companions are cleaned up alongside their result pickles so a stale
+        # manifest can never outlive its result.
+        existing_paths: set = set()
+        for sid in range(max(num_shards,
+                             previous_info.get("num_shards", 0) if previous_info else 0)):
+            existing_paths.add(stage.shard_result_path(slurm_folder, sid))
+            existing_paths.add(stage.shard_manifest_path(slurm_folder, sid))
+            existing_paths.add(stage.shard_side_effects_archive_path(slurm_folder, sid))
         for path in existing_paths:
             if os.path.exists(path):
                 try:
                     os.remove(path)
                 except OSError as exc:
-                    logger.warning("Failed to remove stale shard result '%s': %s", path, exc)
+                    logger.warning("Failed to remove stale shard artefact '%s': %s", path, exc)
         with open(info_file, "w") as out_stream:
             json.dump(info, out_stream, indent=2)
 
-    return [sid for sid in range(num_shards)
-            if not os.path.exists(stage.shard_result_path(slurm_folder, sid))]
+    missing: List[int] = []
+    for sid in range(num_shards):
+        result_path = stage.shard_result_path(slurm_folder, sid)
+        if not os.path.exists(result_path):
+            missing.append(sid)
+            continue
+        # fast path for stages with no worker-side side-effects (distance stage, future
+        # numerical-only stages): result pickle existence is sufficient.
+        if not stage.has_side_effects:
+            continue
+        # side-effect check for layering / event-matching stages: validate manifest + on-disk
+        # side-effect files. When any side-effect is missing (typically: user wiped an output
+        # folder between runs), restore from the per-shard tar.gz backup so the heavy worker
+        # computation is NOT repeated. Only fall back to resubmission when both the backup
+        # and the manifest are unrecoverable.
+        expected = stage.expected_side_effect_files(parameters, slurm_folder, sid)
+        manifest_missing = expected is None
+        if manifest_missing:
+            logger.info("SLURM %s shard %d: manifest missing on a stage that tracks "
+                        "side-effects; cannot validate. Invalidating the cached pickle and "
+                        "resubmitting.", stage.stage_name, sid)
+            _invalidate_cached_shard(stage, slurm_folder, sid)
+            missing.append(sid)
+            continue
+        if any(not os.path.exists(p) for p in expected):
+            logger.info("SLURM %s shard %d: side-effect file(s) wiped from disk since the "
+                        "result was cached; restoring them from the per-shard backup archive.",
+                        stage.stage_name, sid)
+            restored = stage.restore_side_effects_from_archive(slurm_folder, sid, expected)
+            if restored:
+                logger.info("SLURM %s shard %d: side-effects restored from backup; skipping "
+                            "resubmission.", stage.stage_name, sid)
+                continue
+            logger.info("SLURM %s shard %d: side-effects backup missing or unusable; "
+                        "invalidating the cached pickle and resubmitting so the worker "
+                        "regenerates them.", stage.stage_name, sid)
+            _invalidate_cached_shard(stage, slurm_folder, sid)
+            missing.append(sid)
+    return missing
+
+
+def _invalidate_cached_shard(stage: SlurmShardStage, slurm_folder: str, shard_id: int) -> None:
+    """Remove a shard's cached artefacts (result pickle + manifest + side-effects archive) so
+    the next resume check sees the shard as missing and the launcher resubmits it. Centralised
+    so the cleanup paths in `_missing_shards()` (broken manifest, unrecoverable archive) stay
+    in sync as new artefact types are added in the future. Removal failures are logged but
+    not raised - the worst case is the next run re-removes a stale file."""
+
+    for stale in (stage.shard_result_path(slurm_folder, shard_id),
+                  stage.shard_manifest_path(slurm_folder, shard_id),
+                  stage.shard_side_effects_archive_path(slurm_folder, shard_id)):
+        if os.path.exists(stale):
+            try:
+                os.remove(stale)
+            except OSError as exc:
+                logger.warning("Failed to remove invalidated shard artefact '%s': %s",
+                               stale, exc)
 
 
 def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
@@ -494,9 +753,6 @@ class DistanceShardStage(SlurmShardStage):
 # Stage 3 adapter: TunnelLayeringShardStage
 # ---------------------------------------------------------------------------
 
-_TUNNEL_LAYERING_ITEMS_FILE = "items.json"
-
-
 class TunnelLayeringShardStage(SlurmShardStage):
     """
     Stage-3 adapter: distributes `create_layered_description4tunnel_networks` over a SLURM
@@ -517,6 +773,10 @@ class TunnelLayeringShardStage(SlurmShardStage):
     folder_name = "stage03_tunnel_layering"
     stage_name = "tunnel-layering"
     job_name = "tt_tunnel_layering"
+    # workers write per-cluster .py + per-layer node PDBs into the visualisation folder when
+    # visualize_layered_clusters=True; the SLURM helper backs these up to a sidecar tar.gz so
+    # they can be restored on resume without re-running the per-cluster sklearn stack
+    has_side_effects = True
     # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
     # Layering tasks have very variable per-task cost (sklearn DBSCAN/KMeans/IsolationForest/
     # hdbscan), so striding inside the shard plus 200/shard hits a reasonable load balance
@@ -525,7 +785,11 @@ class TunnelLayeringShardStage(SlurmShardStage):
     # parameters that affect tunnel-layering output: changing any of them invalidates the
     # already-computed shards. The items-list hash is added in `fingerprint()` so changes to
     # the upstream stage-2 orig_networks (different MD labels, different cluster counts) also
-    # invalidate stale shards.
+    # invalidate stale shards. `visualize_layered_clusters` is included because flipping it
+    # toggles whether the worker writes per-cluster .py + nodes/ side-effects: a cache built
+    # with visualize=False has an empty manifest and no tar.gz backup, so the side-effect
+    # resume path would trivially pass even though no side-effects exist - the fingerprint
+    # entry forces a full resubmission on the False→True transition.
     fingerprint_keys: Tuple[str, ...] = (
         "layer_thickness",
         "min_tunnel_radius4clustering",
@@ -534,6 +798,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
         "random_seed",
         "clustering_max_num_rep_frag",
         "use_cluster_spread",
+        "visualize_layered_clusters",
     )
 
     def __init__(self, items: List[Tuple[str, int]]):
@@ -575,7 +840,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
         runs are detected by the `items_hash` fingerprint key, not by trusting the file's age.
         """
 
-        items_file = os.path.join(slurm_folder, _TUNNEL_LAYERING_ITEMS_FILE)
+        items_file = os.path.join(slurm_folder, self.items_filename)
         tmp_file = items_file + ".tmp"
         with open(tmp_file, "w") as out_stream:
             json.dump(self.items, out_stream)
@@ -589,7 +854,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
         Returns a list of `[md_label, cls_id]` pairs (JSON tuples are deserialised as lists).
         """
 
-        items_file = os.path.join(slurm_folder, _TUNNEL_LAYERING_ITEMS_FILE)
+        items_file = os.path.join(slurm_folder, cls.items_filename)
         if not os.path.exists(items_file):
             raise FileNotFoundError(
                 "Tunnel-layering items file not found at '{}'. The SLURM launcher writes this "
@@ -597,3 +862,394 @@ class TunnelLayeringShardStage(SlurmShardStage):
                     items_file))
         with open(items_file) as in_stream:
             return json.load(in_stream)
+
+    def expected_side_effect_files(self, parameters: dict, slurm_folder: str,
+                                   shard_id: int) -> Optional[List[str]]:
+        """
+        Tunnel-layering worker writes a per-cluster `Cluster_<id>.py` PyMOL script (and a
+        `nodes/cls<NNN>_layer<X>_pts.pdb` family) into the visualisation folder when
+        `visualize_layered_clusters` is True. These are NOT in the result pickle - their data
+        is consumed inside the worker - so if a prior interrupted run left the result pickle
+        but the visualisation folder was wiped between runs, the resume optimisation would
+        silently skip regeneration. We track the canonical per-cluster `.py` file (one per
+        cluster_id this shard owns) in the manifest: if any one of them is missing, the
+        framework invalidates the cached pickle and resubmits the shard.
+
+        When `visualize_layered_clusters` is False, the shard has no worker side-effects and
+        we return an empty manifest (the read manifest will also be empty - both branches
+        validate trivially as "present").
+        """
+
+        if not parameters.get("visualize_layered_clusters", False):
+            return []
+        # Read the manifest written by `run_shard()`. If absent (older shard, or wiped
+        # together with the side-effects), return None to force resubmission.
+        return self.read_shard_manifest(slurm_folder, shard_id)
+
+    @classmethod
+    def derive_side_effect_paths(cls, parameters: dict,
+                                 cluster_results: List[Tuple[int, str, Any]]) -> List[str]:
+        """
+        Derive the list of per-cluster side-effect file paths from the shard's result tuples.
+        For every layered cluster `prep_visualization` writes two artefacts into
+        `<layered_caver_vis_path>/<md_label>/`:
+          * one PyMOL script at `Cluster_<id>.py` (deterministic name)
+          * a family of PDB files at `nodes/cls<NNN>-<layer_id>-<sub_cls_id>.pdb` (one per
+            sub-cluster of each layer; the count depends on the layering result)
+        We resolve the PDB family by globbing the `nodes/` folder with the cluster's
+        `visualization_prefix` ("cls<NNN>"); this runs on the SLURM compute node after every
+        worker has flushed its output, so the on-disk listing is authoritative. Empty
+        clusters (worker returned an empty LayeredPathSet) skip `prep_visualization` and
+        contribute nothing. Centralised here so the worker side and a future direct
+        validation path in tests stay consistent on the path convention.
+        """
+
+        import glob
+        paths: List[str] = []
+        for cls_id, md_label, layered_path_set in cluster_results:
+            if layered_path_set.is_empty():
+                continue  # empty clusters skip prep_visualization, so no side-effect file
+            md_folder = os.path.join(parameters["layered_caver_vis_path"], md_label)
+            paths.append(os.path.join(md_folder, "Cluster_{}.py".format(int(cls_id))))
+            # enumerate the per-layer node PDBs the worker wrote into nodes/ for this cluster
+            paths.extend(sorted(glob.glob(os.path.join(
+                md_folder, "nodes", "cls{:03d}-*.pdb".format(int(cls_id))))))
+        return paths
+
+
+# ---------------------------------------------------------------------------
+# Stage 8 adapter: AquaductLayeringShardStage
+# ---------------------------------------------------------------------------
+
+class AquaductLayeringShardStage(SlurmShardStage):
+    """
+    Stage-8 adapter: distributes `create_layered_description4aquaduct_networks` over a SLURM
+    array. Mirror of `TunnelLayeringShardStage` but with AQUA-DUCT transport events instead of
+    tunnel clusters as the work-item unit. Each shard takes a strided subset of the flat
+    (md_label, event_label) enumeration (so sklearn-heavy events balance across shards
+    regardless of their position in the enumeration) and writes a per-shard `.pkl` file
+    containing `[(event_label, md_label, LayeredPathSet), ...]`. The launcher streams shard
+    pickles back, buffers per md_label, and commits each md_label's layered entities in
+    original submission order so the saved `aqua_layered_network.dump` is byte-identical to
+    what the local backend produces.
+
+    The (md_label, event_label) enumeration is built once in the launcher (by walking the
+    aqua_orig_network.dump files from stage 7) and persisted to `<slurm_folder>/items.json`.
+    Each shard reads that single artifact instead of re-deriving the enumeration in every
+    shard process, so on a 200-shard run the aqua_orig_network files are not parsed 200 times
+    just to discover work-item ids.
+    """
+
+    folder_name = "stage08_aquaduct_layering"
+    stage_name = "aquaduct-layering"
+    job_name = "tt_aquaduct_layering"
+    # workers write per-event .py + per-layer node PDBs into the visualisation folder
+    # unconditionally; the SLURM helper backs these up to a sidecar tar.gz so they can be
+    # restored on resume without re-running the per-event sklearn stack
+    has_side_effects = True
+    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # Event-layering tasks have variable per-task cost (same sklearn stack as tunnel-layering:
+    # DBSCAN/KMeans/IsolationForest/hdbscan), so striding inside the shard plus 200/shard hits
+    # a reasonable load balance without inflating SLURM overhead.
+    target_items_per_shard = 200
+    # parameters that affect aquaduct-layering output for a fixed event set: changing any of
+    # them invalidates the already-computed shards. Upstream filters (event_min_distance,
+    # aquaduct_traced_residues_filter) are intentionally omitted - their effect is baked into
+    # the stage-7 orig_networks and reflected in `items_hash`, so changing them only
+    # invalidates stage-8 shards once the user reruns stage 7. `visualize_layered_events` is
+    # included for the same reason `visualize_layered_clusters` is on the tunnel-layering
+    # fingerprint: flipping it toggles whether the worker writes per-event .py / node-PDB
+    # side-effects, so a False→True transition would otherwise reuse a cache with no
+    # side-effect backup and the user would be left with an empty visualisation folder.
+    fingerprint_keys: Tuple[str, ...] = (
+        "layer_thickness",
+        "random_seed",
+        "clustering_max_num_rep_frag",
+        "use_cluster_spread",
+        "visualize_layered_events",
+    )
+
+    def __init__(self, items: List[Tuple[str, str]]):
+        # canonicalise to lists-of-lists so JSON round-trip yields the same hash (tuples
+        # serialise to lists, and json.load returns lists); also detaches the cached list
+        # from the caller's mutable state. event_label is a str like "thr_85_release", not
+        # an int - cast explicitly to keep the JSON shape stable even if callers pass in
+        # exotic string-like types.
+        self.items: List[List[Any]] = [[md, str(event)] for md, event in items]
+
+    def num_shards(self, parameters: dict) -> int:
+        num_shards = parameters["slurm_num_shards"]
+        n_items = len(self.items)
+        if num_shards is None:
+            num_shards = derive_num_shards(
+                n_items, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
+        return max(1, min(num_shards, max(n_items, 1)))
+
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.pkl".format(shard_id))
+
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        _config, mol_system = _rebuild_mol_system(config_file)
+        return mol_system.compute_aquaduct_layering_shard(num_shards, shard_id)
+
+    def fingerprint(self, parameters: dict, num_shards: int) -> dict:
+        info = super().fingerprint(parameters, num_shards)
+        info["num_items"] = len(self.items)
+        info["items_hash"] = hashlib.sha256(
+            json.dumps(self.items, sort_keys=False).encode("utf-8")).hexdigest()
+        return info
+
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Write the canonical (md_label, event_label) enumeration into the SLURM folder so every
+        shard can read its strided assignment from a single source. The launcher always
+        overwrites this file so it reflects the current run; stale enumerations from earlier
+        runs are detected by the `items_hash` fingerprint key, not by trusting the file's age.
+        """
+
+        items_file = os.path.join(slurm_folder, self.items_filename)
+        tmp_file = items_file + ".tmp"
+        with open(tmp_file, "w") as out_stream:
+            json.dump(self.items, out_stream)
+        os.replace(tmp_file, items_file)
+
+    @classmethod
+    def load_items(cls, slurm_folder: str) -> List[List[Any]]:
+        """
+        Read back the `(md_label, event_label)` enumeration that the launcher wrote via
+        `prepare_state()`. Called by each shard process at startup to recover its assignment.
+        Returns a list of `[md_label, event_label]` pairs (JSON tuples are deserialised as
+        lists).
+        """
+
+        items_file = os.path.join(slurm_folder, cls.items_filename)
+        if not os.path.exists(items_file):
+            raise FileNotFoundError(
+                "Aquaduct-layering items file not found at '{}'. The SLURM launcher writes "
+                "this via AquaductLayeringShardStage.prepare_state() before submitting "
+                "shards.".format(items_file))
+        with open(items_file) as in_stream:
+            return json.load(in_stream)
+
+    def expected_side_effect_files(self, parameters: dict, slurm_folder: str,
+                                   shard_id: int) -> Optional[List[str]]:
+        """
+        Aquaduct-layering worker writes per-event `<entity_label>.py` PyMOL scripts (and the
+        `nodes/<prefix>_layer<X>_pts.pdb` family) into the visualisation folder when
+        `visualize_layered_events` is True - that knob is passed through to
+        `LayeredRepresentationOfEvents.find_representative_paths()` as the `visualize` arg
+        and gates whether `prep_visualization()` is invoked. When the knob is False, no
+        worker side-effects are produced and we expect an empty manifest.
+
+        For the True case, the per-shard manifest written by `run_shard()` enumerates the
+        side-effect paths and we return that list. If the manifest is absent (older shard or
+        wiped together with the side-effects), we return None to force resubmission. See
+        `TunnelLayeringShardStage.expected_side_effect_files` for the broader rationale.
+        """
+
+        if not parameters.get("visualize_layered_events", False):
+            return []
+        return self.read_shard_manifest(slurm_folder, shard_id)
+
+    @classmethod
+    def derive_side_effect_paths(cls, parameters: dict,
+                                 event_results: List[Tuple[str, str, Any]]) -> List[str]:
+        """
+        Derive the list of per-event side-effect file paths from the shard's result tuples.
+        Mirrors `TunnelLayeringShardStage.derive_side_effect_paths`: every layered event
+        produces a PyMOL script at `<layered_aquaduct_vis_path>/<md_label>/<entity_label>.py`
+        plus a family of node PDBs at `nodes/<entity_label>-<layer_id>-<sub_cls_id>.pdb`
+        (count is data-dependent, so we glob the on-disk nodes folder using the per-event
+        prefix == `entity_label`). Empty events skip `prep_visualization` and contribute
+        nothing.
+        """
+
+        import glob
+        paths: List[str] = []
+        for event_label, md_label, layered_path_set in event_results:
+            if layered_path_set.is_empty():
+                continue  # empty events skip prep_visualization, so no side-effect file
+            md_folder = os.path.join(parameters["layered_aquaduct_vis_path"], md_label)
+            paths.append(os.path.join(md_folder, "{}.py".format(event_label)))
+            paths.extend(sorted(glob.glob(os.path.join(
+                md_folder, "nodes", "{}-*.pdb".format(event_label)))))
+        return paths
+
+
+# ---------------------------------------------------------------------------
+# Stage 9 adapter: EventAssignmentShardStage
+# ---------------------------------------------------------------------------
+
+
+class _HashingWriter:
+    """
+    Pickle-compatible binary stream wrapper that forwards every write to an underlying file
+    while updating a hashlib hasher. Used in EventAssignmentShardStage.prepare_state() to
+    compute the SHA-256 of state.pkl in one pass without holding the entire pickle in memory
+    or re-reading the bytes from (possibly NFS) disk afterwards. Implements only the
+    `write()` method; that's all `pickle.dump()` needs.
+    """
+
+    def __init__(self, stream, hasher):
+        self._stream = stream
+        self._hasher = hasher
+
+    def write(self, data):
+        self._hasher.update(data)
+        return self._stream.write(data)
+
+
+class EventAssignmentShardStage(SlurmShardStage):
+    """
+    Stage-9 adapter: distributes `assign_transport_events` over a SLURM array. Each shard takes
+    a strided subset of the flat (md_label, event_label) enumeration; the shard process loads
+    a launcher-prepared `state.pkl` (containing the supercluster dict + active filter set)
+    plus its strided assignment from `items.json`, runs the existing
+    `init_event_assigner_worker` / `assign_event_worker` over an inner spawn-Pool sized to
+    slurm_cpus_per_task, and writes its per-shard results as a single pickle. The launcher
+    streams shard pickles back and applies the assignment to `_super_clusters` /
+    `OutlierTransportEvents` in the original submission order so the produced state is
+    byte-identical to what the local backend yields.
+
+    Two artifacts are written by `prepare_state()` and consumed by every shard:
+      * `<slurm_folder>/items.json`  - the (md_label, event_label) enumeration
+      * `<slurm_folder>/state.pkl`   - pickle of (super_clusters, active_filters)
+    The state pickle is hashed (`state_hash` in the fingerprint) at write time using a
+    streaming `_HashingWriter` so a single pass produces both the on-disk artifact and the
+    fingerprint key - no double-memory copy and no extra read pass. A change to either the
+    superclusters or the filter set invalidates all stage-9 shards automatically; the
+    `items_hash` covers changes to the event set itself.
+    """
+
+    folder_name = "stage09_event_assignment"
+    stage_name = "event-assignment"
+    job_name = "tt_event_assignment"
+    # filename of the per-shard-state artifact that holds (super_clusters, active_filters);
+    # written by the launcher in `prepare_state()`, read by every shard in `load_state()`
+    state_filename: str = "state.pkl"
+    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # Per-event work is moderate (numpy + optional sklearn for exact matching); ~200 events
+    # per shard hits a reasonable load balance without inflating SLURM overhead.
+    target_items_per_shard = 200
+    # parameters that affect assignment output for a fixed (event set, supercluster set, filter
+    # set): changing any of them invalidates the already-computed shards. The state hash
+    # captures the superclusters + active filters (computed at write time in prepare_state);
+    # the items hash captures the event set.
+    fingerprint_keys: Tuple[str, ...] = (
+        "event_assignment_cutoff",
+        "ambiguous_event_assignment_resolution",
+        "perform_exact_matching_analysis",
+    )
+
+    def __init__(self, items: List[Tuple[str, str]], super_clusters: dict,
+                 active_filters: dict, pickle_protocol: int):
+        # canonicalise items to lists-of-lists so JSON round-trip yields the same hash;
+        # cast event_label to str explicitly so the items_hash is stable across exotic
+        # string-like callers
+        self.items: List[List[Any]] = [[md, str(event)] for md, event in items]
+        self._super_clusters = super_clusters
+        self._active_filters = active_filters
+        self._pickle_protocol = pickle_protocol
+        # populated by `prepare_state()` during the launcher pass before the fingerprint
+        # check; `fingerprint()` reads it
+        self._state_hash: Optional[str] = None
+
+    def num_shards(self, parameters: dict) -> int:
+        num_shards = parameters["slurm_num_shards"]
+        n_items = len(self.items)
+        if num_shards is None:
+            num_shards = derive_num_shards(
+                n_items, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
+        return max(1, min(num_shards, max(n_items, 1)))
+
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.pkl".format(shard_id))
+
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        _config, mol_system = _rebuild_mol_system(config_file)
+        return mol_system.compute_event_assignment_shard(num_shards, shard_id)
+
+    def fingerprint(self, parameters: dict, num_shards: int) -> dict:
+        if self._state_hash is None:
+            raise RuntimeError("EventAssignmentShardStage.fingerprint() was called before "
+                               "prepare_state(); the launcher must invoke prepare_state() so "
+                               "that state.pkl is written and its hash is available for the "
+                               "fingerprint check.")
+        info = super().fingerprint(parameters, num_shards)
+        info["num_items"] = len(self.items)
+        info["items_hash"] = hashlib.sha256(
+            json.dumps(self.items, sort_keys=False).encode("utf-8")).hexdigest()
+        info["state_hash"] = self._state_hash
+        return info
+
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Write the canonical (md_label, event_label) enumeration AND the state.pkl artifact
+        (containing the supercluster dict and the active filter set) into the SLURM folder,
+        so every shard reads from a single source instead of re-deriving them. The state
+        pickle is hashed in a single pass via `_HashingWriter` so `fingerprint()` can detect
+        upstream-state changes (re-run stages 5/6 with different inputs or different filter
+        set) without re-reading the file. Both writes use the tmp+rename pattern so a
+        partially-written artifact is never visible to the shards.
+        """
+
+        # 1) items.json (cheap; no streaming hash needed - items_hash is computed from the
+        #    same in-memory list whenever `fingerprint()` is called)
+        items_file = os.path.join(slurm_folder, self.items_filename)
+        tmp_items = items_file + ".tmp"
+        with open(tmp_items, "w") as out_stream:
+            json.dump(self.items, out_stream)
+        os.replace(tmp_items, items_file)
+
+        # 2) state.pkl (potentially hundreds of MB); stream-write + hash in one pass
+        state_file = os.path.join(slurm_folder, self.state_filename)
+        tmp_state = state_file + ".tmp"
+        hasher = hashlib.sha256()
+        with open(tmp_state, "wb") as out_stream:
+            pickle.dump((self._super_clusters, self._active_filters),
+                        _HashingWriter(out_stream, hasher),
+                        protocol=self._pickle_protocol)
+        os.replace(tmp_state, state_file)
+        self._state_hash = hasher.hexdigest()
+
+    @classmethod
+    def load_items(cls, slurm_folder: str) -> List[List[Any]]:
+        """
+        Read back the (md_label, event_label) enumeration that the launcher wrote via
+        `prepare_state()`. Called by each shard process at startup to recover its assignment.
+        Returns a list of `[md_label, event_label]` pairs (JSON tuples are deserialised as
+        lists).
+        """
+
+        items_file = os.path.join(slurm_folder, cls.items_filename)
+        if not os.path.exists(items_file):
+            raise FileNotFoundError(
+                "Event-assignment items file not found at '{}'. The SLURM launcher writes "
+                "this via EventAssignmentShardStage.prepare_state() before submitting "
+                "shards.".format(items_file))
+        with open(items_file) as in_stream:
+            return json.load(in_stream)
+
+    @classmethod
+    def load_state(cls, slurm_folder: str) -> Tuple[dict, dict]:
+        """
+        Read back the (super_clusters, active_filters) state pickle that the launcher wrote
+        via `prepare_state()`. Called once per shard process at startup; the returned
+        super_clusters dict + active_filters are injected into the shard's
+        `TransportProcesses` instance so `assign_event_worker` runs unchanged.
+        """
+
+        state_file = os.path.join(slurm_folder, cls.state_filename)
+        if not os.path.exists(state_file):
+            raise FileNotFoundError(
+                "Event-assignment state file not found at '{}'. The SLURM launcher writes "
+                "this via EventAssignmentShardStage.prepare_state() before submitting "
+                "shards.".format(state_file))
+        with open(state_file, "rb") as in_stream:
+            return pickle.load(in_stream)

@@ -123,6 +123,8 @@ class AnalysisConfig:
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
             "stage03_backend": None,  # stage-3 (create_layered_description4tunnel_networks) backend override; None => use compute_backend
             "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend
+            "stage08_backend": None,  # stage-8 (create_layered_description4aquaduct_networks) backend override; None => use compute_backend
+            "stage09_backend": None,  # stage-9 (assign_transport_events) backend override; None => use compute_backend
 
             # Shared SLURM submission parameters (apply to every stage that runs on SLURM)
             "slurm_partition": None,  # SLURM partition
@@ -248,6 +250,8 @@ class AnalysisConfig:
             "msms",
             "stage03_backend",
             "stage04_backend",
+            "stage08_backend",
+            "stage09_backend",
             "slurm_partition",
             "slurm_account",
             "slurm_num_shards",
@@ -338,6 +342,8 @@ class AnalysisConfig:
         self._stage_backend_keys: List[Tuple[str, str]] = [
             ("stage03_backend", "stage 3 / tunnel layering"),
             ("stage04_backend", "stage 4 / distance shards"),
+            ("stage08_backend", "stage 8 / aquaduct layering"),
+            ("stage09_backend", "stage 9 / event assignment"),
         ]
 
     def _load_configuration(self, path2configfile: str):

@@ -24,7 +24,7 @@ import os
 import pickle
 import numpy as np
 import fastcluster
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any, cast
 from scipy.cluster.hierarchy import fcluster
 from multiprocessing import Pool, get_context, parent_process
 from transport_tools.libs.config import AnalysisConfig
@@ -604,6 +604,8 @@ class TransportProcesses:
                     raise RuntimeError("Requested to use 'mdtraj' as 'trajectory_engine' but mdtraj "
                                        "package cannot be imported.")
                 topology = mdtraj.load_topology(trajectory.top)
+                assert topology is not None, \
+                    "mdtraj.load_topology returned None for {}".format(trajectory.top)
                 n_residues = topology.n_residues
                 for event_label, resname, resid in events:
                     if resid < 0:
@@ -676,71 +678,11 @@ class TransportProcesses:
             items2process = len(path_sets.keys())
 
             if items2process:
-                # assign transport events
-                logger.info("Assigning {:d} transport events to {:d} superclusters "
-                            "using {:d} {}:".format(items2process, self.enumerate_valid_super_clusters(),
-                                                    self.parameters["num_cpus"],
-                                                    process_count(self.parameters["num_cpus"])))
-                logger.debug(self._report_filters())
-
-                self._outlier_transport_events = OutlierTransportEvents(self.parameters)
-
-                num_cpus = self.parameters["num_cpus"]
-                with get_context("spawn").Pool(
-                        processes=num_cpus,
-                        initializer=init_event_assigner_worker,
-                        initargs=(self.parameters, self._super_clusters, self._active_filters,
-                                  num_cpus, num_cpus)) as pool:
-                    progressbar(0, items2process)
-                    tasks = [(event_specification, event_path_set)
-                             for event_specification, event_path_set in path_sets.items()]
-                    timeout = self.parameters["worker_task_timeout_s"]
-                    imap_iter = pool.imap_unordered(assign_event_worker, tasks)
-                    # Workers return (event_specification, ...); first element identifies the task.
-                    results_iter = utils.iter_imap_results(
-                        imap_iter, timeout=timeout, pool=pool, label="event-assignment",
-                        extract_task_label=lambda r: "{}/{}".format(r[0][0], r[0][1]))
-                    # imap_unordered yields in completion order, but add_transport_event() appends
-                    # to lists inside each SuperCluster and OutlierTransportEvents - the insertion
-                    # order is observable downstream (e.g. in the visualization scripts). Buffer
-                    # results during streaming, then apply them in submission order (= the order
-                    # of path_sets.keys()) so the produced state is stable regardless of worker
-                    # scheduling and matches the integration-test reference data.
-                    buffered_assignments: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
-                                               Tuple] = dict()
-                    for i, result in enumerate(results_iter):
-                        event_specification = result[0]
-                        buffered_assignments[event_specification] = result
-                        progressbar(i + 1, items2process)
-
-                    for event_specification in path_sets.keys():
-                        _, assigned_sc_ids, max_buriedness, max_depth = buffered_assignments[event_specification]
-                        md_label = event_specification[0]
-                        event_path_id, event_type = event_specification[1].split("_")[-2:]
-                        traced_event = event_specification[2]
-
-                        if assigned_sc_ids is None:
-                            logger.debug("Assigned transport event '{}' is not buried inside any supercluster"
-                                         " (the highest buried_ratio was {:.2f})".format(event_specification,
-                                                                                         max_buriedness))
-                            self._outlier_transport_events.add_transport_event(md_label, event_path_id, event_type,
-                                                                               traced_event)
-                        else:
-
-                            for assigned_sc_id in assigned_sc_ids:
-                                logger.debug("Assigned transport event '{}' is buried inside the supercluster '{:d}' "
-                                             "(buried_ratio = {:.2f}, "
-                                             "penetration depth = {:.2f})".format(event_specification, assigned_sc_id,
-                                                                                  max_buriedness, max_depth))
-
-                                md_label_assigned = self._super_clusters[assigned_sc_id].add_transport_event(md_label,
-                                                                                                             event_path_id,
-                                                                                                             event_type,
-                                                                                                             traced_event)
-                                if not md_label_assigned:
-                                    self._outlier_transport_events.add_transport_event(md_label, event_path_id,
-                                                                                       event_type, traced_event,
-                                                                                       globally_unassigned=False)
+                backend = self._resolve_stage_backend("stage09_backend")
+                if backend == "slurm":
+                    self._assign_transport_events_slurm(folders2process, path_sets)
+                else:
+                    self._assign_transport_events_local(path_sets)
 
                 self._events_assigned = True
 
@@ -756,6 +698,173 @@ class TransportProcesses:
             self._report_super_cluster_details("initial_super_cluster_events_details.txt")
             if self._outlier_transport_events.exist():
                 self._outlier_transport_events.report_events_details("outlier_transport_events_details.txt")
+
+    def _assign_transport_events_local(self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                                             "LayeredPathSet"]):
+        """
+        Local-backend body of `assign_transport_events`. Submits one task per event to a spawn
+        multiprocessing pool, then applies the assignments to `self._super_clusters` and the
+        outlier-event store in original submission order via `_apply_event_assignments`. Split
+        out from the public entry point so that the SLURM-backed counterpart can share the
+        post-streaming assembly logic.
+        """
+
+        items2process = len(path_sets)
+        logger.info("Assigning {:d} transport events to {:d} superclusters "
+                    "using {:d} {}:".format(items2process, self.enumerate_valid_super_clusters(),
+                                            self.parameters["num_cpus"],
+                                            process_count(self.parameters["num_cpus"])))
+        logger.debug(self._report_filters())
+
+        self._outlier_transport_events = OutlierTransportEvents(self.parameters)
+
+        num_cpus = self.parameters["num_cpus"]
+        with get_context("spawn").Pool(
+                processes=num_cpus,
+                initializer=init_event_assigner_worker,
+                initargs=(self.parameters, self._super_clusters, self._active_filters,
+                          num_cpus, num_cpus)) as pool:
+            progressbar(0, items2process)
+            tasks = [(event_specification, event_path_set)
+                     for event_specification, event_path_set in path_sets.items()]
+            timeout = self.parameters["worker_task_timeout_s"]
+            imap_iter = pool.imap_unordered(assign_event_worker, tasks)
+            # Workers return (event_specification, ...); first element identifies the task.
+            results_iter = utils.iter_imap_results(
+                imap_iter, timeout=timeout, pool=pool, label="event-assignment",
+                extract_task_label=lambda r: "{}/{}".format(r[0][0], r[0][1]))
+            # imap_unordered yields in completion order, but add_transport_event() appends
+            # to lists inside each SuperCluster and OutlierTransportEvents - the insertion
+            # order is observable downstream (e.g. in the visualization scripts). Buffer
+            # results during streaming, then apply them in submission order (= the order
+            # of path_sets.keys()) so the produced state is stable regardless of worker
+            # scheduling and matches the integration-test reference data.
+            buffered_assignments: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                       Tuple] = dict()
+            for i, result in enumerate(results_iter):
+                event_specification = result[0]
+                buffered_assignments[event_specification] = result
+                progressbar(i + 1, items2process)
+
+            self._apply_event_assignments(path_sets.keys(), buffered_assignments)
+
+    def _apply_event_assignments(self, ordered_event_specifications,
+                                 buffered_assignments: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                                            Tuple]):
+        """
+        Apply event-to-supercluster assignments to `self._super_clusters` and
+        `self._outlier_transport_events` in the original submission order. Shared by the
+        local and SLURM backends; both produce the same `buffered_assignments` dict (keyed
+        by event_specification) - the only difference is where the per-event work was run.
+        :param ordered_event_specifications: iterable of event_specifications in submission
+                                             order (= the order path_sets was assembled in)
+        :param buffered_assignments: map event_specification -> assigner result tuple
+                                     `(event_specification, assigned_sc_ids, max_buriedness,
+                                       max_depth)`
+        """
+
+        for event_specification in ordered_event_specifications:
+            _, assigned_sc_ids, max_buriedness, max_depth = buffered_assignments[event_specification]
+            md_label = event_specification[0]
+            event_path_id, event_type = event_specification[1].split("_")[-2:]
+            traced_event = event_specification[2]
+
+            if assigned_sc_ids is None:
+                logger.debug("Assigned transport event '{}' is not buried inside any supercluster"
+                             " (the highest buried_ratio was {:.2f})".format(event_specification,
+                                                                             max_buriedness))
+                self._outlier_transport_events.add_transport_event(md_label, event_path_id, event_type,
+                                                                   traced_event)
+            else:
+
+                for assigned_sc_id in assigned_sc_ids:
+                    logger.debug("Assigned transport event '{}' is buried inside the supercluster '{:d}' "
+                                 "(buried_ratio = {:.2f}, "
+                                 "penetration depth = {:.2f})".format(event_specification, assigned_sc_id,
+                                                                      max_buriedness, max_depth))
+
+                    md_label_assigned = self._super_clusters[assigned_sc_id].add_transport_event(md_label,
+                                                                                                 event_path_id,
+                                                                                                 event_type,
+                                                                                                 traced_event)
+                    if not md_label_assigned:
+                        self._outlier_transport_events.add_transport_event(md_label, event_path_id,
+                                                                           event_type, traced_event,
+                                                                           globally_unassigned=False)
+
+    def _assign_transport_events_slurm(self, folders2process: List[str],
+                                       path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                                       "LayeredPathSet"]):
+        """
+        SLURM-backed counterpart to `_assign_transport_events_local`. The launcher writes a
+        single `state.pkl` (containing `self._super_clusters` and `self._active_filters`)
+        alongside `items.json` (the `(md_label, event_label)` enumeration in submission order),
+        runs the SLURM array via `run_stage_on_slurm()`, then loads the per-shard pickles back
+        and applies the assignments via the shared `_apply_event_assignments` helper so the
+        produced state is byte-identical to what the local backend yields.
+
+        The shard process re-loads `state.pkl` once and `aqua_layered_network.dump` per
+        md_label (lazy, only for the md_labels its strided assignment actually touches), so
+        the launcher does NOT need to ship `path_sets` itself - the events are rebuilt from
+        disk inside each shard.
+
+        :param folders2process: list of MD-label folders to process (mirror of the local path)
+        :param path_sets: full per-event LayeredPathSet dict; here used only for the
+                          submission-order key list (shards rebuild the path-set data on disk)
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' stage-9 backend requires the analysis to be run "
+                               "from a configuration file - the SLURM compute nodes need it "
+                               "to rebuild the analysis state.")
+
+        items2process = len(path_sets)
+        logger.info("Assigning {:d} transport events to {:d} superclusters via SLURM array "
+                    "job:".format(items2process, self.enumerate_valid_super_clusters()))
+        logger.debug(self._report_filters())
+
+        self._outlier_transport_events = OutlierTransportEvents(self.parameters)
+
+        # 1) Enumerate (md_label, event_label) pairs in stable submission order (== path_sets
+        #    insertion order, which mirrors the local path).
+        items: List[Tuple[str, str]] = [(spec[0], spec[1]) for spec in path_sets.keys()]
+
+        # 2) Hand items + (super_clusters, active_filters) to the stage; run_stage_on_slurm
+        #    invokes `prepare_state()` (which writes items.json + state.pkl and computes the
+        #    state_hash fingerprint key), checks the fingerprint, and submits only the
+        #    missing shards.
+        stage = slurm.EventAssignmentShardStage(items, self._super_clusters, self._active_filters,
+                                                self.parameters["pickle_protocol"])
+        slurm_folder = stage.get_slurm_folder(self.parameters)
+        num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file,
+                                                             self.parameters)
+        if still_missing:
+            raise RuntimeError("SLURM event-assignment shard(s) {} did not produce results; "
+                               "inspect their logs in '{}'. {}/{} shard(s) completed - "
+                               "re-run stage 9 to resume from them.".format(
+                                   still_missing, slurm_folder,
+                                   num_shards - len(still_missing), num_shards))
+
+        # 3) Stream the per-shard pickles back. Each result is
+        #    `(event_specification, assigned_sc_ids, max_buriedness, max_depth)`; collect by
+        #    event_specification, then apply in original submission order so the produced
+        #    state matches the local backend byte-for-byte.
+        buffered_assignments: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]], Tuple] = dict()
+        for shard_id in range(num_shards):
+            with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
+                shard_results: List[Tuple] = pickle.load(in_stream)
+            for result in shard_results:
+                buffered_assignments[result[0]] = result
+
+        if len(buffered_assignments) != items2process:
+            raise RuntimeError("SLURM event-assignment shards returned {} unique result(s) but "
+                               "the launcher enumerated {} event(s); some shards likely failed "
+                               "silently. Inspect the shard logs in '{}'.".format(
+                                   len(buffered_assignments), items2process, slurm_folder))
+
+        self._apply_event_assignments(path_sets.keys(), buffered_assignments)
 
     def clear_results(self, overwrite: bool = False, output_folders: List[str] | None = None):
         """
@@ -1119,6 +1228,22 @@ class TransportProcesses:
                 done += 1
                 progressbar(done, n_jobs)
 
+        # persist the side-effects backup (per-cluster .py scripts + per-layer node PDBs) so
+        # a future resume hit with a wiped visualisation folder can restore them without
+        # re-running the per-cluster sklearn stack. Backup is written BEFORE the result
+        # pickle so the existence of the pickle implies the manifest + archive are present.
+        from transport_tools.libs.slurm import TunnelLayeringShardStage
+        if self.parameters["visualize_layered_clusters"]:
+            side_effects = TunnelLayeringShardStage.derive_side_effect_paths(
+                self.parameters, results)
+            TunnelLayeringShardStage.write_side_effects_archive(slurm_folder, shard_id,
+                                                                 side_effects)
+            TunnelLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
+        else:
+            # consistency: write an empty manifest so the resume check has a definitive
+            # answer ("no side-effects expected") rather than relying on a missing file
+            TunnelLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, [])
+
         self._write_tunnel_layering_shard_result(slurm_folder, shard_id, results)
         return len(results)
 
@@ -1134,6 +1259,224 @@ class TransportProcesses:
         from transport_tools.libs.slurm import TunnelLayeringShardStage
 
         out_file = TunnelLayeringShardStage.shard_result_path(slurm_folder, shard_id)
+        tmp_file = out_file + ".tmp.pkl"
+        with open(tmp_file, "wb") as out_stream:
+            pickle.dump(results, out_stream, protocol=self.parameters["pickle_protocol"])
+        os.replace(tmp_file, out_file)
+
+    def compute_aquaduct_layering_shard(self, num_shards: int, shard_id: int) -> int:
+        """
+        Compute one shard of the stage-8 aquaduct-layering work - the strided subset of the
+        (md_label, event_label) enumeration assigned to shard_id. Used by the SLURM stage-8
+        backend; executed on a SLURM compute node. Mirror of `compute_tunnel_layering_shard`
+        but for AQUA-DUCT transport events instead of tunnel clusters. The enumeration itself
+        was written by the launcher into <slurm_folder>/items.json; we read it from there
+        instead of re-deriving it from aqua_orig_network files (which would multiply per-shard
+        I/O by num_shards). For each (md_label, event_label) pair we own, we load the event
+        object from the corresponding aqua_orig_network.dump (aqua_orig_networks are loaded
+        once per md_label even when the shard touches many events from the same md_label),
+        run the existing `create_layered_event_worker` over an inner spawn-Pool sized to
+        slurm_cpus_per_task, and write the per-shard results as a single pickle. The launcher
+        concatenates the per-shard pickles and applies the same submission-order commit as
+        the local backend.
+        :param num_shards: total number of shards the layering is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :return: number of (md_label, event_label) pairs this shard layered
+        """
+
+        from transport_tools.libs.slurm import AquaductLayeringShardStage
+
+        slurm_folder = AquaductLayeringShardStage.get_slurm_folder(self.parameters)
+        all_items = AquaductLayeringShardStage.load_items(slurm_folder)
+
+        # strided assignment: shard i gets every Nth item from the enumeration. The
+        # enumeration was built in stable submission order by the launcher, so this slicing
+        # is deterministic across launcher + shard processes
+        my_items: List[List[Any]] = all_items[shard_id::num_shards]
+        if not my_items:
+            logger.info("SLURM aquaduct-layering shard %d/%d: nothing to do.",
+                        shard_id + 1, num_shards)
+            self._write_aquaduct_layering_shard_result(slurm_folder, shard_id, [])
+            return 0
+
+        # group by md_label so we load each aqua_orig_network.dump at most once even when the
+        # shard touches many events from the same MD simulation
+        events_by_md: Dict[str, set] = dict()
+        for md_label, event_label in my_items:
+            events_by_md.setdefault(md_label, set()).add(str(event_label))
+
+        events_to_layer: list = list()
+        for md_label, wanted_labels in events_by_md.items():
+            aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
+            aquanet.load_orig_network()
+            for event in aquanet.get_events4layering():
+                if event.entity_label in wanted_labels:
+                    events_to_layer.append(event)
+
+        n_jobs = len(events_to_layer)
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        logger.info("SLURM aquaduct-layering shard %d/%d: layering %d event(s) using %d %s.",
+                    shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
+
+        results: List[Tuple[str, str, LayeredPathSet]] = list()
+        done = 0
+        progressbar(done, n_jobs)
+
+        # 'spawn' inner pool with the BLAS thread cap - identical pattern to
+        # compute_tunnel_layering_shard / compute_distance_shard
+        with get_context("spawn").Pool(processes=num_cpus,
+                                       initializer=utils.cap_blas_threads_for_worker,
+                                       initargs=(num_cpus, num_cpus)) as pool:
+            timeout = self.parameters["worker_task_timeout_s"]
+            imap_iter = pool.imap_unordered(create_layered_event_worker, events_to_layer)
+            for result in utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool,
+                    label="layer-aquaduct-event (shard {})".format(shard_id),
+                    extract_task_label=lambda r: "{}/{}".format(r[1], r[0])):
+                results.append(result)
+                done += 1
+                progressbar(done, n_jobs)
+
+        # persist the side-effects backup (per-event .py scripts + per-layer node PDBs) so a
+        # future resume hit with a wiped visualisation folder can restore them without
+        # re-running the per-event sklearn stack. `visualize_layered_events` gates whether
+        # the worker called `prep_visualization()` - when False, no side-effects were
+        # produced and we write only an empty manifest (no archive needed) so the resume
+        # check has a definitive "nothing to validate" answer.
+        from transport_tools.libs.slurm import AquaductLayeringShardStage
+        if self.parameters["visualize_layered_events"]:
+            side_effects = AquaductLayeringShardStage.derive_side_effect_paths(
+                self.parameters, results)
+            AquaductLayeringShardStage.write_side_effects_archive(slurm_folder, shard_id,
+                                                                  side_effects)
+            AquaductLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
+        else:
+            AquaductLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, [])
+
+        self._write_aquaduct_layering_shard_result(slurm_folder, shard_id, results)
+        return len(results)
+
+    def _write_aquaduct_layering_shard_result(self, slurm_folder: str, shard_id: int,
+                                              results: List[Tuple[str, str, "LayeredPathSet"]]):
+        """
+        Atomically persist an aquaduct-layering shard's results to its per-shard pickle file
+        (write to `.tmp.pkl`, then os.replace). Used by `compute_aquaduct_layering_shard()`;
+        kept separate so the empty-shard fast path can reuse it without duplicating the
+        atomic-write idiom.
+        """
+
+        from transport_tools.libs.slurm import AquaductLayeringShardStage
+
+        out_file = AquaductLayeringShardStage.shard_result_path(slurm_folder, shard_id)
+        tmp_file = out_file + ".tmp.pkl"
+        with open(tmp_file, "wb") as out_stream:
+            pickle.dump(results, out_stream, protocol=self.parameters["pickle_protocol"])
+        os.replace(tmp_file, out_file)
+
+    def compute_event_assignment_shard(self, num_shards: int, shard_id: int) -> int:
+        """
+        Compute one shard of the stage-9 event-assignment work - the strided subset of the
+        (md_label, event_label) enumeration assigned to shard_id. Used by the SLURM stage-9
+        backend; executed on a SLURM compute node. The enumeration was written by the launcher
+        into <slurm_folder>/items.json; the supercluster dict + active filter set were written
+        into <slurm_folder>/state.pkl (so each shard does not have to re-derive them by
+        replaying stages 5/6). We load both at startup, inject the state into our
+        TransportProcesses instance, group our strided items by md_label (so each
+        aqua_layered_network.dump is loaded at most once per shard regardless of how many of
+        its events this shard owns), build per-event (event_specification, LayeredPathSet)
+        tasks for the events we own, run the existing `init_event_assigner_worker` /
+        `assign_event_worker` over an inner spawn-Pool sized to slurm_cpus_per_task, and write
+        the per-shard results as a single pickle. The launcher concatenates the per-shard
+        pickles and applies the assignments to its `_super_clusters` / OutlierTransportEvents
+        in original submission order via the shared `_apply_event_assignments` helper.
+        :param num_shards: total number of shards the assignment is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :return: number of events this shard assigned
+        """
+
+        from transport_tools.libs.slurm import EventAssignmentShardStage
+
+        slurm_folder = EventAssignmentShardStage.get_slurm_folder(self.parameters)
+        all_items = EventAssignmentShardStage.load_items(slurm_folder)
+        super_clusters, active_filters = EventAssignmentShardStage.load_state(slurm_folder)
+
+        # inject the launcher-prepared state so the local code-paths (assigner workers, the
+        # _validate_event_resids check) see the same superclusters and filters as the launcher
+        self._super_clusters = super_clusters
+        self._active_filters = active_filters
+
+        # strided assignment: shard i gets every Nth item from the enumeration. The
+        # enumeration was built in stable submission order by the launcher, so this slicing
+        # is deterministic across launcher + shard processes
+        my_items: List[List[Any]] = all_items[shard_id::num_shards]
+        if not my_items:
+            logger.info("SLURM event-assignment shard %d/%d: nothing to do.",
+                        shard_id + 1, num_shards)
+            self._write_event_assignment_shard_result(slurm_folder, shard_id, [])
+            return 0
+
+        # group by md_label so we load each aqua_layered_network.dump at most once even when
+        # the shard touches many events from the same MD simulation
+        events_by_md: Dict[str, set] = dict()
+        for md_label, event_label in my_items:
+            events_by_md.setdefault(md_label, set()).add(str(event_label))
+
+        # AquaductNetwork.layered_entities is shared with TunnelNetwork and typed as
+        # Dict[str | int, LayeredPathSet] with traced_event Optional; for events the keys are
+        # always str and traced_event is always set, so narrow via cast to match the strict
+        # signature of assign_event_worker (mirrors what the local-backend path implicitly does
+        # via _assign_transport_events_local's typed path_sets parameter).
+        tasks: List[Tuple[Tuple[str, str, Tuple[str, Tuple[int, int]]], "LayeredPathSet"]] = list()
+        for md_label, wanted_events in events_by_md.items():
+            aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
+            aquanet.load_layered_network()
+            for event_label, layered_path_set in aquanet.layered_entities.items():
+                if event_label in wanted_events:
+                    event_specification = cast(Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                               (md_label, event_label, layered_path_set.traced_event))
+                    tasks.append((event_specification, layered_path_set))
+
+        n_jobs = len(tasks)
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        logger.info("SLURM event-assignment shard %d/%d: assigning %d event(s) using %d %s.",
+                    shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
+
+        results: List[Tuple] = list()
+        done = 0
+        progressbar(done, n_jobs)
+
+        # 'spawn' inner pool with the shared event-assigner initializer - identical pattern to
+        # the local backend, with super_clusters + active_filters routed via the initializer
+        with get_context("spawn").Pool(
+                processes=num_cpus,
+                initializer=init_event_assigner_worker,
+                initargs=(self.parameters, self._super_clusters, self._active_filters,
+                          num_cpus, num_cpus)) as pool:
+            timeout = self.parameters["worker_task_timeout_s"]
+            imap_iter = pool.imap_unordered(assign_event_worker, tasks)
+            for result in utils.iter_imap_results(
+                    imap_iter, timeout=timeout, pool=pool,
+                    label="event-assignment (shard {})".format(shard_id),
+                    extract_task_label=lambda r: "{}/{}".format(r[0][0], r[0][1])):
+                results.append(result)
+                done += 1
+                progressbar(done, n_jobs)
+
+        self._write_event_assignment_shard_result(slurm_folder, shard_id, results)
+        return len(results)
+
+    def _write_event_assignment_shard_result(self, slurm_folder: str, shard_id: int,
+                                             results: List[Tuple]):
+        """
+        Atomically persist an event-assignment shard's results to its per-shard pickle file
+        (write to `.tmp.pkl`, then os.replace). Used by `compute_event_assignment_shard()`;
+        kept separate so the empty-shard fast path can reuse it without duplicating the
+        atomic-write idiom.
+        """
+
+        from transport_tools.libs.slurm import EventAssignmentShardStage
+
+        out_file = EventAssignmentShardStage.shard_result_path(slurm_folder, shard_id)
         tmp_file = out_file + ".tmp.pkl"
         with open(tmp_file, "wb") as out_stream:
             pickle.dump(results, out_stream, protocol=self.parameters["pickle_protocol"])
@@ -1651,6 +1994,11 @@ class TransportProcesses:
         Creates layered representation of AquaDuct networks for all MD simulations
         """
 
+        backend = self._resolve_stage_backend("stage08_backend")
+        if backend == "slurm":
+            self._create_layered_description4aquaduct_networks_slurm()
+            return
+
         with TimeProcess("Layering"):
             num_cpus = self.parameters["num_cpus"]
             with get_context("spawn").Pool(processes=num_cpus,
@@ -1720,6 +2068,110 @@ class TransportProcesses:
                         del buffered_layered_paths[md_label]
 
                     progressbar(i + 1, items2process)
+
+    def _create_layered_description4aquaduct_networks_slurm(self):
+        """
+        SLURM-backed counterpart to `create_layered_description4aquaduct_networks`. Mirror of
+        `_create_layered_description4tunnel_networks_slurm` for transport events. The launcher
+        enumerates the (md_label, event_label) pairs once (in the same submission order the
+        local backend uses), persists them to `<slurm_folder>/items.json` so every shard reads
+        a single artifact instead of re-deriving the enumeration from the
+        aqua_orig_network.dump files, runs the SLURM array via `run_stage_on_slurm()`, then
+        assembles the per-shard pickles into the same per-md_label `aqua_layered_network.dump`
+        artifacts the local backend produces (and the integration test compares byte-for-byte).
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' stage-8 backend requires the analysis to be run "
+                               "from a configuration file - the SLURM compute nodes need it "
+                               "to rebuild the analysis state.")
+
+        with TimeProcess("Layering"):
+            # 1) Enumerate (md_label, event_label) pairs in stable submission order.
+            #    Mirrors the local path's enumeration so produced artifacts are byte-identical.
+            items: List[Tuple[str, str]] = list()
+            event_ids2process4md_label: Dict[str, List[str]] = dict()
+            aqua_networks: Dict[str, AquaductNetwork] = dict()
+            for md_label in self.aquaduct_input_folders:
+                aqua_networks[md_label] = AquaductNetwork(self.parameters, md_label, load_only=True)
+
+            for md_label in self.aquaduct_input_folders:
+                aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
+                aquanet.load_orig_network()
+                event_ids2process4md_label[md_label] = list()
+                for event in aquanet.get_events4layering():
+                    items.append((md_label, str(event.entity_label)))
+                    event_ids2process4md_label[md_label].append(str(event.entity_label))
+
+            items2process = len(items)
+            if not items2process > 0:
+                raise RuntimeError("Not enough transport events are available to perform their layering")
+
+            logger.info("Computing layered representation for {:d} transport events via SLURM "
+                        "array job:".format(items2process))
+
+            # 2) Hand the enumeration to the stage; run_stage_on_slurm will write items.json
+            #    (prepare_state hook), check the fingerprint, submit only missing shards,
+            #    and poll in completion order.
+            stage = slurm.AquaductLayeringShardStage(items)
+            slurm_folder = stage.get_slurm_folder(self.parameters)
+            num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file,
+                                                                 self.parameters)
+            if still_missing:
+                raise RuntimeError("SLURM aquaduct-layering shard(s) {} did not produce results; "
+                                   "inspect their logs in '{}'. {}/{} shard(s) completed - "
+                                   "re-run stage 8 to resume from them.".format(
+                                       still_missing, slurm_folder,
+                                       num_shards - len(still_missing), num_shards))
+
+            # 3) Stream the per-shard pickles back. Each result is (event_label, md_label,
+            #    LayeredPathSet); buffer per md_label and commit in original submission order
+            #    so the saved aqua_layered_network.dump matches the local backend byte-for-byte.
+            buffered_layered_paths: Dict[str, Dict[str, LayeredPathSet]] = {
+                md: {} for md in self.aquaduct_input_folders}
+            empty_events: List[Tuple[str, str]] = list()
+            total_received = 0
+            for shard_id in range(num_shards):
+                with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
+                    shard_results: List[Tuple[str, str, LayeredPathSet]] = pickle.load(in_stream)
+                for event_id, md_label, layered_path_set in shard_results:
+                    total_received += 1
+                    if layered_path_set.is_empty():
+                        empty_events.append((md_label, event_id))
+                    else:
+                        buffered_layered_paths[md_label][event_id] = layered_path_set
+
+            if total_received != items2process:
+                raise RuntimeError("SLURM aquaduct-layering shards returned {} result(s) but the "
+                                   "launcher enumerated {} (md_label, event_label) pair(s); some "
+                                   "shards likely failed silently. Inspect the shard logs in "
+                                   "'{}'.".format(total_received, items2process, slurm_folder))
+
+            # report and drop empty events from the per-md_label order so the local-path
+            # save_layered_network() path sees the same list it would have seen locally
+            for md_label, event_id in empty_events:
+                logger.warning("Event {} of {} cannot be layered".format(event_id, md_label))
+                event_ids2process4md_label[md_label].remove(event_id)
+
+            # 4) Commit per md_label in submission order, save layered networks/visualisations.
+            #    Progress is reported per md_label (not per event) - events are already finished
+            #    at this point, and the heavy work that remains is the save_layered_network()
+            #    pickle dump + visualisation prep which have md_label granularity.
+            num_md = len(self.aquaduct_input_folders)
+            progressbar(0, num_md)
+            for i, md_label in enumerate(self.aquaduct_input_folders):
+                for event_id in event_ids2process4md_label[md_label]:
+                    aqua_networks[md_label].add_layered_entity(
+                        event_id, buffered_layered_paths[md_label][event_id])
+                logger.debug("Finished layering of network for '{}'.".format(md_label))
+                # always saving layered visualizations to enable visualization of assigned events later
+                aqua_networks[md_label].get_pdb_file()
+                aqua_networks[md_label].save_layered_visualization(self.parameters["visualize_layered_events"])
+                aqua_networks[md_label].save_layered_network()
+                aqua_networks[md_label].clean_tempfile()
+                progressbar(i + 1, num_md)
 
     def create_super_cluster_profiles(self):
         """

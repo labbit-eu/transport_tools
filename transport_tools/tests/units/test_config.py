@@ -737,6 +737,20 @@ class TestStageBackendResolution(unittest.TestCase):
         config.parameters = {"compute_backend": "local", "stage03_backend": "slurm"}
         self.assertEqual("slurm", config.resolve_stage_backend("stage03_backend"))
 
+    def test_stage08_knob_is_registered(self):
+        # adding AquaductLayeringShardStage required registering its backend knob in
+        # _stage_backend_keys; resolve_stage_backend must recognise it
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {"compute_backend": "local", "stage08_backend": "slurm"}
+        self.assertEqual("slurm", config.resolve_stage_backend("stage08_backend"))
+
+    def test_stage09_knob_is_registered(self):
+        # adding EventAssignmentShardStage required registering its backend knob in
+        # _stage_backend_keys; resolve_stage_backend must recognise it
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {"compute_backend": "local", "stage09_backend": "slurm"}
+        self.assertEqual("slurm", config.resolve_stage_backend("stage09_backend"))
+
 
 class TestSlurmRootFolderDefault(unittest.TestCase):
     """slurm_root_folder defaults to <internal_folder>/_slurm when unset."""
