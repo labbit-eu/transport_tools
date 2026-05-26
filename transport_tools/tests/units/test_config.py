@@ -730,6 +730,13 @@ class TestStageBackendResolution(unittest.TestCase):
         with self.assertRaises(KeyError):
             config.resolve_stage_backend("stage99_unknown_backend")
 
+    def test_stage02_knob_is_registered(self):
+        # adding TunnelNetworksShardStage required registering its backend knob in
+        # _stage_backend_keys; resolve_stage_backend must recognise it
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {"compute_backend": "local", "stage02_backend": "slurm"}
+        self.assertEqual("slurm", config.resolve_stage_backend("stage02_backend"))
+
     def test_stage03_knob_is_registered(self):
         # adding TunnelLayeringShardStage required registering its backend knob in
         # _stage_backend_keys; resolve_stage_backend must recognise it
@@ -743,6 +750,13 @@ class TestStageBackendResolution(unittest.TestCase):
         config = AnalysisConfig(file2load_from=None, logging=False)
         config.parameters = {"compute_backend": "local", "stage08_backend": "slurm"}
         self.assertEqual("slurm", config.resolve_stage_backend("stage08_backend"))
+
+    def test_stage07_knob_is_registered(self):
+        # adding AquaductNetworksShardStage required registering its backend knob in
+        # _stage_backend_keys; resolve_stage_backend must recognise it
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.parameters = {"compute_backend": "local", "stage07_backend": "slurm"}
+        self.assertEqual("slurm", config.resolve_stage_backend("stage07_backend"))
 
     def test_stage09_knob_is_registered(self):
         # adding EventAssignmentShardStage required registering its backend knob in

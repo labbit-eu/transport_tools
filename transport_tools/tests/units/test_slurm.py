@@ -31,10 +31,12 @@ import unittest
 
 from transport_tools.libs.slurm import (
     AquaductLayeringShardStage,
+    AquaductNetworksShardStage,
     DistanceShardStage,
     EventAssignmentShardStage,
     SlurmShardStage,
     TunnelLayeringShardStage,
+    TunnelNetworksShardStage,
     _missing_shards,
     derive_num_shards,
     submitit_available,
@@ -569,6 +571,409 @@ class TestTunnelLayeringShardStateRoundTrip(unittest.TestCase):
                          TunnelLayeringShardStage.load_items(self._tmp))
 
 
+class TestTunnelNetworksShardStageFolderLayout(unittest.TestCase):
+    """TunnelNetworksShardStage publishes its folder under slurm_root_folder."""
+
+    def test_folder_name_uses_stage_number(self):
+        # stage 2 in the tt_engine.py workflow (process_tunnel_networks)
+        self.assertEqual("stage02_tunnel_networks", TunnelNetworksShardStage.folder_name)
+
+    def test_get_slurm_folder_joins_root_and_folder_name(self):
+        path = TunnelNetworksShardStage.get_slurm_folder({"slurm_root_folder": "/scratch/run/_slurm"})
+        self.assertEqual("/scratch/run/_slurm/stage02_tunnel_networks", path)
+
+    def test_shard_result_path_is_pickle_extension(self):
+        # tunnel-networks shard result is a tiny pickled list of processed md_labels
+        path = TunnelNetworksShardStage.shard_result_path("/tmp/folder", 3)
+        self.assertEqual("/tmp/folder/shard_result_00003.pkl", path)
+
+    def test_does_not_collide_with_other_stage_folders(self):
+        # stage 2 sits alongside the other SLURM stages under the same slurm_root_folder;
+        # per-stage subfolders must be distinct so per-shard artefacts cannot clobber each
+        # other across stages
+        root = {"slurm_root_folder": "/scratch/run/_slurm"}
+        folders = {
+            TunnelNetworksShardStage.get_slurm_folder(root),
+            TunnelLayeringShardStage.get_slurm_folder(root),
+            DistanceShardStage.get_slurm_folder(root),
+            AquaductNetworksShardStage.get_slurm_folder(root),
+            AquaductLayeringShardStage.get_slurm_folder(root),
+            EventAssignmentShardStage.get_slurm_folder(root),
+        }
+        self.assertEqual(6, len(folders))
+
+
+class TestTunnelNetworksShardStageNumShards(unittest.TestCase):
+    """num_shards() honors user override, caps at item count, auto-derives at 50/shard."""
+
+    def _params(self, slurm_num_shards=None, slurm_array_parallelism=None):
+        return {
+            "slurm_num_shards": slurm_num_shards,
+            "slurm_array_parallelism": slurm_array_parallelism,
+        }
+
+    def test_empty_items_yields_single_shard(self):
+        stage = TunnelNetworksShardStage([])
+        self.assertEqual(1, stage.num_shards(self._params()))
+
+    def test_user_count_capped_at_item_count(self):
+        # 5 md_labels, asking for 100 shards is silly - cap to 5
+        stage = TunnelNetworksShardStage(["md{}".format(i) for i in range(5)])
+        self.assertEqual(5, stage.num_shards(self._params(slurm_num_shards=100)))
+
+    def test_auto_derives_at_50_per_shard(self):
+        # 150 md_labels / 50 per shard => 3 shards (tunnel-networks runs coarser than the
+        # layering stages since per-MD work is moderate rather than highly variable)
+        stage = TunnelNetworksShardStage(["md{}".format(i) for i in range(150)])
+        self.assertEqual(3, stage.num_shards(self._params()))
+
+    def test_array_parallelism_caps_auto_derived(self):
+        # 1000 items / 50 per shard would be 20 shards; cap to 2
+        stage = TunnelNetworksShardStage(["md{}".format(i) for i in range(1000)])
+        self.assertEqual(2, stage.num_shards(self._params(slurm_array_parallelism=2)))
+
+
+class TestTunnelNetworksShardStageFingerprint(unittest.TestCase):
+    """Fingerprint identifies the parameters AND the md_label enumeration."""
+
+    def _params(self, **overrides):
+        params = {
+            "caver_results_folder_pattern": "*",
+            "snapshots_per_simulation": 10,
+            "caver_traj_offset": 1,
+            "process_bottleneck_residues": False,
+            "visualize_transformed_tunnels": False,
+        }
+        params.update(overrides)
+        return params
+
+    def test_fingerprint_includes_items_hash_and_count(self):
+        stage = TunnelNetworksShardStage(["md1", "md2", "md3"])
+        info = stage.fingerprint(self._params(), num_shards=2)
+        self.assertEqual(3, info["num_items"])
+        self.assertEqual(64, len(info["items_hash"]))  # sha256 hex digest
+
+    def test_fingerprint_changes_when_items_differ(self):
+        stage1 = TunnelNetworksShardStage(["md1", "md2"])
+        stage2 = TunnelNetworksShardStage(["md1", "md3"])
+        self.assertNotEqual(stage1.fingerprint(self._params(), num_shards=2),
+                            stage2.fingerprint(self._params(), num_shards=2))
+
+    def test_fingerprint_changes_when_pattern_differs(self):
+        stage = TunnelNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(caver_results_folder_pattern="*"), num_shards=1)
+        fp2 = stage.fingerprint(self._params(caver_results_folder_pattern="md*"), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_changes_when_snapshots_per_simulation_differs(self):
+        stage = TunnelNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(snapshots_per_simulation=10), num_shards=1)
+        fp2 = stage.fingerprint(self._params(snapshots_per_simulation=20), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_changes_when_visualize_transformed_tunnels_flips(self):
+        # the fingerprint must invalidate the cache on a False->True transition so the resume
+        # path does not silently re-use a cache that has no visualisation side-effects backed
+        # up (the empty manifest would otherwise pass the resume check trivially)
+        stage = TunnelNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(visualize_transformed_tunnels=False), num_shards=1)
+        fp2 = stage.fingerprint(self._params(visualize_transformed_tunnels=True), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+
+class TestTunnelNetworksShardStateRoundTrip(unittest.TestCase):
+    """prepare_state writes items.json; load_items reads it back unchanged."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def test_prepare_state_writes_items_json(self):
+        items = ["md_alpha", "md_beta", "md_gamma"]
+        stage = TunnelNetworksShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        items_file = os.path.join(self._tmp, "items.json")
+        self.assertTrue(os.path.exists(items_file))
+
+    def test_load_items_returns_canonicalised_list(self):
+        items = ["md_alpha", "md_beta"]
+        stage = TunnelNetworksShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        loaded = TunnelNetworksShardStage.load_items(self._tmp)
+        # JSON round-trip keeps the order; consumers iterate as `for md_label in loaded`
+        self.assertEqual(["md_alpha", "md_beta"], loaded)
+
+    def test_load_items_missing_raises_with_diagnostic(self):
+        with self.assertRaises(FileNotFoundError) as cm:
+            TunnelNetworksShardStage.load_items(self._tmp)
+        # message must point at the missing file and explain who writes it
+        self.assertIn("items.json", str(cm.exception))
+        self.assertIn("prepare_state", str(cm.exception))
+
+    def test_prepare_state_overwrites_stale_items_atomically(self):
+        # writing must use a tmp+rename so a partially-written items.json is not visible
+        TunnelNetworksShardStage(["md_a"]).prepare_state({}, self._tmp)
+        TunnelNetworksShardStage(["md_b", "md_c"]).prepare_state({}, self._tmp)
+        self.assertEqual(["md_b", "md_c"],
+                         TunnelNetworksShardStage.load_items(self._tmp))
+
+
+class TestTunnelNetworksShardSideEffectPaths(unittest.TestCase):
+    """derive_side_effect_paths reports the per-md_label outputs the worker is expected to
+    write. Without visualisation, only the `<md>_caver.dump` files; with visualisation, also
+    the per-md visualisation folder contents."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def _params(self, visualize):
+        return {
+            "orig_caver_network_data_path": os.path.join(self._tmp, "internal"),
+            "orig_caver_vis_path": os.path.join(self._tmp, "vis"),
+            "visualize_transformed_tunnels": visualize,
+        }
+
+    def test_dump_only_when_visualization_disabled(self):
+        params = self._params(visualize=False)
+        paths = TunnelNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
+        # exactly one dump per md_label, no viz files
+        self.assertEqual([
+            os.path.join(params["orig_caver_network_data_path"], "md1_caver.dump"),
+            os.path.join(params["orig_caver_network_data_path"], "md2_caver.dump"),
+        ], paths)
+
+    def test_dump_plus_viz_files_when_visualization_enabled(self):
+        params = self._params(visualize=True)
+        # create the viz folder + one CGO file per md so the glob finds them
+        for md in ("md1", "md2"):
+            md_vis = os.path.join(params["orig_caver_vis_path"], md)
+            os.makedirs(md_vis)
+            for fname in ("{}_C_trans_rot.pdb".format(md), "view_network.py",
+                          "cls_001_cgo.dump.gz", "cls_002_cgo.dump.gz"):
+                open(os.path.join(md_vis, fname), "w").close()
+        paths = TunnelNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
+        # dump per md + transformed PDB + view_network.py + every *_cgo.dump.gz file
+        self.assertIn(os.path.join(params["orig_caver_network_data_path"], "md1_caver.dump"),
+                      paths)
+        self.assertIn(os.path.join(params["orig_caver_vis_path"], "md1",
+                                    "md1_C_trans_rot.pdb"), paths)
+        self.assertIn(os.path.join(params["orig_caver_vis_path"], "md1", "view_network.py"),
+                      paths)
+        self.assertIn(os.path.join(params["orig_caver_vis_path"], "md1",
+                                    "cls_001_cgo.dump.gz"), paths)
+        self.assertIn(os.path.join(params["orig_caver_vis_path"], "md2",
+                                    "cls_002_cgo.dump.gz"), paths)
+
+    def test_empty_md_list_yields_empty_paths(self):
+        paths = TunnelNetworksShardStage.derive_side_effect_paths(
+            self._params(visualize=True), [])
+        self.assertEqual([], paths)
+
+
+class TestAquaductNetworksShardStageFolderLayout(unittest.TestCase):
+    """AquaductNetworksShardStage publishes its folder under slurm_root_folder."""
+
+    def test_folder_name_uses_stage_number(self):
+        # stage 7 in the tt_engine.py workflow (process_aquaduct_networks)
+        self.assertEqual("stage07_aquaduct_networks",
+                         AquaductNetworksShardStage.folder_name)
+
+    def test_get_slurm_folder_joins_root_and_folder_name(self):
+        path = AquaductNetworksShardStage.get_slurm_folder(
+            {"slurm_root_folder": "/scratch/run/_slurm"})
+        self.assertEqual("/scratch/run/_slurm/stage07_aquaduct_networks", path)
+
+    def test_shard_result_path_is_pickle_extension(self):
+        # aquaduct-networks shard result is a tiny pickled list of processed md_labels
+        path = AquaductNetworksShardStage.shard_result_path("/tmp/folder", 3)
+        self.assertEqual("/tmp/folder/shard_result_00003.pkl", path)
+
+    def test_does_not_collide_with_tunnel_networks_folder(self):
+        # both per-MD network-preparation stages live under the same slurm_root_folder;
+        # their per-stage subfolders must be distinct so per-shard artefacts cannot clobber
+        # each other
+        root = {"slurm_root_folder": "/scratch/run/_slurm"}
+        self.assertNotEqual(
+            AquaductNetworksShardStage.get_slurm_folder(root),
+            TunnelNetworksShardStage.get_slurm_folder(root))
+
+
+class TestAquaductNetworksShardStageNumShards(unittest.TestCase):
+    """num_shards() honors user override, caps at item count, auto-derives at 50/shard."""
+
+    def _params(self, slurm_num_shards=None, slurm_array_parallelism=None):
+        return {
+            "slurm_num_shards": slurm_num_shards,
+            "slurm_array_parallelism": slurm_array_parallelism,
+        }
+
+    def test_empty_items_yields_single_shard(self):
+        stage = AquaductNetworksShardStage([])
+        self.assertEqual(1, stage.num_shards(self._params()))
+
+    def test_user_count_capped_at_item_count(self):
+        # 5 md_labels, asking for 100 shards is silly - cap to 5
+        stage = AquaductNetworksShardStage(["md{}".format(i) for i in range(5)])
+        self.assertEqual(5, stage.num_shards(self._params(slurm_num_shards=100)))
+
+    def test_auto_derives_at_50_per_shard(self):
+        # 150 md_labels / 50 per shard => 3 shards (matches tunnel-networks granularity:
+        # per-MD work is moderate, not highly variable)
+        stage = AquaductNetworksShardStage(["md{}".format(i) for i in range(150)])
+        self.assertEqual(3, stage.num_shards(self._params()))
+
+    def test_array_parallelism_caps_auto_derived(self):
+        # 1000 items / 50 per shard would be 20 shards; cap to 2
+        stage = AquaductNetworksShardStage(["md{}".format(i) for i in range(1000)])
+        self.assertEqual(2, stage.num_shards(self._params(slurm_array_parallelism=2)))
+
+
+class TestAquaductNetworksShardStageFingerprint(unittest.TestCase):
+    """Fingerprint identifies the parameters AND the md_label enumeration."""
+
+    def _params(self, **overrides):
+        params = {
+            "aquaduct_results_folder_pattern": "*",
+            "aquaduct_results_pdb_filename": "ref.pdb",
+            "aquaduct_results_relative_tarfile": "6_visualize_results.tar.gz",
+            "aquaduct_traced_residues_filter": None,
+            "event_min_distance": 1.0,
+            "aquaduct_allow_empty_folders": False,
+            "visualize_transformed_transport_events": False,
+        }
+        params.update(overrides)
+        return params
+
+    def test_fingerprint_includes_items_hash_and_count(self):
+        stage = AquaductNetworksShardStage(["md1", "md2", "md3"])
+        info = stage.fingerprint(self._params(), num_shards=2)
+        self.assertEqual(3, info["num_items"])
+        self.assertEqual(64, len(info["items_hash"]))  # sha256 hex digest
+
+    def test_fingerprint_changes_when_items_differ(self):
+        stage1 = AquaductNetworksShardStage(["md1", "md2"])
+        stage2 = AquaductNetworksShardStage(["md1", "md3"])
+        self.assertNotEqual(stage1.fingerprint(self._params(), num_shards=2),
+                            stage2.fingerprint(self._params(), num_shards=2))
+
+    def test_fingerprint_changes_when_pattern_differs(self):
+        stage = AquaductNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(aquaduct_results_folder_pattern="*"),
+                                 num_shards=1)
+        fp2 = stage.fingerprint(self._params(aquaduct_results_folder_pattern="md*"),
+                                 num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_changes_when_event_min_distance_differs(self):
+        stage = AquaductNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(event_min_distance=1.0), num_shards=1)
+        fp2 = stage.fingerprint(self._params(event_min_distance=2.0), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_changes_when_visualize_flag_flips(self):
+        # flipping visualize_transformed_transport_events must invalidate the cache so a
+        # False->True transition does not silently re-use a cache that has no visualisation
+        # side-effects backed up
+        stage = AquaductNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(
+            self._params(visualize_transformed_transport_events=False), num_shards=1)
+        fp2 = stage.fingerprint(
+            self._params(visualize_transformed_transport_events=True), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+
+class TestAquaductNetworksShardStateRoundTrip(unittest.TestCase):
+    """prepare_state writes items.json; load_items reads it back unchanged."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def test_prepare_state_writes_items_json(self):
+        items = ["md_alpha", "md_beta", "md_gamma"]
+        stage = AquaductNetworksShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        items_file = os.path.join(self._tmp, "items.json")
+        self.assertTrue(os.path.exists(items_file))
+
+    def test_load_items_returns_canonicalised_list(self):
+        items = ["md_alpha", "md_beta"]
+        stage = AquaductNetworksShardStage(items)
+        stage.prepare_state({}, self._tmp)
+        loaded = AquaductNetworksShardStage.load_items(self._tmp)
+        # JSON round-trip keeps the order; consumers iterate as `for md_label in loaded`
+        self.assertEqual(["md_alpha", "md_beta"], loaded)
+
+    def test_load_items_missing_raises_with_diagnostic(self):
+        with self.assertRaises(FileNotFoundError) as cm:
+            AquaductNetworksShardStage.load_items(self._tmp)
+        # message must point at the missing file and explain who writes it
+        self.assertIn("items.json", str(cm.exception))
+        self.assertIn("prepare_state", str(cm.exception))
+
+    def test_prepare_state_overwrites_stale_items_atomically(self):
+        # writing must use a tmp+rename so a partially-written items.json is not visible
+        AquaductNetworksShardStage(["md_a"]).prepare_state({}, self._tmp)
+        AquaductNetworksShardStage(["md_b", "md_c"]).prepare_state({}, self._tmp)
+        self.assertEqual(["md_b", "md_c"],
+                         AquaductNetworksShardStage.load_items(self._tmp))
+
+
+class TestAquaductNetworksShardSideEffectPaths(unittest.TestCase):
+    """derive_side_effect_paths reports the per-md_label outputs the worker is expected to
+    write. Without visualisation, only the `<md>_aqua.dump` files; with visualisation, also
+    the per-md visualisation folder contents (transformed PDB + view_network.py + every
+    `*_cgo.dump.gz`)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def _params(self, visualize):
+        return {
+            "orig_aquaduct_network_data_path": os.path.join(self._tmp, "internal"),
+            "orig_aquaduct_vis_path": os.path.join(self._tmp, "vis"),
+            "visualize_transformed_transport_events": visualize,
+        }
+
+    def test_dump_only_when_visualization_disabled(self):
+        params = self._params(visualize=False)
+        paths = AquaductNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
+        # exactly one dump per md_label, no viz files
+        self.assertEqual([
+            os.path.join(params["orig_aquaduct_network_data_path"], "md1_aqua.dump"),
+            os.path.join(params["orig_aquaduct_network_data_path"], "md2_aqua.dump"),
+        ], paths)
+
+    def test_dump_plus_viz_files_when_visualization_enabled(self):
+        params = self._params(visualize=True)
+        # create the viz folder + one CGO file per md so the glob finds them
+        for md in ("md1", "md2"):
+            md_vis = os.path.join(params["orig_aquaduct_vis_path"], md)
+            os.makedirs(md_vis)
+            for fname in ("{}_A_trans_rot.pdb".format(md), "view_network.py",
+                          "thr_85_release_cgo.dump.gz", "thr_85_entry_cgo.dump.gz"):
+                open(os.path.join(md_vis, fname), "w").close()
+        paths = AquaductNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
+        # dump per md + transformed PDB + view_network.py + every *_cgo.dump.gz file
+        self.assertIn(os.path.join(params["orig_aquaduct_network_data_path"], "md1_aqua.dump"),
+                      paths)
+        self.assertIn(os.path.join(params["orig_aquaduct_vis_path"], "md1",
+                                    "md1_A_trans_rot.pdb"), paths)
+        self.assertIn(os.path.join(params["orig_aquaduct_vis_path"], "md1", "view_network.py"),
+                      paths)
+        self.assertIn(os.path.join(params["orig_aquaduct_vis_path"], "md1",
+                                    "thr_85_release_cgo.dump.gz"), paths)
+        self.assertIn(os.path.join(params["orig_aquaduct_vis_path"], "md2",
+                                    "thr_85_entry_cgo.dump.gz"), paths)
+
+    def test_empty_md_list_yields_empty_paths(self):
+        paths = AquaductNetworksShardStage.derive_side_effect_paths(
+            self._params(visualize=True), [])
+        self.assertEqual([], paths)
+
+
 class TestAquaductLayeringShardStageFolderLayout(unittest.TestCase):
     """AquaductLayeringShardStage publishes its folder under slurm_root_folder."""
 
@@ -755,10 +1160,12 @@ class TestEventAssignmentShardStageFolderLayout(unittest.TestCase):
         folders = {
             EventAssignmentShardStage.get_slurm_folder(root),
             AquaductLayeringShardStage.get_slurm_folder(root),
+            AquaductNetworksShardStage.get_slurm_folder(root),
             TunnelLayeringShardStage.get_slurm_folder(root),
+            TunnelNetworksShardStage.get_slurm_folder(root),
             DistanceShardStage.get_slurm_folder(root),
         }
-        self.assertEqual(4, len(folders))
+        self.assertEqual(6, len(folders))
 
 
 class TestEventAssignmentShardStageNumShards(unittest.TestCase):

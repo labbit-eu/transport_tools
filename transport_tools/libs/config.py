@@ -121,8 +121,10 @@ class AnalysisConfig:
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
+            "stage02_backend": None,  # stage-2 (process_tunnel_networks) backend override; None => use compute_backend
             "stage03_backend": None,  # stage-3 (create_layered_description4tunnel_networks) backend override; None => use compute_backend
             "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend
+            "stage07_backend": None,  # stage-7 (process_aquaduct_networks) backend override; None => use compute_backend
             "stage08_backend": None,  # stage-8 (create_layered_description4aquaduct_networks) backend override; None => use compute_backend
             "stage09_backend": None,  # stage-9 (assign_transport_events) backend override; None => use compute_backend
 
@@ -248,8 +250,10 @@ class AnalysisConfig:
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
             "msms",
+            "stage02_backend",
             "stage03_backend",
             "stage04_backend",
+            "stage07_backend",
             "stage08_backend",
             "stage09_backend",
             "slurm_partition",
@@ -340,8 +344,10 @@ class AnalysisConfig:
         # a parameter declared above with default None. Add one row per SLURM-capable stage as
         # it lands; _validate_parameter_values() and resolve_stage_backend() walk this list.
         self._stage_backend_keys: List[Tuple[str, str]] = [
+            ("stage02_backend", "stage 2 / tunnel networks"),
             ("stage03_backend", "stage 3 / tunnel layering"),
             ("stage04_backend", "stage 4 / distance shards"),
+            ("stage07_backend", "stage 7 / aquaduct networks"),
             ("stage08_backend", "stage 8 / aquaduct layering"),
             ("stage09_backend", "stage 9 / event assignment"),
         ]

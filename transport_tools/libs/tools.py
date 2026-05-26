@@ -1708,6 +1708,11 @@ class TransportProcesses:
         Process tunnel networks for all MD simulations
         """
 
+        backend = self._resolve_stage_backend("stage02_backend")
+        if backend == "slurm":
+            self._process_tunnel_networks_slurm()
+            return
+
         logger.info("Processing {:d} tunnel networks "
                     "using {:d} {}:".format(len(self.caver_input_folders), self.parameters["num_cpus"],
                                             process_count(self.parameters["num_cpus"])))
@@ -1729,6 +1734,162 @@ class TransportProcesses:
                 timeout = self.parameters["worker_task_timeout_s"]
                 for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                     progressbar(i + 1, items2process)
+
+    def _process_tunnel_networks_slurm(self):
+        """
+        SLURM-backed counterpart to `process_tunnel_networks`. The launcher writes the
+        canonical md_label enumeration to `<slurm_folder>/items.json` via the stage's
+        `prepare_state()` hook, runs the SLURM array via `run_stage_on_slurm()`, then asserts
+        every md_label was processed. The per-shard pickle stored under the slurm folder is a
+        tiny JSON-shaped marker (the list of md_labels the shard handled); the real outputs -
+        the `<md_label>_caver.dump` files in `orig_caver_network_data_path` and, when
+        `visualize_transformed_tunnels` is True, the per-md visualisation folder - live in
+        the regular user-facing paths and are tracked as side-effects backed up to a per-shard
+        tar.gz so the resume path can restore a wiped output folder without re-reading CAVER.
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' stage-2 backend requires the analysis to be run "
+                               "from a configuration file - the SLURM compute nodes need it "
+                               "to rebuild the analysis state.")
+
+        logger.info("Processing {:d} tunnel networks via SLURM array job:".format(
+            len(self.caver_input_folders)))
+        logger.debug("The networks are read from sub-folders in '{}' folder that match the "
+                     "following pattern '{}'.".format(self.parameters["caver_results_path"],
+                                                      self.parameters["caver_results_folder_pattern"]))
+
+        with TimeProcess("Processing"):
+            items: List[str] = list(self.caver_input_folders)
+            stage = slurm.TunnelNetworksShardStage(items)
+            slurm_folder = stage.get_slurm_folder(self.parameters)
+            num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file,
+                                                                 self.parameters)
+            if still_missing:
+                raise RuntimeError("SLURM tunnel-networks shard(s) {} did not produce "
+                                   "results; inspect their logs in '{}'. {}/{} shard(s) "
+                                   "completed - re-run stage 2 to resume from them.".format(
+                                       still_missing, slurm_folder,
+                                       num_shards - len(still_missing), num_shards))
+
+            # Verify completeness: collect every md_label reported by the shards and assert
+            # the set matches the original enumeration. Catches the failure mode where a
+            # shard succeeded but silently processed a subset (e.g. a CAVER folder that
+            # vanished from the shared FS between submission and run); the dump-file
+            # side-effect manifest would still validate, so the explicit set check is what
+            # makes the launcher fail loudly here.
+            processed: List[str] = list()
+            for shard_id in range(num_shards):
+                with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
+                    processed.extend(pickle.load(in_stream))
+            expected = set(items)
+            actual = set(processed)
+            if actual != expected:
+                missing = sorted(expected - actual)
+                extra = sorted(actual - expected)
+                raise RuntimeError("SLURM tunnel-networks shards processed an unexpected set "
+                                   "of md_labels. Missing: {}. Unexpected: {}. Inspect the "
+                                   "shard logs in '{}'.".format(missing, extra, slurm_folder))
+
+    def compute_tunnel_networks_shard(self, num_shards: int, shard_id: int) -> int:
+        """
+        Compute one shard of the stage-2 tunnel-networks work - the strided subset of the
+        flat md_label enumeration assigned to shard_id. Used by the SLURM stage-2 backend;
+        executed on a SLURM compute node. The enumeration was written by the launcher into
+        `<slurm_folder>/items.json` (a list of md_label strings in original submission order);
+        we read it from there instead of re-deriving it via the config so every shard agrees
+        on which md_labels are owned by which shard. For each md_label we own, we run the
+        existing `_pre_process_single_tunnel_network` over an inner spawn-Pool sized to
+        `slurm_cpus_per_task` (CAVER parsing + numpy transformation per MD is moderate, so an
+        inner pool inside the shard amortises shard-startup costs across many md_labels), then
+        write the per-shard side-effects archive (`<md_label>_caver.dump` + optional viz
+        files) + manifest + result pickle (a tiny JSON-shaped list of processed md_labels).
+        :param num_shards: total number of shards the work is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :return: number of md_labels this shard processed
+        """
+
+        from transport_tools.libs.slurm import TunnelNetworksShardStage
+
+        slurm_folder = TunnelNetworksShardStage.get_slurm_folder(self.parameters)
+        all_items = TunnelNetworksShardStage.load_items(slurm_folder)
+
+        # strided assignment: shard i gets every Nth item from the enumeration. Identical
+        # pattern to the tunnel-layering / aquaduct-layering shards
+        my_items: List[str] = all_items[shard_id::num_shards]
+        if not my_items:
+            logger.info("SLURM tunnel-networks shard %d/%d: nothing to do.",
+                        shard_id + 1, num_shards)
+            TunnelNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, [])
+            self._write_tunnel_networks_shard_result(slurm_folder, shard_id, [])
+            return 0
+
+        n_jobs = len(my_items)
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        logger.info("SLURM tunnel-networks shard %d/%d: processing %d md_label(s) using %d %s.",
+                    shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
+
+        progressbar(0, n_jobs)
+        done = 0
+        processed_md_labels: List[str] = list()
+
+        # 'spawn' inner pool - identical pattern to compute_tunnel_layering_shard. The worker
+        # is a @staticmethod (already module-importable via the class) and takes only
+        # (md_label, parameters), so no special initializer is needed beyond the shared BLAS
+        # thread cap. iter_pool_results preserves submission order; the worker returns None,
+        # so we walk my_items in parallel with the iterator to record which md_label each
+        # finished result corresponds to.
+        with get_context("spawn").Pool(processes=num_cpus,
+                                       initializer=utils.cap_blas_threads_for_worker,
+                                       initargs=(num_cpus, num_cpus)) as pool:
+            timeout = self.parameters["worker_task_timeout_s"]
+            processing = list()
+            for md_label in my_items:
+                processing.append(("tunnel-network[{}]".format(md_label),
+                                   pool.apply_async(self._pre_process_single_tunnel_network,
+                                                    args=(md_label, self.parameters))))
+            for md_label, _result in zip(my_items,
+                                          utils.iter_pool_results(processing,
+                                                                   timeout=timeout, pool=pool)):
+                processed_md_labels.append(md_label)
+                done += 1
+                progressbar(done, n_jobs)
+
+        # Persist the side-effects backup (per-md dump + optional viz folder) BEFORE the
+        # result pickle so the existence of the pickle implies the manifest + archive are
+        # present. Mirrors the tunnel-layering shard's ordering. The dump files are always
+        # produced regardless of `visualize_transformed_tunnels`; the visualisation files are
+        # gated on the knob. derive_side_effect_paths() reflects both branches.
+        side_effects = TunnelNetworksShardStage.derive_side_effect_paths(
+            self.parameters, processed_md_labels)
+        TunnelNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id,
+                                                             side_effects)
+        TunnelNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
+
+        self._write_tunnel_networks_shard_result(slurm_folder, shard_id, processed_md_labels)
+        return len(processed_md_labels)
+
+    def _write_tunnel_networks_shard_result(self, slurm_folder: str, shard_id: int,
+                                            processed_md_labels: List[str]):
+        """
+        Atomically persist a tunnel-networks shard's results to its per-shard pickle file
+        (write to `.tmp.pkl`, then os.replace). The "result" here is just a list of md_labels
+        the shard processed - the real outputs (orig_network dumps + optional visualisations)
+        live under the user-facing internal/visualisation folders and are tracked as
+        side-effects. Kept separate so the empty-shard fast path can reuse it without
+        duplicating the atomic-write idiom.
+        """
+
+        from transport_tools.libs.slurm import TunnelNetworksShardStage
+
+        out_file = TunnelNetworksShardStage.shard_result_path(slurm_folder, shard_id)
+        tmp_file = out_file + ".tmp.pkl"
+        with open(tmp_file, "wb") as out_stream:
+            pickle.dump(list(processed_md_labels), out_stream,
+                        protocol=self.parameters["pickle_protocol"])
+        os.replace(tmp_file, out_file)
 
     def create_layered_description4tunnel_networks(self):
         """
@@ -1949,6 +2110,11 @@ class TransportProcesses:
         if not self.aquaduct_input_folders:
             raise RuntimeError("No data with AQUA-DUCT results were loaded to enable their analyses")
 
+        backend = self._resolve_stage_backend("stage07_backend")
+        if backend == "slurm":
+            self._process_aquaduct_networks_slurm()
+            return
+
         items2process = len(self.aquaduct_input_folders)
         logger.info("Processing {:d} AQUA-DUCT networks "
                     "using {:d} {}:".format(items2process, self.parameters["num_cpus"],
@@ -1988,6 +2154,173 @@ class TransportProcesses:
                     self._pre_process_single_aquaduct_network(md_label, self.parameters,
                                                               self.aquaduct_md_to_roots[md_label], True)
                     progressbar(i + 1, items2process)
+
+    def _process_aquaduct_networks_slurm(self):
+        """
+        SLURM-backed counterpart to `process_aquaduct_networks`. Mirror of
+        `_process_tunnel_networks_slurm` for the AQUA-DUCT side. The launcher writes the
+        canonical md_label enumeration to `<slurm_folder>/items.json` via the stage's
+        `prepare_state()` hook, runs the SLURM array via `run_stage_on_slurm()`, then asserts
+        every md_label was processed. The per-shard pickle stored under the slurm folder is a
+        tiny JSON-shaped marker (the list of md_labels the shard handled); the real outputs -
+        the `<md_label>_aqua.dump` files in `orig_aquaduct_network_data_path` and, when
+        `visualize_transformed_transport_events` is True, the per-md visualisation folder -
+        live in the regular user-facing paths and are tracked as side-effects backed up to a
+        per-shard tar.gz so the resume path can restore a wiped output folder without
+        re-extracting the AQUA-DUCT tarballs.
+        """
+
+        from transport_tools.libs import slurm
+
+        if self.config_file is None:
+            raise RuntimeError("The 'slurm' stage-7 backend requires the analysis to be run "
+                               "from a configuration file - the SLURM compute nodes need it "
+                               "to rebuild the analysis state.")
+
+        logger.info("Processing {:d} AQUA-DUCT networks via SLURM array job:".format(
+            len(self.aquaduct_input_folders)))
+        logger.debug("The networks are read from sub-folders matching pattern '{}' in: {}.".format(
+            self.parameters["aquaduct_results_folder_pattern"],
+            ", ".join(self.parameters["aquaduct_results_path"])))
+
+        with TimeProcess("Processing"):
+            items: List[str] = list(self.aquaduct_input_folders)
+            stage = slurm.AquaductNetworksShardStage(items)
+            slurm_folder = stage.get_slurm_folder(self.parameters)
+            num_shards, still_missing = slurm.run_stage_on_slurm(stage, self.config_file,
+                                                                 self.parameters)
+            if still_missing:
+                raise RuntimeError("SLURM aquaduct-networks shard(s) {} did not produce "
+                                   "results; inspect their logs in '{}'. {}/{} shard(s) "
+                                   "completed - re-run stage 7 to resume from them.".format(
+                                       still_missing, slurm_folder,
+                                       num_shards - len(still_missing), num_shards))
+
+            # Verify completeness: collect every md_label reported by the shards and assert
+            # the set matches the original enumeration. Catches the failure mode where a
+            # shard succeeded but silently processed a subset (e.g. an AQUA-DUCT folder that
+            # vanished from the shared FS between submission and run); the dump-file
+            # side-effect manifest would still validate, so the explicit set check is what
+            # makes the launcher fail loudly here.
+            processed: List[str] = list()
+            for shard_id in range(num_shards):
+                with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
+                    processed.extend(pickle.load(in_stream))
+            expected = set(items)
+            actual = set(processed)
+            if actual != expected:
+                missing = sorted(expected - actual)
+                extra = sorted(actual - expected)
+                raise RuntimeError("SLURM aquaduct-networks shards processed an unexpected "
+                                   "set of md_labels. Missing: {}. Unexpected: {}. Inspect "
+                                   "the shard logs in '{}'.".format(missing, extra,
+                                                                     slurm_folder))
+
+    def compute_aquaduct_networks_shard(self, num_shards: int, shard_id: int) -> int:
+        """
+        Compute one shard of the stage-7 aquaduct-networks work - the strided subset of the
+        flat md_label enumeration assigned to shard_id. Used by the SLURM stage-7 backend;
+        executed on a SLURM compute node. The enumeration was written by the launcher into
+        `<slurm_folder>/items.json` (a list of md_label strings in original submission order);
+        we read it from there instead of re-deriving it via the config so every shard agrees
+        on which md_labels are owned by which shard. For each md_label we own, we run the
+        existing `_pre_process_single_aquaduct_network` over an inner spawn-Pool sized to
+        `slurm_cpus_per_task` with `parallel_processing=False` so the inner raw-paths pool is
+        never spawned from a worker (the nested-pool guard at the top of
+        `_pre_process_single_aquaduct_network` would otherwise raise). Per-MD work
+        (tar.gz extraction + numpy transformation of every traced raw path) is moderate, so an
+        inner pool inside the shard amortises shard-startup costs across many md_labels. After
+        all workers complete, we write the per-shard side-effects archive (`<md_label>_aqua.dump`
+        + optional viz files) + manifest + result pickle (a tiny JSON-shaped list of processed
+        md_labels).
+        :param num_shards: total number of shards the work is split into
+        :param shard_id: 0-based ID of the shard to compute
+        :return: number of md_labels this shard processed
+        """
+
+        from transport_tools.libs.slurm import AquaductNetworksShardStage
+
+        slurm_folder = AquaductNetworksShardStage.get_slurm_folder(self.parameters)
+        all_items = AquaductNetworksShardStage.load_items(slurm_folder)
+
+        # strided assignment: shard i gets every Nth item from the enumeration. Identical
+        # pattern to the tunnel-networks / layering shards.
+        my_items: List[str] = all_items[shard_id::num_shards]
+        if not my_items:
+            logger.info("SLURM aquaduct-networks shard %d/%d: nothing to do.",
+                        shard_id + 1, num_shards)
+            AquaductNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, [])
+            AquaductNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id, [])
+            self._write_aquaduct_networks_shard_result(slurm_folder, shard_id, [])
+            return 0
+
+        n_jobs = len(my_items)
+        num_cpus = self.parameters["slurm_cpus_per_task"]
+        logger.info("SLURM aquaduct-networks shard %d/%d: processing %d md_label(s) using "
+                    "%d %s.", shard_id + 1, num_shards, n_jobs, num_cpus,
+                    process_count(num_cpus))
+
+        progressbar(0, n_jobs)
+        done = 0
+        processed_md_labels: List[str] = list()
+
+        # 'spawn' inner pool - identical pattern to compute_tunnel_networks_shard. We pass
+        # parallel_processing=False so the inner raw-paths pool inside
+        # _pre_process_single_aquaduct_network is NOT spawned from these worker processes -
+        # the nested-pool guard at the top of that function would otherwise raise. iter_pool_results
+        # preserves submission order; the worker returns None, so we walk my_items in parallel
+        # with the iterator to record which md_label each finished result corresponds to.
+        with get_context("spawn").Pool(processes=num_cpus,
+                                       initializer=utils.cap_blas_threads_for_worker,
+                                       initargs=(num_cpus, num_cpus)) as pool:
+            timeout = self.parameters["worker_task_timeout_s"]
+            tasks = [(md_label, self.parameters, self.aquaduct_md_to_roots[md_label], False)
+                     for md_label in my_items]
+            processing = list()
+            for md_label, task in zip(my_items, tasks):
+                processing.append(("aquaduct-network[{}]".format(md_label),
+                                   pool.apply_async(process_aquaduct_network_worker,
+                                                    args=(task,))))
+            for md_label, _result in zip(my_items,
+                                          utils.iter_pool_results(processing,
+                                                                   timeout=timeout, pool=pool)):
+                processed_md_labels.append(md_label)
+                done += 1
+                progressbar(done, n_jobs)
+
+        # Persist the side-effects backup (per-md dump + optional viz folder) BEFORE the
+        # result pickle so the existence of the pickle implies the manifest + archive are
+        # present. Mirrors the tunnel-networks shard's ordering. The dump files are always
+        # produced regardless of `visualize_transformed_transport_events`; the visualisation
+        # files are gated on the knob. derive_side_effect_paths() reflects both branches.
+        side_effects = AquaductNetworksShardStage.derive_side_effect_paths(
+            self.parameters, processed_md_labels)
+        AquaductNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id,
+                                                               side_effects)
+        AquaductNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
+
+        self._write_aquaduct_networks_shard_result(slurm_folder, shard_id, processed_md_labels)
+        return len(processed_md_labels)
+
+    def _write_aquaduct_networks_shard_result(self, slurm_folder: str, shard_id: int,
+                                              processed_md_labels: List[str]):
+        """
+        Atomically persist an aquaduct-networks shard's results to its per-shard pickle file
+        (write to `.tmp.pkl`, then os.replace). The "result" here is just a list of md_labels
+        the shard processed - the real outputs (orig_network dumps + optional visualisations)
+        live under the user-facing internal/visualisation folders and are tracked as
+        side-effects. Kept separate so the empty-shard fast path can reuse it without
+        duplicating the atomic-write idiom.
+        """
+
+        from transport_tools.libs.slurm import AquaductNetworksShardStage
+
+        out_file = AquaductNetworksShardStage.shard_result_path(slurm_folder, shard_id)
+        tmp_file = out_file + ".tmp.pkl"
+        with open(tmp_file, "wb") as out_stream:
+            pickle.dump(list(processed_md_labels), out_stream,
+                        protocol=self.parameters["pickle_protocol"])
+        os.replace(tmp_file, out_file)
 
     def create_layered_description4aquaduct_networks(self):
         """

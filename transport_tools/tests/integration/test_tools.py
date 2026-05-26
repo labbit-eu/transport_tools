@@ -47,7 +47,7 @@ class TestTransportProcesses(unittest.TestCase):
         cls.config = AnalysisConfig(os.path.join(cls.out_path, "config.ini"), logging=False)
         print(cls.config)
         cls.config.set_parameter("output_path", cls.out_path)
-        cls.config.set_parameter("slurm_poll_wait_seconds", 10)
+        cls.config.set_parameter("slurm_poll_wait_seconds", 1)
         os.makedirs(os.path.join(cls.out_path, "temp"), exist_ok=True)
 
     @classmethod
@@ -109,6 +109,242 @@ class TestTransportProcesses(unittest.TestCase):
                               os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
         save_checkpoint(mol_system, self._get_dumpfile(2), overwrite=True)
 
+    def test_02process_tunnel_networks_slurm(self):
+        """Same checks as test_02process_tunnel_networks, but is computed via the SLURM
+        backend (submitit). Runs only when a SLURM environment with submitit is detected."""
+        import shutil
+        import glob
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(1))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        # The SLURM shards rebuild the analysis from the config file, so it must carry an
+        # absolute output_path matching this test run (the shared test config uses a relative
+        # one) and the same slurm_root_folder as the launcher - kept outside the layered_data
+        # folders compared below.
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage02.ini")
+        with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
+                open(slurm_config, "w") as out_stream:
+            for line in in_stream:
+                if line.startswith("output_path"):
+                    line = "output_path = {}\n".format(self.out_path)
+                out_stream.write(line)
+                if line.strip() == "[CALCULATIONS_SETTINGS]":
+                    out_stream.write("slurm_root_folder = {}\n".format(slurm_root_folder))
+
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage02_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Remove the outputs that test_02 (local backend) already wrote so that a silent
+        # no-op in the SLURM path would cause compare_test_folders to fail rather than
+        # silently pass against stale local-backend files.
+        for _stale_dir in [
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"),
+        ]:
+            if os.path.isdir(_stale_dir):
+                shutil.rmtree(_stale_dir)
+
+        mol_system.process_tunnel_networks()
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
+
+    def test_02process_tunnel_networks_slurm_resume(self):
+        """Resume-path coverage for the stage-2 SLURM backend: after
+        test_02process_tunnel_networks_slurm has populated the slurm folder with per-shard pickles,
+        manifests, and side-effect tarballs, wipe the user-facing visualisation folder and
+        re-run process_tunnel_networks. The framework must restore the
+        wiped files from the per-shard tarball backups WITHOUT resubmitting any SLURM job
+        (which would re-run the per-cluster sklearn stack). Verified by:
+          1) the restored output matches the saved reference data byte-for-byte (same as the
+             primary slurm test)
+          2) submitit's per-task log files in the slurm folder do not grow (no new array job
+             was submitted)
+        Runs only when a SLURM environment with submitit is detected; depends on the primary
+        slurm test having run first to populate the cache.
+        """
+
+        import shutil
+        import glob
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(1))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage02.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage02_tunnel_networks")
+        shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
+        if not shard_pickles:
+            self.skipTest("primary stage-2 slurm test did not populate the cache")
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage02_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Snapshot the submitit log files before the resume call; if the framework correctly
+        # restores from backup, no new SLURM job is submitted and the set must be unchanged
+        # afterwards. Captures both *_log.out and *_log.err which submitit creates per task.
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        # Wipe the visualisation folder - the side-effect files live
+        # here; the framework must restore them from the per-shard tar.gz backups in
+        # slurm_root_folder/stage02_tunnel_networks/. Internal network_data folder is also
+        # wiped to ensure the launcher's assembly path also re-runs.
+        for _wipe_dir in [
+            os.path.join(self.out_path, "_internal", "network_data", "caver"),
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_tunnel_networks()
+        # 1) parity check: same comparisons as the primary slurm test - restored side-effects
+        #    must be byte-identical to the original outputs
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
+        
+        # 2) no-resubmission check: submitit log file set must be unchanged - any new files
+        #    would indicate a fresh array submission, which means the restore path did not
+        #    kick in. This is the strongest evidence of "reconstruction without rerun".
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+        self.assertEqual(logs_before, logs_after,
+                          msg="resume path should restore from backup without submitting a "
+                              "new SLURM array job; new submitit log files indicate a "
+                              "resubmission happened")        
+
+    def test_02process_tunnel_networks_slurm_restart(self):
+        """Restart-path coverage for the  stage-2 SLURM backend: companion to the resume test
+        above. Exercises the fallback path where the side-effects backup is ALSO unrecoverable
+        (or the per-shard pickle itself is missing), so the framework must invalidate the
+        cached shard and resubmit a fresh SLURM array job. Two scenarios are exercised:
+          a) per-shard pickle deleted - the missing-shard check immediately treats it as
+             missing and the launcher resubmits without even consulting the manifest.
+          b) side-effects tar.gz deleted + visualisation files wiped - the manifest is still
+             present so the resume check finds expected files missing, attempts restore,
+             fails (no archive), invalidates the cache, and resubmits.
+        Both scenarios end with a parity check against the saved reference output. Runs only
+        when a SLURM environment with submitit is detected and the primary slurm test has
+        populated the cache.
+        """
+
+        import shutil
+        import glob
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(1))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage02.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage02_tunnel_networks")
+        shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
+        if not shard_pickles:
+            self.skipTest("primary stage-2 slurm test did not populate the cache")
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage02_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # ---- Scenario (a): delete one per-shard pickle. The missing-shard check sees it
+        # gone immediately and the launcher must resubmit a fresh SLURM array.
+        os.remove(shard_pickles[0])
+
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        for _wipe_dir in [
+            os.path.join(self.out_path, "_internal", "network_data", "caver"),
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_tunnel_networks()
+
+        # parity: a fresh resubmission must produce the same output as the original run
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
+        
+        # logs grew: new submission happened (the resume path would have left logs unchanged)
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+        self.assertGreater(len(logs_after), len(logs_before),
+                            msg="restart scenario (a): deleting a per-shard pickle should "
+                                "force a SLURM resubmission, but the submitit log-file set "
+                                "did not grow")    
+
+        # ---- Scenario (b): delete the side-effects backup tar.gz for one shard, then wipe
+        # the visualisation folder. Manifest still indicates files are expected, but restore
+        # cannot find the archive, so the cache is invalidated and the shard is resubmitted.
+        from transport_tools.libs.slurm import TunnelNetworksShardStage
+        archive_path = TunnelNetworksShardStage.shard_side_effects_archive_path(stage_folder, 0)
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        for _wipe_dir in [
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_tunnel_networks()
+
+        # parity: a fresh resubmission must produce the same output as the original run
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
+        
+        # logs grew: new submission happened (the resume path would have left logs unchanged)
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        self.assertGreater(len(logs_after), len(logs_before),
+                            msg="restart scenario (b): deleting a side-effects archive + "
+                                "wiping the vis folder should force a SLURM resubmission, "
+                                "but the submitit log-file set did not grow")
+
+
     def test_03create_layered_description4tunnel_networks(self):
         try:
             mol_system = load_checkpoint(self._get_dumpfile(2))
@@ -151,7 +387,7 @@ class TestTransportProcesses(unittest.TestCase):
         # absolute output_path matching this test run (the shared test config uses a relative
         # one) and the same slurm_root_folder as the launcher - kept outside the layered_data
         # folders compared below.
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage03")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage03.ini")
         with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
                 open(slurm_config, "w") as out_stream:
@@ -226,8 +462,9 @@ class TestTransportProcesses(unittest.TestCase):
         # Re-use the same slurm folder + config as the primary slurm test so we hit the
         # populated cache. If the primary test did not run (e.g. SLURM was unavailable),
         # the cache is empty and there is nothing to validate here either.
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage03")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage03.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage03_tunnel_layering")
         shard_pickles = glob.glob(os.path.join(slurm_root_folder, "stage03_tunnel_layering",
                                                 "shard_result_*.pkl"))
         if not shard_pickles:
@@ -244,7 +481,6 @@ class TestTransportProcesses(unittest.TestCase):
         # Snapshot the submitit log files before the resume call; if the framework correctly
         # restores from backup, no new SLURM job is submitted and the set must be unchanged
         # afterwards. Captures both *_log.out and *_log.err which submitit creates per task.
-        stage_folder = os.path.join(slurm_root_folder, "stage03_tunnel_layering")
         logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
                        set(glob.glob(os.path.join(stage_folder, "*_log.err")))
 
@@ -315,7 +551,7 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage03")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage03.ini")
         stage_folder = os.path.join(slurm_root_folder, "stage03_tunnel_layering")
         shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
@@ -451,8 +687,8 @@ class TestTransportProcesses(unittest.TestCase):
         # the SLURM shards rebuild the analysis from the config file, so it must carry an absolute
         # output_path matching this test run (the shared test config uses a relative one) and the
         # same slurm_root_folder as the launcher - kept outside the clustering folder compared below
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards")
-        slurm_config = os.path.join(self.out_path, "config_slurm.ini")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage04.ini")
         with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
                 open(slurm_config, "w") as out_stream:
             for line in in_stream:
@@ -512,8 +748,8 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards")
-        slurm_config = os.path.join(self.out_path, "config_slurm.ini")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage04.ini")
         stage_folder = os.path.join(slurm_root_folder, "stage04_distances")
         shard_results = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.npy")))
         if not shard_results:
@@ -697,6 +933,247 @@ class TestTransportProcesses(unittest.TestCase):
 
         save_checkpoint(mol_system, self._get_dumpfile(9), overwrite=True)
 
+    def test_09process_aquaduct_networks_slurm(self):
+        """Same checks as test_09process_aquaduct_networks, but is computed via the SLURM
+        backend (submitit). Runs only when a SLURM environment with submitit is detected."""
+        import shutil
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(8))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        # The SLURM shards rebuild the analysis from the config file, so it must carry an
+        # absolute output_path matching this test run (the shared test config uses a relative
+        # one) and the same slurm_root_folder as the launcher - kept outside the network_data
+        # folders compared below.
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage07.ini")
+        with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
+                open(slurm_config, "w") as out_stream:
+            for line in in_stream:
+                if line.startswith("output_path"):
+                    line = "output_path = {}\n".format(self.out_path)
+                out_stream.write(line)
+                if line.strip() == "[CALCULATIONS_SETTINGS]":
+                    out_stream.write("slurm_root_folder = {}\n".format(slurm_root_folder))
+
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage07_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Remove the outputs that test_09 (local backend) already wrote so that a silent
+        # no-op in the SLURM path would cause compare_test_folders to fail rather than
+        # silently pass against stale local-backend files.
+        for _stale_dir in [
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct", "md1"),
+        ]:
+            if os.path.isdir(_stale_dir):
+                shutil.rmtree(_stale_dir)
+
+        mol_system.process_aquaduct_networks()
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"), self)
+
+    def test_09process_aquaduct_networks_slurm_resume(self):
+        """Resume-path coverage for the stage-7 SLURM backend: after
+        test_09process_aquaduct_networks_slurm has populated the slurm folder with per-shard
+        pickles, manifests, and side-effect tarballs, wipe the user-facing visualisation
+        folder and re-run process_aquaduct_networks. The framework must restore the wiped
+        files from the per-shard tarball backups WITHOUT resubmitting any SLURM job (which
+        would re-extract the AQUA-DUCT tarballs). Verified by:
+          1) the restored output matches the saved reference data byte-for-byte (same as the
+             primary slurm test)
+          2) submitit's per-task log files in the slurm folder do not grow (no new array job
+             was submitted)
+        Runs only when a SLURM environment with submitit is detected; depends on the primary
+        slurm test having run first to populate the cache.
+        """
+
+        import shutil
+        import glob
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(8))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage07.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage07_aquaduct_networks")
+        shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
+        if not shard_pickles:
+            self.skipTest("primary stage-7 slurm test did not populate the cache")
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage07_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # Snapshot the submitit log files before the resume call; if the framework correctly
+        # restores from backup, no new SLURM job is submitted and the set must be unchanged
+        # afterwards. Captures both *_log.out and *_log.err which submitit creates per task.
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        # Wipe the visualisation folder + internal network_data folder - the side-effect
+        # files live in both; the framework must restore them from the per-shard tar.gz
+        # backups in slurm_root_folder/stage07_aquaduct_networks/.
+        for _wipe_dir in [
+            os.path.join(self.out_path, "_internal", "network_data", "aquaduct"),
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_aquaduct_networks()
+        # 1) parity check: same comparisons as the primary slurm test - restored side-effects
+        #    must be byte-identical to the original outputs
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"), self)
+
+        # 2) no-resubmission check: submitit log file set must be unchanged - any new files
+        #    would indicate a fresh array submission, which means the restore path did not
+        #    kick in. This is the strongest evidence of "reconstruction without rerun".
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+        self.assertEqual(logs_before, logs_after,
+                          msg="resume path should restore from backup without submitting a "
+                              "new SLURM array job; new submitit log files indicate a "
+                              "resubmission happened")
+
+    def test_09process_aquaduct_networks_slurm_restart(self):
+        """Restart-path coverage for the stage-7 SLURM backend: companion to the resume test
+        above. Exercises the fallback path where the side-effects backup is ALSO unrecoverable
+        (or the per-shard pickle itself is missing), so the framework must invalidate the
+        cached shard and resubmit a fresh SLURM array job. Two scenarios are exercised:
+          a) per-shard pickle deleted - the missing-shard check immediately treats it as
+             missing and the launcher resubmits without even consulting the manifest.
+          b) side-effects tar.gz deleted + visualisation files wiped - the manifest is still
+             present so the resume check finds expected files missing, attempts restore,
+             fails (no archive), invalidates the cache, and resubmits.
+        Both scenarios end with a parity check against the saved reference output. Runs only
+        when a SLURM environment with submitit is detected and the primary slurm test has
+        populated the cache.
+        """
+
+        import shutil
+        import glob
+        from transport_tools.libs.slurm import submitit_available
+
+        if shutil.which("sbatch") is None:
+            self.skipTest("SLURM not available (sbatch not found)")
+        if not submitit_available():
+            self.skipTest("optional 'submitit' package not installed")
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(8))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
+        slurm_config = os.path.join(self.out_path, "config_slurm_stage07.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage07_aquaduct_networks")
+        shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
+        if not shard_pickles:
+            self.skipTest("primary stage-7 slurm test did not populate the cache")
+        mol_system.config_file = slurm_config
+
+        mol_system.parameters["stage07_backend"] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_timeout_min"] = 15
+        mol_system.parameters["slurm_mem_gb"] = 2.0
+        mol_system.parameters["slurm_root_folder"] = slurm_root_folder
+
+        # ---- Scenario (a): delete one per-shard pickle. The missing-shard check sees it
+        # gone immediately and the launcher must resubmit a fresh SLURM array.
+        os.remove(shard_pickles[0])
+
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        for _wipe_dir in [
+            os.path.join(self.out_path, "_internal", "network_data", "aquaduct"),
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_aquaduct_networks()
+
+        # parity: a fresh resubmission must produce the same output as the original run
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"), self)
+
+        # logs grew: new submission happened (the resume path would have left logs unchanged)
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+        self.assertGreater(len(logs_after), len(logs_before),
+                            msg="restart scenario (a): deleting a per-shard pickle should "
+                                "force a SLURM resubmission, but the submitit log-file set "
+                                "did not grow")
+
+        # ---- Scenario (b): delete the side-effects backup tar.gz for one shard, then wipe
+        # the visualisation folder. Manifest still indicates files are expected, but restore
+        # cannot find the archive, so the cache is invalidated and the shard is resubmitted.
+        from transport_tools.libs.slurm import AquaductNetworksShardStage
+        archive_path = AquaductNetworksShardStage.shard_side_effects_archive_path(
+            stage_folder, 0)
+        if os.path.exists(archive_path):
+            os.remove(archive_path)
+
+        logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                       set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+
+        for _wipe_dir in [
+            os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct", "md1"),
+        ]:
+            if os.path.isdir(_wipe_dir):
+                shutil.rmtree(_wipe_dir)
+
+        mol_system.process_aquaduct_networks()
+
+        # parity: a fresh resubmission must produce the same output as the original run
+        compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"),
+                              os.path.join(self.out_path, "visualization", "sources", "network_data", "aquaduct",
+                                           "md1"), self)
+
+        # logs grew: new submission happened (the resume path would have left logs unchanged)
+        logs_after = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
+                      set(glob.glob(os.path.join(stage_folder, "*_log.err")))
+        self.assertGreater(len(logs_after), len(logs_before),
+                            msg="restart scenario (b): deleting a side-effects archive + "
+                                "wiping the vis folder should force a SLURM resubmission, "
+                                "but the submitit log-file set did not grow")
+
     def test_10create_layered_description4aquaduct_networks(self):
         try:
             mol_system = load_checkpoint(self._get_dumpfile(9))
@@ -742,7 +1219,7 @@ class TestTransportProcesses(unittest.TestCase):
         # absolute output_path matching this test run (the shared test config uses a relative
         # one) and the same slurm_root_folder as the launcher - kept outside the layered_data
         # folders compared below.
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage08")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage08.ini")
         with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
                 open(slurm_config, "w") as out_stream:
@@ -809,8 +1286,9 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage08")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage08.ini")
+        stage_folder = os.path.join(slurm_root_folder, "stage08_aquaduct_layering")
         shard_pickles = glob.glob(os.path.join(slurm_root_folder, "stage08_aquaduct_layering",
                                                 "shard_result_*.pkl"))
         if not shard_pickles:
@@ -827,7 +1305,6 @@ class TestTransportProcesses(unittest.TestCase):
         # Snapshot the submitit log-file set before the resume call; if the framework
         # correctly restores from backup, no new SLURM job is submitted and the set must be
         # unchanged afterwards.
-        stage_folder = os.path.join(slurm_root_folder, "stage08_aquaduct_layering")
         logs_before = set(glob.glob(os.path.join(stage_folder, "*_log.out"))) | \
                        set(glob.glob(os.path.join(stage_folder, "*_log.err")))
 
@@ -888,7 +1365,7 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage08")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage08.ini")
         stage_folder = os.path.join(slurm_root_folder, "stage08_aquaduct_layering")
         shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))
@@ -1095,7 +1572,7 @@ class TestTransportProcesses(unittest.TestCase):
         # absolute output_path matching this test run (the shared test config uses a relative
         # one) and the same slurm_root_folder as the launcher - kept outside the super_clusters
         # folder compared below.
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage09")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage09.ini")
         with open(os.path.join(self.out_path, "config.ini")) as in_stream, \
                 open(slurm_config, "w") as out_stream:
@@ -1270,8 +1747,8 @@ class TestTransportProcesses(unittest.TestCase):
         byte-for-byte (verified via the two text dumps directly produced by
         assign_transport_events).
 
-        Note: stage 9 keeps `has_side_effects=False` for now - per the audit plan, manifest
-        support for `_exact_event_tunnel_matching` side-effect files is deferred until a
+        Note: stage 9 keeps `has_side_effects=False` for now - manifest support for 
+        `_exact_event_tunnel_matching` side-effect files is deferred until a
         user request surfaces. So no "resume from backup" path applies here; only the
         restart-by-missing-pickle path. Runs only when SLURM + submitit are available and
         the primary stage-9 slurm test has populated the cache.
@@ -1290,7 +1767,7 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        slurm_root_folder = os.path.join(self.out_path, "temp", "slurm_shards_stage09")
+        slurm_root_folder = os.path.join(self.out_path, "_slurm")
         slurm_config = os.path.join(self.out_path, "config_slurm_stage09.ini")
         stage_folder = os.path.join(slurm_root_folder, "stage09_event_assignment")
         shard_pickles = sorted(glob.glob(os.path.join(stage_folder, "shard_result_*.pkl")))

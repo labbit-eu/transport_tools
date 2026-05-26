@@ -24,6 +24,7 @@
 #   * TunnelNetworksShardStage     - stage 2 (process_tunnel_networks)
 #   * TunnelLayeringShardStage     - stage 3 (create_layered_description4tunnel_networks)
 #   * DistanceShardStage           - stage 4 (compute_tunnel_clusters_distances)
+#   * AquaductNetworksShardStage   - stage 7 (process_aquaduct_networks)
 #   * AquaductLayeringShardStage   - stage 8 (create_layered_description4aquaduct_networks)
 #   * EventAssignmentShardStage    - stage 9 (assign_transport_events)
 #
@@ -691,62 +692,186 @@ def _rebuild_mol_system(config_file: str):
 
 
 # ---------------------------------------------------------------------------
-# Stage 4 adapter: DistanceShardStage
+# Stage 2 adapter: TunnelNetworksShardStage
 # ---------------------------------------------------------------------------
 
 
-class DistanceShardStage(SlurmShardStage):
+class TunnelNetworksShardStage(SlurmShardStage):
     """
-    Stage-4 adapter: per-shard inter-cluster distance computation. The shard writes a compact
-    (K, 3) float64 array of (cluster1_id, cluster2_id, distance) rows; the launcher
-    concatenates them to assemble the condensed distance matrix.
+    Stage-2 adapter: distributes `process_tunnel_networks` over a SLURM array. Each shard takes
+    a strided subset of the flat list of MD labels (CAVER input folders) and runs
+    `_pre_process_single_tunnel_network` for every md_label it owns - reading the CAVER results
+    from the shared filesystem, applying the per-MD transformation matrix produced by stage 1,
+    and writing the per-md_label `<md_label>_caver.dump` into the shared internal folder. The
+    per-shard result pickle stored under `<slurm_folder>/` is a tiny JSON-shaped marker holding
+    the list of md_labels the shard processed (it lets the launcher assert completeness without
+    re-walking the user-facing folders); the real outputs live under
+    `orig_caver_network_data_path` (the `.dump` files) and, when `visualize_transformed_tunnels`
+    is True, under `orig_caver_vis_path/<md_label>/` (the transformed PDB plus per-cluster CGO
+    artefacts) - both tracked as side-effects backed up to a per-shard tar.gz so a wiped output
+    folder can be restored on resume without re-reading CAVER.
+
+    The md_label enumeration is built once in the launcher (`self.caver_input_folders` in the
+    submission-order locked by `AnalysisConfig.get_input_folders()`) and persisted to
+    `<slurm_folder>/items.json` so every shard reads its strided assignment from a single
+    artifact instead of re-deriving the enumeration.
     """
 
-    folder_name = "stage04_distances"
-    stage_name = "distance"
-    job_name = "tt_distances"
-    # heuristic granularity when auto-deriving the shard count: aim for ~20000 cluster pairs
-    # per shard (cluster-cluster comparisons are cheap individually but plentiful for large
-    # supercluster counts; smaller shards would inflate SLURM array overhead)
-    target_items_per_shard = 20000
-    # parameters that affect distance results: changing any of them invalidates the
-    # already-computed shards. num_clusters is added in `fingerprint()` from runtime state.
-    fingerprint_keys: Tuple[str, ...] = ("clustering_cutoff", "calculate_exact_path_distances")
+    folder_name = "stage02_tunnel_networks"
+    stage_name = "tunnel-networks"
+    job_name = "tt_tunnel_networks"
+    # workers write `<md_label>_caver.dump` to `orig_caver_network_data_path` AND, when
+    # visualize_transformed_tunnels=True, per-md_label visualisation files (transformed PDB +
+    # entity CGO pickles + view_network.py) to `orig_caver_vis_path/<md_label>/`. The SLURM
+    # helper backs these up to a sidecar tar.gz so they can be restored on resume without
+    # re-running the CAVER parsing.
+    has_side_effects = True
+    # heuristic granularity when auto-deriving the shard count:
+    # Per-MD work is moderate (CAVER
+    # parsing + numpy transformation + optional CGO serialisation), so 50/shard hits a
+    # reasonable load balance for studies with hundreds of MD sims without inflating SLURM
+    # array overhead.
+    target_items_per_shard = 50
+    # parameters that affect tunnel-networks output: changing any of them invalidates the
+    # already-computed shards. The items-list hash is added in `fingerprint()` so changes to
+    # the set of MD labels (different `caver_results_folder_pattern` matches) also invalidate
+    # stale shards. `visualize_transformed_tunnels` is included for the same reason
+    # `visualize_layered_clusters` is on stage 3: flipping it toggles whether the worker writes
+    # the per-md visualisation side-effects, so a False→True transition would otherwise reuse
+    # a cache with no side-effect backup and the user would be left with no visualisations.
+    fingerprint_keys: Tuple[str, ...] = (
+        "caver_results_folder_pattern",
+        "snapshots_per_simulation",
+        "caver_traj_offset",
+        "process_bottleneck_residues",
+        "visualize_transformed_tunnels",
+    )
 
-    def __init__(self, num_clusters: int):
-        self.num_clusters = num_clusters
-        self.n_jobs = (num_clusters ** 2 - num_clusters) // 2
+    def __init__(self, items: List[str]):
+        # canonicalise to a list of plain strings (detaches from caller's mutable state) so
+        # JSON round-trip yields the same hash
+        self.items: List[str] = [str(md) for md in items]
 
     def num_shards(self, parameters: dict) -> int:
         num_shards = parameters["slurm_num_shards"]
+        n_items = len(self.items)
         if num_shards is None:
             num_shards = derive_num_shards(
-                self.n_jobs, array_parallelism=parameters["slurm_array_parallelism"],
+                n_items, array_parallelism=parameters["slurm_array_parallelism"],
                 target_per_shard=self.target_items_per_shard)
-        return max(1, min(num_shards, self.n_jobs))
+        return max(1, min(num_shards, max(n_items, 1)))
 
     @classmethod
     def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
-        return os.path.join(slurm_folder, "shard_result_{:05d}.npy".format(shard_id))
+        return os.path.join(slurm_folder, "shard_result_{:05d}.pkl".format(shard_id))
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        config, mol_system = _rebuild_mol_system(config_file)
-        results = mol_system.compute_distance_shard(num_shards, shard_id)
-
-        # write the per-shard (K, 3) float64 array atomically (tmp + os.replace)
-        array = np.array(results, dtype=np.float64) if results \
-            else np.empty((0, 3), dtype=np.float64)
-        out_file = cls.shard_result_path(cls.get_slurm_folder(config.parameters), shard_id)
-        tmp_file = out_file + ".tmp.npy"
-        np.save(tmp_file, array)
-        os.replace(tmp_file, out_file)
-        return len(results)
+        _config, mol_system = _rebuild_mol_system(config_file)
+        return mol_system.compute_tunnel_networks_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
         info = super().fingerprint(parameters, num_shards)
-        info["num_clusters"] = self.num_clusters
+        info["num_items"] = len(self.items)
+        info["items_hash"] = hashlib.sha256(
+            json.dumps(self.items, sort_keys=False).encode("utf-8")).hexdigest()
         return info
+
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Write the canonical md_label enumeration into the SLURM folder so every shard reads
+        its strided assignment from a single source. The launcher always overwrites this file
+        so it reflects the current run; stale enumerations from earlier runs are detected by
+        the `items_hash` fingerprint key, not by trusting the file's age.
+        """
+
+        items_file = os.path.join(slurm_folder, self.items_filename)
+        tmp_file = items_file + ".tmp"
+        with open(tmp_file, "w") as out_stream:
+            json.dump(self.items, out_stream)
+        os.replace(tmp_file, items_file)
+
+    @classmethod
+    def load_items(cls, slurm_folder: str) -> List[str]:
+        """
+        Read back the md_label enumeration that the launcher wrote via `prepare_state()`.
+        Called by each shard process at startup to recover its assignment. Returns a list of
+        md_label strings in the original submission order.
+        """
+
+        items_file = os.path.join(slurm_folder, cls.items_filename)
+        if not os.path.exists(items_file):
+            raise FileNotFoundError(
+                "Tunnel-networks items file not found at '{}'. The SLURM launcher writes this "
+                "via TunnelNetworksShardStage.prepare_state() before submitting shards.".format(
+                    items_file))
+        with open(items_file) as in_stream:
+            return json.load(in_stream)
+
+    def expected_side_effect_files(self, parameters: dict, slurm_folder: str,
+                                   shard_id: int) -> Optional[List[str]]:
+        """
+        Tunnel-networks worker writes one `<md_label>_caver.dump` per md_label into
+        `orig_caver_network_data_path` and, when `visualize_transformed_tunnels` is True, a
+        per-md_label visualisation folder under `orig_caver_vis_path/<md_label>/` (transformed
+        PDB + view_network.py + entity CGO pickles). Both are NOT in the shard result pickle
+        (which is just a list of processed md_labels) - they live in the user-facing internal
+        / visualisation folders and can be wiped between runs without invalidating the SLURM
+        cache. We track every per-md side-effect path in the manifest written by `run_shard()`;
+        if any one of them is missing, the framework either restores from the per-shard tar.gz
+        backup or invalidates the cache and resubmits.
+
+        Unlike the layering stages, the dump file is part of the side-effects too (not just
+        the visualisation) - it lives outside the SLURM folder and is what the downstream
+        stages consume, so wiping it must be detected.
+        """
+
+        # When the manifest is missing (older shard, or wiped alongside the side-effects),
+        # return None to force resubmission. The dump files are always produced by the worker
+        # regardless of the visualize_* knob, so there is no "manifest expected to be empty"
+        # path here - every successful shard writes at least one dump file per md_label.
+        return self.read_shard_manifest(slurm_folder, shard_id)
+
+    @classmethod
+    def derive_side_effect_paths(cls, parameters: dict,
+                                 processed_md_labels: List[str]) -> List[str]:
+        """
+        Derive the list of per-md side-effect file paths from the shard's processed md_labels.
+        For every md_label the worker writes:
+          * `<orig_caver_network_data_path>/<md_label>_caver.dump` - the orig_network dump,
+            mandatory (consumed by downstream stages)
+          * `<orig_caver_vis_path>/<md_label>/<md_label>_C_trans_rot.pdb` - transformed PDB,
+            only when `visualize_transformed_tunnels` is True
+          * `<orig_caver_vis_path>/<md_label>/view_network.py` - PyMOL view script, only when
+            `visualize_transformed_tunnels` is True
+          * `<orig_caver_vis_path>/<md_label>/*.cgo.dump.gz` - per-entity CGO pickles, only
+            when `visualize_transformed_tunnels` is True (count is data-dependent, so we glob
+            the on-disk visualisation folder after every worker has flushed its output - this
+            method is called from the shard process on the SLURM compute node after the inner
+            Pool has finished, so the listing is authoritative)
+        Centralised here so the worker side and a future direct validation path in tests stay
+        consistent on the path convention.
+        """
+
+        import glob
+        paths: List[str] = []
+        visualize = bool(parameters.get("visualize_transformed_tunnels", False))
+        for md_label in processed_md_labels:
+            paths.append(os.path.join(parameters["orig_caver_network_data_path"],
+                                      "{}_caver.dump".format(md_label)))
+            if visualize:
+                md_vis_folder = os.path.join(parameters["orig_caver_vis_path"], md_label)
+                paths.append(os.path.join(md_vis_folder,
+                                          "{}_C_trans_rot.pdb".format(md_label)))
+                paths.append(os.path.join(md_vis_folder, "view_network.py"))
+                # per-entity CGO pickles: each TunnelCluster.save_cgo() writes
+                # `<entity_pymol_label>_cgo.dump.gz` into the md_vis_folder (see
+                # networks.py:648 - `vis_file = entity_pymol_label + "_cgo.dump.gz"`). Glob
+                # the folder rather than re-deriving entity_pymol_labels so the manifest
+                # matches whatever the worker actually wrote, regardless of how many tunnel
+                # clusters CAVER produced for this md_label.
+                paths.extend(sorted(glob.glob(os.path.join(md_vis_folder, "*_cgo.dump.gz"))))
+        return paths
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +902,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
     # visualize_layered_clusters=True; the SLURM helper backs these up to a sidecar tar.gz so
     # they can be restored on resume without re-running the per-cluster sklearn stack
     has_side_effects = True
-    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # heuristic granularity when auto-deriving the shard count:
     # Layering tasks have very variable per-task cost (sklearn DBSCAN/KMeans/IsolationForest/
     # hdbscan), so striding inside the shard plus 200/shard hits a reasonable load balance
     # without inflating SLURM overhead.
@@ -918,6 +1043,265 @@ class TunnelLayeringShardStage(SlurmShardStage):
 
 
 # ---------------------------------------------------------------------------
+# Stage 4 adapter: DistanceShardStage
+# ---------------------------------------------------------------------------
+
+
+class DistanceShardStage(SlurmShardStage):
+    """
+    Stage-4 adapter: per-shard inter-cluster distance computation. The shard writes a compact
+    (K, 3) float64 array of (cluster1_id, cluster2_id, distance) rows; the launcher
+    concatenates them to assemble the condensed distance matrix.
+    """
+
+    folder_name = "stage04_distances"
+    stage_name = "distance"
+    job_name = "tt_distances"
+    # heuristic granularity when auto-deriving the shard count: aim for ~20000 cluster pairs
+    # per shard (cluster-cluster comparisons are cheap individually but plentiful for large
+    # supercluster counts; smaller shards would inflate SLURM array overhead)
+    target_items_per_shard = 20000
+    # parameters that affect distance results: changing any of them invalidates the
+    # already-computed shards. num_clusters is added in `fingerprint()` from runtime state.
+    fingerprint_keys: Tuple[str, ...] = ("clustering_cutoff", "calculate_exact_path_distances")
+
+    def __init__(self, num_clusters: int):
+        self.num_clusters = num_clusters
+        self.n_jobs = (num_clusters ** 2 - num_clusters) // 2
+
+    def num_shards(self, parameters: dict) -> int:
+        num_shards = parameters["slurm_num_shards"]
+        if num_shards is None:
+            num_shards = derive_num_shards(
+                self.n_jobs, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
+        return max(1, min(num_shards, self.n_jobs))
+
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.npy".format(shard_id))
+
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        config, mol_system = _rebuild_mol_system(config_file)
+        results = mol_system.compute_distance_shard(num_shards, shard_id)
+
+        # write the per-shard (K, 3) float64 array atomically (tmp + os.replace)
+        array = np.array(results, dtype=np.float64) if results \
+            else np.empty((0, 3), dtype=np.float64)
+        out_file = cls.shard_result_path(cls.get_slurm_folder(config.parameters), shard_id)
+        tmp_file = out_file + ".tmp.npy"
+        np.save(tmp_file, array)
+        os.replace(tmp_file, out_file)
+        return len(results)
+
+    def fingerprint(self, parameters: dict, num_shards: int) -> dict:
+        info = super().fingerprint(parameters, num_shards)
+        info["num_clusters"] = self.num_clusters
+        return info
+
+
+# ---------------------------------------------------------------------------
+# Stage 7 adapter: AquaductNetworksShardStage
+# ---------------------------------------------------------------------------
+
+
+class AquaductNetworksShardStage(SlurmShardStage):
+    """
+    Stage-7 adapter: distributes `process_aquaduct_networks` over a SLURM array. Mirror of
+    `TunnelNetworksShardStage` but for AQUA-DUCT inputs. Each shard takes a strided subset of the
+    flat list of MD labels (AQUA-DUCT input folders) and runs
+    `_pre_process_single_aquaduct_network` for every md_label it owns - reading the tar.gz of
+    raw paths from the shared filesystem, applying the per-MD transformation matrix, and
+    writing the per-md_label `<md_label>_aqua.dump` into the shared internal folder. The
+    per-shard result pickle stored under `<slurm_folder>/` is a tiny JSON-shaped marker holding
+    the list of md_labels the shard processed (it lets the launcher assert completeness without
+    re-walking the user-facing folders); the real outputs live under
+    `orig_aquaduct_network_data_path` (the `.dump` files) and, when
+    `visualize_transformed_transport_events` is True, under
+    `orig_aquaduct_vis_path/<md_label>/` (the transformed PDB plus per-path CGO artefacts) -
+    both tracked as side-effects backed up to a per-shard tar.gz so a wiped output folder can
+    be restored on resume without re-extracting the AQUA-DUCT tarballs.
+
+    Nested-pool note: the local backend has TWO branches - when `_aquaduct_single_event_inputs`
+    is True (typical big-MD studies), it runs the per-MD work in an outer Pool with
+    `parallel_processing=False` to avoid nested pools; otherwise it runs sequentially with
+    `parallel_processing=True` so each MD's raw-path reading itself parallelises. The SLURM
+    backend always takes the outer-pool path - each shard runs its own per-MD pool with
+    `parallel_processing=False` - so the inner raw-paths pool is never spawned from a worker
+    process; this side-steps the nested-pool guard at the top of
+    `_pre_process_single_aquaduct_network` and lets the heavy I/O on the tar.gz file (which
+    dominates per-MD wall time) overlap across md_labels within each shard.
+
+    The md_label enumeration is built once in the launcher (`self.aquaduct_input_folders` in
+    the submission-order locked by `AnalysisConfig.get_input_folders()`) and persisted to
+    `<slurm_folder>/items.json` so every shard reads its strided assignment from a single
+    artifact instead of re-deriving the enumeration.
+    """
+
+    folder_name = "stage07_aquaduct_networks"
+    stage_name = "aquaduct-networks"
+    job_name = "tt_aquaduct_networks"
+    # workers write `<md_label>_aqua.dump` to `orig_aquaduct_network_data_path` AND, when
+    # visualize_transformed_transport_events=True, per-md_label visualisation files (transformed
+    # PDB + per-path CGO pickles + view_network.py) to `orig_aquaduct_vis_path/<md_label>/`. The
+    # SLURM helper backs these up to a sidecar tar.gz so they can be restored on resume without
+    # re-extracting the AQUA-DUCT tarballs.
+    has_side_effects = True
+    # heuristic granularity when auto-deriving the shard count:
+    # Per-MD work is moderate-to-heavy (tar.gz extraction + numpy transformation of every
+    # traced raw path + optional CGO serialisation). 50/shard hits a reasonable load balance
+    # for studies with hundreds of MD sims without inflating SLURM array overhead, matching
+    # the tunnel-networks granularity.
+    target_items_per_shard = 50
+    # parameters that affect aquaduct-networks output: changing any of them invalidates the
+    # already-computed shards. The items-list hash is added in `fingerprint()` so changes to
+    # the set of AQUA-DUCT input folders (different `aquaduct_results_folder_pattern` matches,
+    # or different `aquaduct_results_path` roots) also invalidate stale shards.
+    # `visualize_transformed_transport_events` is included for the same reason
+    # `visualize_transformed_tunnels` is on stage 2: flipping it toggles whether the worker
+    # writes the per-md visualisation side-effects, so a False->True transition would otherwise
+    # reuse a cache with no side-effect backup and the user would be left with no
+    # visualisations.
+    fingerprint_keys: Tuple[str, ...] = (
+        "aquaduct_results_folder_pattern",
+        "aquaduct_results_pdb_filename",
+        "aquaduct_results_relative_tarfile",
+        "aquaduct_traced_residues_filter",
+        "event_min_distance",
+        "aquaduct_allow_empty_folders",
+        "visualize_transformed_transport_events",
+    )
+
+    def __init__(self, items: List[str]):
+        # canonicalise to a list of plain strings (detaches from caller's mutable state) so
+        # JSON round-trip yields the same hash
+        self.items: List[str] = [str(md) for md in items]
+
+    def num_shards(self, parameters: dict) -> int:
+        num_shards = parameters["slurm_num_shards"]
+        n_items = len(self.items)
+        if num_shards is None:
+            num_shards = derive_num_shards(
+                n_items, array_parallelism=parameters["slurm_array_parallelism"],
+                target_per_shard=self.target_items_per_shard)
+        return max(1, min(num_shards, max(n_items, 1)))
+
+    @classmethod
+    def shard_result_path(cls, slurm_folder: str, shard_id: int) -> str:
+        return os.path.join(slurm_folder, "shard_result_{:05d}.pkl".format(shard_id))
+
+    @classmethod
+    def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
+        _config, mol_system = _rebuild_mol_system(config_file)
+        return mol_system.compute_aquaduct_networks_shard(num_shards, shard_id)
+
+    def fingerprint(self, parameters: dict, num_shards: int) -> dict:
+        info = super().fingerprint(parameters, num_shards)
+        info["num_items"] = len(self.items)
+        info["items_hash"] = hashlib.sha256(
+            json.dumps(self.items, sort_keys=False).encode("utf-8")).hexdigest()
+        return info
+
+    def prepare_state(self, parameters: dict, slurm_folder: str) -> None:
+        """
+        Write the canonical md_label enumeration into the SLURM folder so every shard reads
+        its strided assignment from a single source. The launcher always overwrites this file
+        so it reflects the current run; stale enumerations from earlier runs are detected by
+        the `items_hash` fingerprint key, not by trusting the file's age.
+        """
+
+        items_file = os.path.join(slurm_folder, self.items_filename)
+        tmp_file = items_file + ".tmp"
+        with open(tmp_file, "w") as out_stream:
+            json.dump(self.items, out_stream)
+        os.replace(tmp_file, items_file)
+
+    @classmethod
+    def load_items(cls, slurm_folder: str) -> List[str]:
+        """
+        Read back the md_label enumeration that the launcher wrote via `prepare_state()`.
+        Called by each shard process at startup to recover its assignment. Returns a list of
+        md_label strings in the original submission order.
+        """
+
+        items_file = os.path.join(slurm_folder, cls.items_filename)
+        if not os.path.exists(items_file):
+            raise FileNotFoundError(
+                "Aquaduct-networks items file not found at '{}'. The SLURM launcher writes "
+                "this via AquaductNetworksShardStage.prepare_state() before submitting "
+                "shards.".format(items_file))
+        with open(items_file) as in_stream:
+            return json.load(in_stream)
+
+    def expected_side_effect_files(self, parameters: dict, slurm_folder: str,
+                                   shard_id: int) -> Optional[List[str]]:
+        """
+        Aquaduct-networks worker writes one `<md_label>_aqua.dump` per md_label into
+        `orig_aquaduct_network_data_path` and, when `visualize_transformed_transport_events`
+        is True, a per-md_label visualisation folder under `orig_aquaduct_vis_path/<md_label>/`
+        (transformed PDB + view_network.py + per-path CGO pickles). Both are NOT in the shard
+        result pickle (which is just a list of processed md_labels) - they live in the
+        user-facing internal / visualisation folders and can be wiped between runs without
+        invalidating the SLURM cache. We track every per-md side-effect path in the manifest
+        written by `run_shard()`; if any one of them is missing, the framework either restores
+        from the per-shard tar.gz backup or invalidates the cache and resubmits.
+
+        Like the tunnel-networks stage, the dump file is part of the side-effects too (not
+        just the visualisation) - it lives outside the SLURM folder and is what the downstream
+        layering stage consumes, so wiping it must be detected.
+        """
+
+        # When the manifest is missing (older shard, or wiped alongside the side-effects),
+        # return None to force resubmission. The dump files are always produced by the worker
+        # regardless of the visualize_* knob, so there is no "manifest expected to be empty"
+        # path here - every successful shard writes at least one dump file per md_label.
+        return self.read_shard_manifest(slurm_folder, shard_id)
+
+    @classmethod
+    def derive_side_effect_paths(cls, parameters: dict,
+                                 processed_md_labels: List[str]) -> List[str]:
+        """
+        Derive the list of per-md side-effect file paths from the shard's processed md_labels.
+        For every md_label the worker writes:
+          * `<orig_aquaduct_network_data_path>/<md_label>_aqua.dump` - the orig_network dump,
+            mandatory (consumed by the downstream stage-8 layering)
+          * `<orig_aquaduct_vis_path>/<md_label>/<md_label>_A_trans_rot.pdb` - transformed
+            PDB, only when `visualize_transformed_transport_events` is True
+          * `<orig_aquaduct_vis_path>/<md_label>/view_network.py` - PyMOL view script, only
+            when `visualize_transformed_transport_events` is True
+          * `<orig_aquaduct_vis_path>/<md_label>/*_cgo.dump.gz` - per-path CGO pickles, only
+            when `visualize_transformed_transport_events` is True (count is data-dependent,
+            so we glob the on-disk visualisation folder after every worker has flushed its
+            output - this method is called from the shard process on the SLURM compute node
+            after the inner Pool has finished, so the listing is authoritative)
+        Centralised here so the worker side and a future direct validation path in tests stay
+        consistent on the path convention. Mirrors `TunnelNetworksShardStage` with paths
+        rebased on `orig_aquaduct_network_data_path` / `orig_aquaduct_vis_path` and the
+        AQUA-DUCT PDB filename convention.
+        """
+
+        import glob
+        paths: List[str] = []
+        visualize = bool(parameters.get("visualize_transformed_transport_events", False))
+        for md_label in processed_md_labels:
+            paths.append(os.path.join(parameters["orig_aquaduct_network_data_path"],
+                                      "{}_aqua.dump".format(md_label)))
+            if visualize:
+                md_vis_folder = os.path.join(parameters["orig_aquaduct_vis_path"], md_label)
+                paths.append(os.path.join(md_vis_folder,
+                                          "{}_A_trans_rot.pdb".format(md_label)))
+                paths.append(os.path.join(md_vis_folder, "view_network.py"))
+                # per-path CGO pickles: each AquaductPath.save_cgo() writes
+                # `<path_label>_cgo.dump.gz` into the md_vis_folder. Glob the folder rather
+                # than re-deriving path_labels so the manifest matches whatever the worker
+                # actually wrote, regardless of how many transport paths AQUA-DUCT produced
+                # for this md_label.
+                paths.extend(sorted(glob.glob(os.path.join(md_vis_folder, "*_cgo.dump.gz"))))
+        return paths
+
+
+# ---------------------------------------------------------------------------
 # Stage 8 adapter: AquaductLayeringShardStage
 # ---------------------------------------------------------------------------
 
@@ -947,7 +1331,7 @@ class AquaductLayeringShardStage(SlurmShardStage):
     # unconditionally; the SLURM helper backs these up to a sidecar tar.gz so they can be
     # restored on resume without re-running the per-event sklearn stack
     has_side_effects = True
-    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # heuristic granularity when auto-deriving the shard count:
     # Event-layering tasks have variable per-task cost (same sklearn stack as tunnel-layering:
     # DBSCAN/KMeans/IsolationForest/hdbscan), so striding inside the shard plus 200/shard hits
     # a reasonable load balance without inflating SLURM overhead.
@@ -1122,6 +1506,10 @@ class EventAssignmentShardStage(SlurmShardStage):
     fingerprint key - no double-memory copy and no extra read pass. A change to either the
     superclusters or the filter set invalidates all stage-9 shards automatically; the
     `items_hash` covers changes to the event set itself.
+    
+    Note: stage 9 keeps `has_side_effects=False` for now - manifest support for 
+    `_exact_event_tunnel_matching` side-effect files is deferred until it is needed. 
+    So no "resume from backup" path applies here; only the restart-by-missing-pickle path.
     """
 
     folder_name = "stage09_event_assignment"
@@ -1130,7 +1518,7 @@ class EventAssignmentShardStage(SlurmShardStage):
     # filename of the per-shard-state artifact that holds (super_clusters, active_filters);
     # written by the launcher in `prepare_state()`, read by every shard in `load_state()`
     state_filename: str = "state.pkl"
-    # heuristic granularity when auto-deriving the shard count (per audit plan §5.15.15).
+    # heuristic granularity when auto-deriving the shard count:
     # Per-event work is moderate (numpy + optional sklearn for exact matching); ~200 events
     # per shard hits a reasonable load balance without inflating SLURM overhead.
     target_items_per_shard = 200
