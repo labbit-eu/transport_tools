@@ -1247,8 +1247,8 @@ class TransportProcesses:
         if self.parameters["visualize_layered_clusters"]:
             side_effects = TunnelLayeringShardStage.derive_side_effect_paths(
                 self.parameters, results)
-            TunnelLayeringShardStage.write_side_effects_archive(slurm_folder, shard_id,
-                                                                 side_effects)
+            TunnelLayeringShardStage.write_side_effects_archive(
+                slurm_folder, shard_id, side_effects, self.parameters["output_path"])
             TunnelLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
         else:
             # consistency: write an empty manifest so the resume check has a definitive
@@ -1358,8 +1358,8 @@ class TransportProcesses:
         if self.parameters["visualize_layered_events"]:
             side_effects = AquaductLayeringShardStage.derive_side_effect_paths(
                 self.parameters, results)
-            AquaductLayeringShardStage.write_side_effects_archive(slurm_folder, shard_id,
-                                                                  side_effects)
+            AquaductLayeringShardStage.write_side_effects_archive(
+                slurm_folder, shard_id, side_effects, self.parameters["output_path"])
             AquaductLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
         else:
             AquaductLayeringShardStage.write_shard_manifest(slurm_folder, shard_id, [])
@@ -1880,8 +1880,8 @@ class TransportProcesses:
         # gated on the knob. derive_side_effect_paths() reflects both branches.
         side_effects = TunnelNetworksShardStage.derive_side_effect_paths(
             self.parameters, processed_md_labels)
-        TunnelNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id,
-                                                             side_effects)
+        TunnelNetworksShardStage.write_side_effects_archive(
+            slurm_folder, shard_id, side_effects, self.parameters["output_path"])
         TunnelNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
 
         self._write_tunnel_networks_shard_result(slurm_folder, shard_id, processed_md_labels)
@@ -2276,7 +2276,8 @@ class TransportProcesses:
             logger.info("SLURM aquaduct-networks shard %d/%d: nothing to do.",
                         shard_id + 1, num_shards)
             AquaductNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, [])
-            AquaductNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id, [])
+            AquaductNetworksShardStage.write_side_effects_archive(
+                slurm_folder, shard_id, [], self.parameters["output_path"])
             self._write_aquaduct_networks_shard_result(slurm_folder, shard_id, [])
             return 0
 
@@ -2321,8 +2322,8 @@ class TransportProcesses:
         # files are gated on the knob. derive_side_effect_paths() reflects both branches.
         side_effects = AquaductNetworksShardStage.derive_side_effect_paths(
             self.parameters, processed_md_labels)
-        AquaductNetworksShardStage.write_side_effects_archive(slurm_folder, shard_id,
-                                                               side_effects)
+        AquaductNetworksShardStage.write_side_effects_archive(
+            slurm_folder, shard_id, side_effects, self.parameters["output_path"])
         AquaductNetworksShardStage.write_shard_manifest(slurm_folder, shard_id, side_effects)
 
         self._write_aquaduct_networks_shard_result(slurm_folder, shard_id, processed_md_labels)

@@ -272,6 +272,18 @@ class SlurmShardStage(ABC):
     For stages where the work units depend on runtime-derived state (e.g. the distance
     stage needs num_clusters), pass that state into the subclass constructor;
     `SlurmShardStage` holds no mutable state of its own beyond the fixed class attributes.
+
+    Determinism contract. The default expectation for a new stage is that its output is
+    **bit-identical to the local backend** across any `slurm_num_shards` choice: workers
+    compute their assigned items independently, and the parent assembles them in a
+    deterministic order (either a fixed scatter into a pre-allocated array, or an
+    in-submission-order commit driven by the original work-item enumeration). The
+    integration parity tests rely on this contract. Subclass docstrings restate the
+    guarantee with the per-stage rationale; a subclass whose parent step does a cross-shard
+    reduction (averaging, summing, ...) where the floating-point result depends on
+    summation order MUST flag the divergence prominently in its docstring so users know
+    output's last few float bits can shift on re-shard. None of the currently implemented
+    stages fall in that second bucket.
     """
 
     #: subdirectory name under slurm_root_folder where this stage's shards live
@@ -400,12 +412,14 @@ class SlurmShardStage(ABC):
 
     @classmethod
     def write_side_effects_archive(cls, slurm_folder: str, shard_id: int,
-                                   file_paths: List[str]) -> None:
+                                   file_paths: List[str], base_path: str) -> None:
         """
         Bundle the listed side-effect files into a per-shard tarball at
-        `shard_side_effects_archive_path()`. Each file is stored with its absolute path encoded
-        as the tar member name (leading `/` stripped) so `restore_side_effects_from_archive()`
-        can place the bytes back at exactly the same location later. Empty file_paths produces
+        `shard_side_effects_archive_path()`. Each file is stored with its path relative to
+        `base_path` as the tar member name, so the archive is self-describing and can be
+        inspected (`tar -tzf ...`) or extracted (`tar -xzf ...`) anywhere without recreating
+        the full absolute path tree. `restore_side_effects_from_archive()` reapplies the same
+        `base_path` to place bytes back at the original location. Empty file_paths produces
         an empty archive (so the missing-shard check always finds an artefact to inspect).
 
         Atomic via tmp + os.replace: a partially-written archive is never visible to the
@@ -415,22 +429,23 @@ class SlurmShardStage(ABC):
         :param shard_id: 0-based shard ID
         :param file_paths: list of absolute paths to side-effect files this shard produced;
                            caller must ensure every path exists on disk at call time
+        :param base_path: directory the member arcnames are stored relative to. In production
+                          this is `parameters["output_path"]` - every side-effect file lives
+                          under it, so arcnames become short, portable, relative paths like
+                          `vis/sources/layered/caver/md1/Cluster_1.py`.
         """
 
         archive_path = cls.shard_side_effects_archive_path(slurm_folder, shard_id)
         tmp_path = archive_path + ".tmp"
         with tarfile.open(tmp_path, "w:gz") as tar:
             for path in file_paths:
-                # strip leading '/' so the tar member name is a relative path; restore adds it
-                # back. Using arcname (instead of the default which uses the absolute path
-                # verbatim) makes the tarball self-describing and portable across machines
-                # that share the same target tree structure.
-                tar.add(path, arcname=path.lstrip(os.sep))
+                tar.add(path, arcname=os.path.relpath(path, base_path))
         os.replace(tmp_path, archive_path)
 
     @classmethod
     def restore_side_effects_from_archive(cls, slurm_folder: str, shard_id: int,
-                                          expected_files: List[str]) -> bool:
+                                          expected_files: List[str],
+                                          base_path: str) -> bool:
         """
         Extract the per-shard side-effects archive back to its original absolute paths so a
         wiped output folder can be reconstructed WITHOUT re-running the heavy shard work
@@ -442,6 +457,9 @@ class SlurmShardStage(ABC):
                                returns False if any one of them is missing from the archive
                                or fails to extract (caller should treat the shard as missing
                                and resubmit)
+        :param base_path: same `base_path` used by `write_side_effects_archive()` (in
+                          production: `parameters["output_path"]`); each expected file is
+                          located inside the archive via its path relative to this base.
         :return: True if every entry in `expected_files` was successfully written back to its
                  original path; False if anything went wrong (archive missing, corrupt, or
                  missing an expected member). The caller can then invalidate the shard and
@@ -451,14 +469,14 @@ class SlurmShardStage(ABC):
         archive_path = cls.shard_side_effects_archive_path(slurm_folder, shard_id)
         if not os.path.exists(archive_path):
             return False
-        expected_arcnames = {p.lstrip(os.sep) for p in expected_files}
+        expected_arcnames = {os.path.relpath(p, base_path) for p in expected_files}
         try:
             with tarfile.open(archive_path, "r:gz") as tar:
                 members = {m.name: m for m in tar.getmembers() if m.isfile()}
                 if not expected_arcnames.issubset(members.keys()):
                     return False
                 for path in expected_files:
-                    arcname = path.lstrip(os.sep)
+                    arcname = os.path.relpath(path, base_path)
                     member = members[arcname]
                     src = tar.extractfile(member)
                     if src is None:
@@ -675,7 +693,8 @@ def _missing_shards(stage: SlurmShardStage, slurm_folder: str, num_shards: int,
             logger.info("SLURM %s shard %d: side-effect file(s) wiped from disk since the "
                         "result was cached; restoring them from the per-shard backup archive.",
                         stage.stage_name, sid)
-            restored = stage.restore_side_effects_from_archive(slurm_folder, sid, expected)
+            restored = stage.restore_side_effects_from_archive(
+                slurm_folder, sid, expected, parameters["output_path"])
             if restored:
                 logger.info("SLURM %s shard %d: side-effects restored from backup; skipping "
                             "resubmission.", stage.stage_name, sid)
@@ -707,7 +726,7 @@ def _invalidate_cached_shard(stage: SlurmShardStage, slurm_folder: str, shard_id
 
 
 def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
-               parameters: dict, stage_name: str) -> None:
+               parameters: dict, stage_name: str) -> dict:
     """
     Poll SLURM jobs in completion order with a per-shard runtime timeout. The timeout is derived
     from the SLURM wall-time limit: 2 * slurm_timeout_min + 5 min covers the actual run time
@@ -719,11 +738,32 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
     fingerprint check in `_missing_shards()` let the next run pick up the abandoned shards
     without recomputing the finished ones. Failed shards (state FAILED, OOM, etc.) are reported
     via job.result() raising and do not abort collection.
+
+    Returns a per-shard `outcomes` dict (keyed by shard_id) that the post-run reporter
+    (`_report_run_stats`) consumes for failure categorization and runtime statistics. Each
+    entry holds the shard's SLURM `state`, the monotonic timestamps of the observed
+    RUNNING -> done transition (`start_mono`, `end_mono`), the categorized outcome
+    (`success` / `oom` / `timeout` / `cancelled` / `node_failure` / `preempted` / `error`),
+    a path to the SLURM stderr file (handy for the failure-categorisation log line), and the
+    exception text when applicable. start_mono is `None` for shards that completed between
+    poll cycles before we could observe the RUNNING state (timing for those shards is
+    treated as missing in stats); category is `None` only on the impossible "still pending
+    when the function returned" branch.
     """
 
     shard_wait_timeout_s = parameters["slurm_timeout_min"] * 2 * 60 + 5 * 60
     pending: List[Tuple[int, Any]] = list(zip(missing_shards, jobs))
     running_since: dict = {}  # job_id -> monotonic time of first observed RUNNING state
+    outcomes: dict = {sid: {
+        "shard_id": sid,
+        "job_id": job.job_id,
+        "state": None,
+        "start_mono": None,
+        "end_mono": None,
+        "category": None,
+        "stderr_path": _job_stderr_path(job),
+        "exception": None,
+    } for sid, job in pending}
     logger.info("SLURM array job submitted as %d task(s); waiting for completion "
                 "(per-shard runtime timeout: %ds, measured from RUNNING state).",
                 len(jobs), shard_wait_timeout_s)
@@ -733,13 +773,24 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
         still_pending: List[Tuple[int, Any]] = []
         for shard_id, job in pending:
             if job.done():
+                outcomes[shard_id]["end_mono"] = now
+                outcomes[shard_id]["state"] = _safe_job_state(job)
                 try:
                     result = job.result()
+                    outcomes[shard_id]["category"] = "success"
                     logger.info("SLURM %s shard %d/%d finished (%r).",
                                 stage_name, shard_id + 1, num_shards, result)
                 except Exception as error:
-                    logger.error("SLURM %s shard %d (job %s) failed: %s",
-                                 stage_name, shard_id, job.job_id, error)
+                    category, hint = _categorize_failure(job, error)
+                    outcomes[shard_id]["category"] = category
+                    outcomes[shard_id]["exception"] = "{}: {}".format(
+                        type(error).__name__, error)
+                    stderr_msg = " (stderr: {})".format(outcomes[shard_id]["stderr_path"]) \
+                        if outcomes[shard_id]["stderr_path"] else ""
+                    logger.error("SLURM %s shard %d (job %s, state=%s) failed [%s]: %s%s. %s",
+                                 stage_name, shard_id, job.job_id,
+                                 outcomes[shard_id]["state"] or "?", category, error,
+                                 stderr_msg, hint)
                 continue
 
             # Record the first time we observe this shard as RUNNING; once recorded, the
@@ -747,12 +798,10 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
             # left alone (no deadline yet) - that matches the user's expectation that the
             # timeout caps actual compute time, not queue waiting.
             if job.job_id not in running_since:
-                try:
-                    state = job.state
-                except Exception:
-                    state = None
+                state = _safe_job_state(job)
                 if state == "RUNNING":
                     running_since[job.job_id] = now
+                    outcomes[shard_id]["start_mono"] = now
 
             if (job.job_id in running_since
                     and now - running_since[job.job_id] > shard_wait_timeout_s):
@@ -760,6 +809,9 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
                              "abandoning it and continuing with the shards that already finished. "
                              "Re-run the stage to resume.",
                              stage_name, shard_id, job.job_id, shard_wait_timeout_s)
+                outcomes[shard_id]["state"] = "TIMEOUT"
+                outcomes[shard_id]["end_mono"] = now
+                outcomes[shard_id]["category"] = "timeout"
                 try:
                     job.cancel()
                 except Exception as cancel_error:
@@ -770,6 +822,277 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
         pending = still_pending
         if pending:
             time.sleep(parameters["slurm_poll_wait_seconds"])
+
+    return outcomes
+
+
+def _safe_job_state(job: Any) -> Optional[str]:
+    """Read job.state, swallowing any transient backend error (sacct hiccup, NFS lag) and
+    returning None instead. Used both for the polling loop's RUNNING detection and for the
+    post-run reporter's failure categorisation, where missing state must not crash the
+    whole reporter."""
+
+    try:
+        return job.state
+    except Exception:
+        return None
+
+
+def _job_stderr_path(job: Any) -> Optional[str]:
+    """Best-effort recovery of the SLURM stderr file path for a job. Returns the absolute
+    path as a string when submitit exposes it (the usual case), or `None` when the path
+    cannot be derived for some reason. Used both in the per-shard failure log line and in
+    the post-run reporter so users get a clickable file path to inspect without having to
+    construct it from the submitit folder + job id themselves (5.15.16)."""
+
+    try:
+        return str(job.paths.stderr)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Post-run reporter: failure categorisation + runtime statistics
+# ---------------------------------------------------------------------------
+#
+# After the launcher's poll loop completes, the SLURM stage's shards have ended in some mix
+# of success / OOM / timeout / cancelled / node_failure / preempted / code-error. Failure
+# categorisation with remediation hints and per-shard wall time stats + parallel efficiency
+# share most of their inputs (job state, observed RUNNING -> done timestamps), so they are
+# implemented as a single reporter pass `_report_run_stats()` driven from the per-shard
+# outcomes recorded in `_poll_jobs()`.
+
+#: SLURM job-state strings -> (category, remediation_hint). Categories drive the failure
+#: summary in `_report_run_stats`; remediation_hint is logged inline next to the per-shard
+#: failure line in `_poll_jobs`. Categories the reporter recognises beyond this map: "error"
+#: (fell-through Python exception when state is FAILED but no specific SLURM-side cause was
+#: detected) and "success" (set in the success path of `_poll_jobs`).
+_SLURM_STATE_CATEGORIES: dict = {
+    "TIMEOUT":         ("timeout",      "Bump slurm_timeout_min, or reduce slurm_num_shards "
+                                        "so each shard handles fewer items."),
+    "DEADLINE":        ("timeout",      "Bump slurm_timeout_min, or reduce slurm_num_shards."),
+    "OUT_OF_MEMORY":   ("oom",          "Bump slurm_mem_gb."),
+    "OOM":             ("oom",          "Bump slurm_mem_gb."),
+    "NODE_FAIL":       ("node_failure", "Transient node failure; re-run the stage to resume "
+                                        "from the surviving shards."),
+    "BOOT_FAIL":       ("node_failure", "Transient node failure; re-run the stage."),
+    "CANCELLED":       ("cancelled",    "Shard was cancelled (manual scancel or framework "
+                                        "timeout); re-run the stage to resume."),
+    "PREEMPTED":       ("preempted",    "Job was preempted by the scheduler; re-run the stage."),
+}
+
+#: stderr-content markers used as a fallback when SLURM state is "FAILED" but the cause is
+#: actually an external kill that didn't reflect in the SLURM state. Kernel OOM-killer puts
+#: "Killed" into stderr; Python MemoryError surfaces as such. Order matters: first match
+#: wins.
+_STDERR_OOM_MARKERS: tuple = ("Killed", "MemoryError", "out of memory")
+
+
+def _categorize_failure(job: Any, error: Exception) -> Tuple[str, str]:
+    """
+    Classify a failed SLURM job into one of `oom / timeout / cancelled / node_failure /
+    preempted / error` and pair it with a one-line remediation hint to nudge the user toward
+    the right knob without forcing them to read shard logs. Resolution order:
+      1. The SLURM job state itself - the cluster has already labelled the cause for OOM,
+         TIMEOUT, NODE_FAIL, CANCELLED, PREEMPTED, etc., and that is the authoritative
+         answer when available (see `_SLURM_STATE_CATEGORIES`).
+      2. Fallback stderr-marker scan for the case where SLURM state is just "FAILED" but the
+         worker process was actually OOM-killed by the kernel (the cgroup didn't catch it
+         and SLURM just reports the non-zero exit). Looks for `_STDERR_OOM_MARKERS` in the
+         job's stderr file; bounded to a single read so a multi-GB stderr does not eat
+         memory in the launcher.
+      3. "error" - genuine Python-side exception in the shard's `run_shard()`. The
+         remediation is to inspect the stderr file (we already log the path next to the
+         failure line in `_poll_jobs`).
+    Returns (category, hint).
+    """
+
+    state = _safe_job_state(job)
+    if state and state in _SLURM_STATE_CATEGORIES:
+        return _SLURM_STATE_CATEGORIES[state]
+
+    # Fallback: SLURM didn't categorize; scan stderr for OOM markers. Worth catching because
+    # cgroup OOM kills sometimes only surface in stderr as a single "Killed" line.
+    stderr_path = _job_stderr_path(job)
+    if stderr_path and os.path.exists(stderr_path):
+        try:
+            # cap read at ~64 KB - the marker we're after is usually one of the very last
+            # lines, and a multi-GB stderr from a chatty worker would otherwise stall the
+            # launcher
+            with open(stderr_path, "rb") as in_stream:
+                in_stream.seek(0, os.SEEK_END)
+                size = in_stream.tell()
+                in_stream.seek(max(0, size - 65536))
+                tail = in_stream.read().decode("utf-8", errors="replace")
+        except OSError:
+            tail = ""
+        for marker in _STDERR_OOM_MARKERS:
+            if marker in tail:
+                return ("oom", "Bump slurm_mem_gb (OOM marker '{}' seen in stderr).".format(
+                    marker))
+
+    return ("error", "Inspect the shard's stderr for the exception.")
+
+
+def _percentile(values: List[float], percentile: float) -> float:
+    """
+    Compute the requested percentile via linear interpolation, matching numpy's default
+    behaviour. Reimplemented in pure Python so the reporter has no numpy dependency at the
+    point it runs (the framework module itself is otherwise numpy-free for everything
+    outside the distance-shard adapter). Returns 0.0 on empty input so the caller can keep
+    its log message uniform.
+    """
+
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    sorted_vals = sorted(values)
+    rank = (len(sorted_vals) - 1) * (percentile / 100.0)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = rank - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def _report_run_stats(outcomes: dict, num_shards: int, parameters: dict,
+                      stage: SlurmShardStage) -> None:
+    """
+    Emit the post-run reporter pass after `_poll_jobs()` completes: a failure-categorisation
+    summary (5.15.3) followed by per-shard runtime statistics with parallel-efficiency and
+    skew hints (5.15.4). The reporter never raises - it is purely observational and a bug
+    in its formatting must not turn a successful stage into a failed run.
+
+    Failure categorisation: groups shards by category (`oom`, `timeout`, ...) and emits one
+    log line per non-empty category with the matching remediation hint, plus the list of
+    affected shard IDs so users can correlate with the per-shard stderr paths logged inline
+    in `_poll_jobs`.
+
+    Runtime statistics: derived from the monotonic timestamps recorded in `_poll_jobs`
+    (start = first time we observed RUNNING; end = first time job.done() returned True).
+    Shards that completed between poll cycles (no observed RUNNING -> done transition) are
+    counted in the "fast" bucket and excluded from median / p95 / max so they do not skew
+    the timing picture. Skew = max / median; parallel_efficiency =
+    sum(per-shard wall time) / (total array wall time × num_shards). Skew > 3 hints at an
+    unbalanced strided split (suggest fewer / bigger shards via stage's
+    `target_items_per_shard`); efficiency < 50 % hints at queue / scheduling overhead
+    dominating (suggest reducing `slurm_array_parallelism`).
+
+    :param outcomes: per-shard outcomes dict returned by `_poll_jobs`
+    :param num_shards: total number of shards this run targeted (incl. shards that resumed
+                       from cache and were not submitted - the reporter only stats the ones
+                       it actually observed via the polling loop)
+    :param parameters: job configuration parameters (read for `slurm_array_parallelism`
+                       remediation hint and total wall-time computation)
+    :param stage: the SLURM stage instance (read for `target_items_per_shard` skew hint)
+    """
+
+    if not outcomes:
+        return
+
+    try:
+        _emit_failure_categorisation(outcomes, stage.stage_name)
+        _emit_runtime_statistics(outcomes, num_shards, parameters, stage)
+    except Exception as exc:  # purely observational - never let formatting bugs fail a run
+        logger.warning("SLURM %s post-run reporter failed: %s. Stage results are unaffected.",
+                       stage.stage_name, exc)
+
+
+def _emit_failure_categorisation(outcomes: dict, stage_name: str) -> None:
+    """One log line per non-empty failure category, with remediation hint and shard IDs."""
+
+    by_category: dict = {}
+    for outcome in outcomes.values():
+        if outcome["category"] and outcome["category"] != "success":
+            by_category.setdefault(outcome["category"], []).append(outcome)
+    if not by_category:
+        return
+
+    # remediation hints - same map drives _categorize_failure, but here we look up by
+    # category, so build a category -> hint table from _SLURM_STATE_CATEGORIES values
+    hints: dict = {category: hint for (category, hint) in _SLURM_STATE_CATEGORIES.values()}
+    hints.setdefault("error", "Inspect the shard's stderr for the exception.")
+
+    for category in sorted(by_category):
+        shard_ids = sorted(o["shard_id"] for o in by_category[category])
+        hint = hints.get(category, "")
+        logger.warning("SLURM %s post-run: %d shard(s) ended as '%s' (shards %s). %s",
+                       stage_name, len(shard_ids), category, shard_ids, hint)
+
+
+def _emit_runtime_statistics(outcomes: dict, num_shards: int, parameters: dict,
+                             stage: SlurmShardStage) -> None:
+    """Per-shard runtime stats + parallel-efficiency log line. Only counts shards we
+    observed transitioning RUNNING -> done; shards completed between polls are reported
+    separately as 'fast (< poll_wait)' so users don't think we lost them."""
+
+    timed: List[float] = []
+    untimed = 0
+    earliest_start: Optional[float] = None
+    latest_end: Optional[float] = None
+    for outcome in outcomes.values():
+        start, end = outcome["start_mono"], outcome["end_mono"]
+        if start is not None and end is not None and end >= start:
+            timed.append(end - start)
+            if earliest_start is None or start < earliest_start:
+                earliest_start = start
+            if latest_end is None or end > latest_end:
+                latest_end = end
+        elif end is not None:
+            untimed += 1
+            if latest_end is None or end > latest_end:
+                latest_end = end
+
+    if not timed:
+        # nothing to report on (every shard completed too fast to observe, or everything
+        # failed before reaching RUNNING) - just note the headcount
+        logger.info("SLURM %s post-run: %d/%d shard(s) completed; no shard ran long enough "
+                    "to be timed by the %ds polling loop.", stage.stage_name,
+                    len(outcomes), num_shards, parameters["slurm_poll_wait_seconds"])
+        return
+
+    timed_sorted = sorted(timed)
+    median = timed_sorted[len(timed_sorted) // 2]
+    p95 = _percentile(timed_sorted, 95.0)
+    max_wall = timed_sorted[-1]
+    skew = max_wall / median if median > 0 else float("inf")
+    total_wall = (latest_end - earliest_start) if (latest_end is not None
+                                                    and earliest_start is not None) else 0.0
+    sum_wall = sum(timed)
+    # parallel_efficiency = sum / (total_wall × num_shards). Use len(outcomes) instead of
+    # num_shards when the stage was a resume (only a subset of shards was actually
+    # submitted), so the denominator reflects what we observed not the theoretical max.
+    parallelism_denom = total_wall * max(len(outcomes), 1)
+    efficiency = (sum_wall / parallelism_denom * 100.0) if parallelism_denom > 0 else 0.0
+    fast_note = (", {} shard(s) too fast to time (< {}s poll interval)".format(
+        untimed, parameters["slurm_poll_wait_seconds"]) if untimed else "")
+
+    logger.info(
+        "SLURM %s post-run timings (%d/%d timed%s): "
+        "median %.1fs, p95 %.1fs, max %.1fs, skew %.2f; total array wall %.1fs, "
+        "parallel efficiency %.0f%%.",
+        stage.stage_name, len(timed), num_shards, fast_note,
+        median, p95, max_wall, skew, total_wall, efficiency)
+
+    # Tuning hints - both fire only on the relevant signal so they aren't noise on a
+    # well-balanced run
+    if skew > 3 and len(timed) > 1:
+        logger.info(
+            "SLURM %s: shard runtime skew is %.1fx (median %.1fs vs. max %.1fs). The "
+            "strided split is unbalanced for this workload; consider increasing the stage's "
+            "target_items_per_shard (currently %s) so each shard handles more items and the "
+            "long-tail clusters amortise across the bulk work.",
+            stage.stage_name, skew, median, max_wall,
+            getattr(stage, "target_items_per_shard", "?"))
+    if efficiency < 50.0 and total_wall > 0:
+        array_parallelism = parameters.get("slurm_array_parallelism")
+        hint = ("Reduce slurm_array_parallelism (currently {}) so fewer shards queue "
+                "concurrently and the polling / scheduling overhead drops.".format(
+                    array_parallelism)) if array_parallelism is not None else \
+               ("Set slurm_array_parallelism to a smaller number so fewer shards queue "
+                "concurrently and the polling / scheduling overhead drops.")
+        logger.info("SLURM %s: parallel efficiency %.0f%% suggests queue / scheduling "
+                    "overhead dominates. %s", stage.stage_name, efficiency, hint)
 
 
 def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
@@ -836,7 +1159,11 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
                                   [config_file] * len(missing),
                                   [num_shards] * len(missing),
                                   missing)
-        _poll_jobs(missing, jobs, num_shards, parameters, stage.stage_name)
+        outcomes = _poll_jobs(missing, jobs, num_shards, parameters, stage.stage_name)
+        # Post-run reporter: per-failure category remediation hints + per-shard timing
+        # statistics (median / p95 / max / skew) + parallel-efficiency hint. Observational
+        # only - never raises (any internal error is logged as a warning).
+        _report_run_stats(outcomes, num_shards, parameters, stage)
 
     # report which shards are still missing after the polling loop completed; the caller
     # decides what to do (typically: raise with a "re-run to resume" message)
@@ -942,6 +1269,12 @@ class TunnelNetworksShardStage(SlurmShardStage):
     submission-order locked by `AnalysisConfig.get_input_folders()`) and persisted to
     `<slurm_folder>/items.json` so every shard reads its strided assignment from a single
     artifact instead of re-deriving the enumeration.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice:
+    workers process their assigned md_labels independently (no cross-shard state), and each
+    md_label's `<md>_caver.dump` plus per-MD visualisation folder are written by exactly one
+    worker. No assembly reduction step in the parent - just a completeness check over the
+    set of processed md_labels.
     """
 
     folder_name = "stage02_tunnel_networks"
@@ -1120,6 +1453,12 @@ class TunnelLayeringShardStage(SlurmShardStage):
     shard reads that single artifact instead of re-deriving the enumeration in every shard
     process, so on a 200-shard run the orig_network files are not parsed 200 times just to
     discover work-item ids.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice.
+    Each `(md_label, cluster_id)` is layered by exactly one worker (no cross-shard state),
+    and the assembler buffers per-md_label then commits in original submission order, so
+    the saved `layered_network.dump` pickle layout - which encodes dict-insertion order -
+    matches the local backend byte-for-byte regardless of completion order.
     """
 
     folder_name = "stage03_tunnel_layering"
@@ -1279,6 +1618,14 @@ class DistanceShardStage(SlurmShardStage):
     Stage-4 adapter: per-shard inter-cluster distance computation. The shard writes a compact
     (K, 3) float64 array of (cluster1_id, cluster2_id, distance) rows; the launcher
     concatenates them to assemble the condensed distance matrix.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice.
+    Each upper-triangle pair is computed by exactly one worker and the launcher scatters
+    pairs straight into a pre-allocated condensed vector via `condensed_pair_index(rows,
+    cols, num_clusters)` - the destination slot is a deterministic function of
+    (cluster1_id, cluster2_id), not of completion order. The per-shard rounding to
+    `precision` happens inside the worker (same code path the local backend uses), so the
+    matrix is identical down to the last decimal.
     """
 
     folder_name = "stage04_distances"
@@ -1364,6 +1711,15 @@ class AquaductNetworksShardStage(SlurmShardStage):
     the submission-order locked by `AnalysisConfig.get_input_folders()`) and persisted to
     `<slurm_folder>/items.json` so every shard reads its strided assignment from a single
     artifact instead of re-deriving the enumeration.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice:
+    workers process their assigned md_labels independently (no cross-shard state), and each
+    md_label's `<md>_aqua.dump` plus per-MD visualisation folder are written by exactly one
+    worker. No assembly reduction step in the parent - just a completeness check over the
+    set of processed md_labels. The local-backend's two branches (outer-pool vs.
+    inner-pool) are equivalent at the per-MD output level - they only differ in where the
+    raw-path Pool runs - so the SLURM-always-outer-pool choice does not affect the dump
+    contents.
     """
 
     folder_name = "stage07_aquaduct_networks"
@@ -1549,6 +1905,12 @@ class AquaductLayeringShardStage(SlurmShardStage):
     Each shard reads that single artifact instead of re-deriving the enumeration in every
     shard process, so on a 200-shard run the aqua_orig_network files are not parsed 200 times
     just to discover work-item ids.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice.
+    Each `(md_label, event_label)` is layered by exactly one worker (no cross-shard state),
+    and the assembler buffers per-md_label then commits in original submission order, so
+    the saved `aqua_layered_network.dump` pickle layout - which encodes dict-insertion
+    order - matches the local backend byte-for-byte regardless of completion order.
     """
 
     folder_name = "stage08_aquaduct_layering"
@@ -1734,9 +2096,18 @@ class EventAssignmentShardStage(SlurmShardStage):
     superclusters or the filter set invalidates all stage-9 shards automatically; the
     `items_hash` covers changes to the event set itself.
     
-    Note: stage 9 keeps `has_side_effects=False` for now - manifest support for 
-    `_exact_event_tunnel_matching` side-effect files is deferred until it is needed. 
+    Note: stage 9 keeps `has_side_effects=False` for now - manifest support for
+    `_exact_event_tunnel_matching` side-effect files is deferred until it is needed.
     So no "resume from backup" path applies here; only the restart-by-missing-pickle path.
+
+    Determinism. Bit-identical to the local backend across any `slurm_num_shards` choice.
+    Every event is assigned by exactly one worker over a launcher-prepared state snapshot
+    (the supercluster dict + filter set captured in `state.pkl`), and the assembler walks
+    the original event-specification keys in submission order via `_apply_event_assignments`
+    to mutate `_super_clusters` / `OutlierTransportEvents`. The per-event assignment is a
+    pure function of `(event, super_clusters, active_filters)` - no cross-event reduction
+    in the parent - so the produced state matches the local backend bit-for-bit regardless
+    of worker scheduling or shard count.
     """
 
     folder_name = "stage09_event_assignment"

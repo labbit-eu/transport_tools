@@ -26,8 +26,10 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import json
 import os
+import tarfile
 import tempfile
 import unittest
+from typing import Optional
 
 from transport_tools.libs.slurm import (
     AquaductLayeringShardStage,
@@ -37,10 +39,15 @@ from transport_tools.libs.slurm import (
     SlurmShardStage,
     TunnelLayeringShardStage,
     TunnelNetworksShardStage,
+    _categorize_failure,
     _detect_parent_slurm_allocation,
+    _emit_failure_categorisation,
+    _emit_runtime_statistics,
     _ensure_cpu_bind_none,
     _missing_shards,
     _parse_slurm_time_limit_min,
+    _percentile,
+    _report_run_stats,
     _warn_on_driver_misallocation,
     cleanup_stage_folder,
     derive_num_shards,
@@ -242,13 +249,22 @@ class TestShardSideEffectsArchive(unittest.TestCase):
         # write a couple of side-effect files, archive them, wipe, restore - bytes must match
         p1 = self._make_file("Cluster_1.py", b"# pymol script\ncmd.show_as('wire', 'all')\n")
         p2 = self._make_file("nodes/cls001_layer0_pts.pdb", b"ATOM   1  C  ...\nEND\n")
-        TunnelLayeringShardStage.write_side_effects_archive(self._slurm, 7, [p1, p2])
+        TunnelLayeringShardStage.write_side_effects_archive(
+            self._slurm, 7, [p1, p2], self._target)
         # archive must exist
         self.assertTrue(os.path.exists(
             TunnelLayeringShardStage.shard_side_effects_archive_path(self._slurm, 7)))
+        # arcnames are stored relative to base_path - inspecting the archive shows short
+        # portable paths (no `home/.../target/...` prefix)
+        with tarfile.open(
+                TunnelLayeringShardStage.shard_side_effects_archive_path(self._slurm, 7),
+                "r:gz") as tar:
+            self.assertEqual({"Cluster_1.py", "nodes/cls001_layer0_pts.pdb"},
+                             {m.name for m in tar.getmembers() if m.isfile()})
         # wipe and restore
         __import__("shutil").rmtree(self._target)
-        ok = TunnelLayeringShardStage.restore_side_effects_from_archive(self._slurm, 7, [p1, p2])
+        ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
+            self._slurm, 7, [p1, p2], self._target)
         self.assertTrue(ok)
         with open(p1, "rb") as f:
             self.assertEqual(b"# pymol script\ncmd.show_as('wire', 'all')\n", f.read())
@@ -258,7 +274,7 @@ class TestShardSideEffectsArchive(unittest.TestCase):
     def test_restore_returns_false_when_archive_missing(self):
         # never write the archive; restore must report failure rather than raise
         ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
-            self._slurm, 0, ["/nope"])
+            self._slurm, 0, [os.path.join(self._target, "nope")], self._target)
         self.assertFalse(ok)
 
     def test_restore_returns_false_when_archive_is_corrupt(self):
@@ -267,7 +283,7 @@ class TestShardSideEffectsArchive(unittest.TestCase):
         with open(archive_path, "wb") as out:
             out.write(b"not a tarball")
         ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
-            self._slurm, 0, ["/nope"])
+            self._slurm, 0, [os.path.join(self._target, "nope")], self._target)
         self.assertFalse(ok)
 
     def test_restore_returns_false_when_expected_file_not_in_archive(self):
@@ -275,10 +291,11 @@ class TestShardSideEffectsArchive(unittest.TestCase):
         # without writing anything to B's path (so the caller can fall back to resubmit
         # without confusing partial state)
         p_in = self._make_file("Cluster_1.py", b"in-archive")
-        TunnelLayeringShardStage.write_side_effects_archive(self._slurm, 0, [p_in])
+        TunnelLayeringShardStage.write_side_effects_archive(
+            self._slurm, 0, [p_in], self._target)
         p_out = os.path.join(self._target, "Cluster_9_not_in_archive.py")
         ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
-            self._slurm, 0, [p_out])
+            self._slurm, 0, [p_out], self._target)
         self.assertFalse(ok)
         self.assertFalse(os.path.exists(p_out))
 
@@ -286,9 +303,42 @@ class TestShardSideEffectsArchive(unittest.TestCase):
         # stages with no side-effects (e.g. visualize_layered_clusters=False) still write
         # an archive so the manifest semantics stay uniform; restore with empty list must
         # succeed trivially
-        TunnelLayeringShardStage.write_side_effects_archive(self._slurm, 0, [])
-        ok = TunnelLayeringShardStage.restore_side_effects_from_archive(self._slurm, 0, [])
+        TunnelLayeringShardStage.write_side_effects_archive(
+            self._slurm, 0, [], self._target)
+        ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
+            self._slurm, 0, [], self._target)
         self.assertTrue(ok)
+
+    def test_archive_restores_after_output_folder_moves(self):
+        # the relative-arcname design must allow the user to relocate the output folder
+        # (and the slurm folder underneath it): writing the archive at the original location,
+        # then physically moving target + slurm to a new path and calling restore with the
+        # new base_path must reconstruct the side-effect files at the new location -
+        # nothing inside the archive encodes the old absolute path.
+        p1 = self._make_file("md1/Cluster_1.py", b"# moved\n")
+        p2 = self._make_file("md1/nodes/cls001-0-0.pdb", b"ATOM\nEND\n")
+        TunnelLayeringShardStage.write_side_effects_archive(
+            self._slurm, 3, [p1, p2], self._target)
+        # relocate the whole tree: new target + new slurm folder under a different parent
+        new_root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(new_root, ignore_errors=True))
+        new_target = os.path.join(new_root, "target")
+        new_slurm = os.path.join(new_root, "slurm")
+        __import__("shutil").move(self._target, new_target)
+        __import__("shutil").move(self._slurm, new_slurm)
+        # now wipe the side-effect files at the new location to simulate a resume against
+        # the moved tree, then restore using the new base_path
+        for rel in ("md1/Cluster_1.py", "md1/nodes/cls001-0-0.pdb"):
+            os.remove(os.path.join(new_target, rel))
+        new_p1 = os.path.join(new_target, "md1", "Cluster_1.py")
+        new_p2 = os.path.join(new_target, "md1", "nodes", "cls001-0-0.pdb")
+        ok = TunnelLayeringShardStage.restore_side_effects_from_archive(
+            new_slurm, 3, [new_p1, new_p2], new_target)
+        self.assertTrue(ok)
+        with open(new_p1, "rb") as f:
+            self.assertEqual(b"# moved\n", f.read())
+        with open(new_p2, "rb") as f:
+            self.assertEqual(b"ATOM\nEND\n", f.read())
 
 
 class TestMissingShardsSideEffectRecovery(unittest.TestCase):
@@ -314,6 +364,7 @@ class TestMissingShardsSideEffectRecovery(unittest.TestCase):
             "clustering_max_num_rep_frag": 3,
             "use_cluster_spread": True,
             "visualize_layered_clusters": True,
+            "output_path": self._target,
             "layered_caver_vis_path": self._target,
             "slurm_root_folder": self._tmp,
         }
@@ -329,7 +380,7 @@ class TestMissingShardsSideEffectRecovery(unittest.TestCase):
             with open(path, "wb") as out:
                 out.write(b"side-effect-content-" + os.path.basename(path).encode() + b"\n")
         TunnelLayeringShardStage.write_side_effects_archive(
-            self._slurm, shard_id, side_effect_paths)
+            self._slurm, shard_id, side_effect_paths, self.params["output_path"])
         TunnelLayeringShardStage.write_shard_manifest(
             self._slurm, shard_id, side_effect_paths)
         # match the fingerprint so the resume check sees a fresh cache
@@ -1586,6 +1637,290 @@ class TestWarnOnDriverMisallocation(unittest.TestCase):
             {"job_id": "12345", "cpus": 4, "time_min": 480},
             {"slurm_timeout_min": 240}, num_shards=1000)
         self.assertFalse(any("1 CPU" in w for w in warnings))
+
+
+class _FakeJob:
+    """Minimal stand-in for `submitit.Job` exposing only the surface `_categorize_failure`,
+    `_safe_job_state`, and `_job_stderr_path` read: `state`, `job_id`, `paths.stderr`. The
+    real Job object pulls state via sacct and is otherwise untestable in a unit context;
+    this stub lets us drive every failure category from a deterministic input."""
+
+    def __init__(self, state=None, job_id="999", stderr_path=None,
+                 state_raises=False):
+        self._state = state
+        self.job_id = job_id
+        self._state_raises = state_raises
+        if stderr_path is not None:
+            self.paths = type("P", (), {"stderr": stderr_path})()
+        else:
+            self.paths = type("P", (), {"stderr": None})()
+
+    @property
+    def state(self):
+        if self._state_raises:
+            raise RuntimeError("sacct hiccup")
+        return self._state
+
+
+class TestCategorizeFailure(unittest.TestCase):
+    """`_categorize_failure()` maps SLURM state -> (category, remediation_hint) for the
+    failure-summary reporter. Falls back to a stderr scan for OOM markers when SLURM state
+    is just 'FAILED' (cgroup OOM not always reflected in state); falls back to 'error' with
+    a 'inspect stderr' hint otherwise."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+
+    def test_timeout_state(self):
+        category, hint = _categorize_failure(_FakeJob(state="TIMEOUT"),
+                                              RuntimeError("ignored"))
+        self.assertEqual("timeout", category)
+        self.assertIn("slurm_timeout_min", hint)
+
+    def test_oom_state(self):
+        category, hint = _categorize_failure(_FakeJob(state="OUT_OF_MEMORY"),
+                                              RuntimeError("ignored"))
+        self.assertEqual("oom", category)
+        self.assertIn("slurm_mem_gb", hint)
+
+    def test_node_failure_state(self):
+        category, _ = _categorize_failure(_FakeJob(state="NODE_FAIL"),
+                                           RuntimeError("ignored"))
+        self.assertEqual("node_failure", category)
+
+    def test_cancelled_state(self):
+        category, _ = _categorize_failure(_FakeJob(state="CANCELLED"),
+                                           RuntimeError("ignored"))
+        self.assertEqual("cancelled", category)
+
+    def test_preempted_state(self):
+        category, _ = _categorize_failure(_FakeJob(state="PREEMPTED"),
+                                           RuntimeError("ignored"))
+        self.assertEqual("preempted", category)
+
+    def test_stderr_oom_marker_when_state_is_just_failed(self):
+        # SLURM reported FAILED with no further info; stderr has the kernel OOM marker -
+        # the helper must still classify this as oom rather than generic error
+        stderr_path = os.path.join(self._tmp, "stderr")
+        with open(stderr_path, "w") as out:
+            out.write("worker started\nallocating ...\nKilled\n")
+        category, hint = _categorize_failure(
+            _FakeJob(state="FAILED", stderr_path=stderr_path),
+            RuntimeError("subprocess died"))
+        self.assertEqual("oom", category)
+        self.assertIn("Killed", hint)
+
+    def test_generic_error_fallback(self):
+        # SLURM state FAILED, stderr clean -> generic 'error' with 'inspect stderr' hint
+        stderr_path = os.path.join(self._tmp, "stderr")
+        with open(stderr_path, "w") as out:
+            out.write("Traceback (most recent call last):\nValueError: bad input\n")
+        category, hint = _categorize_failure(
+            _FakeJob(state="FAILED", stderr_path=stderr_path),
+            ValueError("bad input"))
+        self.assertEqual("error", category)
+        self.assertIn("stderr", hint)
+
+    def test_safe_when_state_unreadable(self):
+        # transient sacct hiccup -> _safe_job_state returns None -> we fall through to the
+        # stderr scan / generic-error path without raising
+        category, _ = _categorize_failure(_FakeJob(state_raises=True),
+                                           RuntimeError("dunno"))
+        self.assertEqual("error", category)
+
+
+class TestPercentile(unittest.TestCase):
+    """Pure-Python percentile helper, used by the reporter. Matches numpy's linear-interp
+    default so users see numbers consistent with what they'd compute outside the framework."""
+
+    def test_empty_yields_zero(self):
+        # empty list -> 0.0 (the caller uses this in a log line; raising would mask the
+        # primary stats output)
+        self.assertEqual(0.0, _percentile([], 95))
+
+    def test_single_value(self):
+        self.assertEqual(42.0, _percentile([42.0], 50))
+        self.assertEqual(42.0, _percentile([42.0], 95))
+
+    def test_median_of_odd_count(self):
+        self.assertEqual(3.0, _percentile([1.0, 2.0, 3.0, 4.0, 5.0], 50))
+
+    def test_p95_linear_interp(self):
+        # 5 values, 95th percentile interpolates between index 3.8 in [1, 2, 3, 4, 5]
+        # = 4 * 0.2 + 5 * 0.8 = 4.8. We don't assert exact float equality, just close.
+        self.assertAlmostEqual(4.8, _percentile([1.0, 2.0, 3.0, 4.0, 5.0], 95), places=2)
+
+
+class _LogCapture:
+    """unittest helper: capture every log record emitted on the slurm logger as a list of
+    formatted message strings. Used by the reporter tests to assert on the lines without
+    relying on assertLogs (which is awkward to compose when multiple log levels are emitted
+    from a single helper call). Resets the logger level to INFO for the duration of the
+    capture so default-WARNING setups still see the reporter's INFO output."""
+
+    def __init__(self):
+        import logging
+        from transport_tools.libs.slurm import logger as slurm_logger
+        self._logger = slurm_logger
+        self._messages: list = []
+        self._saved_level: Optional[int] = None
+
+        class _Handler(logging.Handler):
+            def emit(_inner_self, record):
+                self._messages.append((record.levelno, record.getMessage()))
+
+        self._handler = _Handler()
+        self._handler.setLevel(logging.DEBUG)
+
+    def __enter__(self):
+        import logging
+        self._saved_level = self._logger.level
+        self._logger.setLevel(logging.DEBUG)
+        self._logger.addHandler(self._handler)
+        return self._messages
+
+    def __exit__(self, *_exc):
+        self._logger.removeHandler(self._handler)
+        if self._saved_level is not None:
+            self._logger.setLevel(self._saved_level)
+
+
+def _make_outcome(shard_id, **overrides):
+    """Build a default-success per-shard outcome dict matching the shape that `_poll_jobs`
+    produces, then apply overrides. Used by reporter tests."""
+
+    outcome = {
+        "shard_id": shard_id, "job_id": str(shard_id),
+        "state": "COMPLETED", "start_mono": 100.0, "end_mono": 200.0,
+        "category": "success", "stderr_path": None, "exception": None,
+    }
+    outcome.update(overrides)
+    return outcome
+
+
+class TestReportRunStatsCategorisation(unittest.TestCase):
+    """`_report_run_stats()` emits one warning line per non-empty failure category. All
+    successful shards produce no failure log; categories are listed in sorted order with
+    affected shard IDs."""
+
+    def _params(self):
+        return {"slurm_poll_wait_seconds": 30, "slurm_array_parallelism": None}
+
+    def test_all_success_no_failure_log(self):
+        outcomes = {sid: _make_outcome(sid) for sid in range(3)}
+        with _LogCapture() as logs:
+            _report_run_stats(outcomes, num_shards=3, parameters=self._params(),
+                              stage=DistanceShardStage(num_clusters=4))
+        warnings = [m for (lvl, m) in logs if lvl >= 30]
+        self.assertFalse(any("ended as" in w for w in warnings))
+
+    def test_one_oom_logs_remediation_hint(self):
+        outcomes = {
+            0: _make_outcome(0),
+            1: _make_outcome(1, category="oom", state="OUT_OF_MEMORY"),
+        }
+        with _LogCapture() as logs:
+            _report_run_stats(outcomes, num_shards=2, parameters=self._params(),
+                              stage=DistanceShardStage(num_clusters=4))
+        warnings = [m for (lvl, m) in logs if lvl >= 30]
+        self.assertTrue(any("oom" in w and "slurm_mem_gb" in w for w in warnings))
+
+    def test_groups_failures_per_category(self):
+        outcomes = {
+            0: _make_outcome(0, category="timeout", state="TIMEOUT"),
+            1: _make_outcome(1, category="timeout", state="TIMEOUT"),
+            2: _make_outcome(2, category="oom", state="OUT_OF_MEMORY"),
+        }
+        with _LogCapture() as logs:
+            _emit_failure_categorisation(outcomes, "test-stage")
+        warnings = [m for (lvl, m) in logs if lvl >= 30]
+        # one line per category, sorted: oom < timeout
+        self.assertEqual(2, len(warnings))
+        self.assertIn("oom", warnings[0])
+        self.assertIn("[2]", warnings[0])  # shard id
+        self.assertIn("timeout", warnings[1])
+        self.assertIn("[0, 1]", warnings[1])
+
+
+class TestReportRunStatsTimings(unittest.TestCase):
+    """`_emit_runtime_statistics()` emits per-shard median / p95 / max / skew, total array
+    wall, and parallel efficiency. Skew > 3 + efficiency < 50% trigger tuning hints."""
+
+    def _params(self, slurm_array_parallelism=None):
+        return {"slurm_poll_wait_seconds": 30,
+                "slurm_array_parallelism": slurm_array_parallelism}
+
+    def test_balanced_workload_emits_stats_without_tuning_hints(self):
+        # 4 shards, ~equal wall time, run concurrently -> efficiency ~100%, skew ~1
+        outcomes = {sid: _make_outcome(sid, start_mono=100.0, end_mono=200.0)
+                    for sid in range(4)}
+        with _LogCapture() as logs:
+            _emit_runtime_statistics(outcomes, num_shards=4, parameters=self._params(),
+                                      stage=DistanceShardStage(num_clusters=4))
+        info = [m for (lvl, m) in logs if lvl == 20]
+        self.assertTrue(any("median" in m and "skew" in m for m in info))
+        # neither tuning hint should fire on a balanced workload
+        self.assertFalse(any("strided split is unbalanced" in m for m in info))
+        self.assertFalse(any("queue / scheduling overhead" in m for m in info))
+
+    def test_skewed_workload_triggers_target_items_hint(self):
+        # 3 fast shards + 1 slow shard -> skew > 3, hint must fire
+        outcomes = {
+            0: _make_outcome(0, start_mono=100.0, end_mono=110.0),
+            1: _make_outcome(1, start_mono=100.0, end_mono=110.0),
+            2: _make_outcome(2, start_mono=100.0, end_mono=110.0),
+            3: _make_outcome(3, start_mono=100.0, end_mono=1100.0),
+        }
+        with _LogCapture() as logs:
+            _emit_runtime_statistics(outcomes, num_shards=4, parameters=self._params(),
+                                      stage=DistanceShardStage(num_clusters=4))
+        info = [m for (lvl, m) in logs if lvl == 20]
+        self.assertTrue(any("strided split is unbalanced" in m for m in info))
+        self.assertTrue(any("target_items_per_shard" in m for m in info))
+
+    def test_low_efficiency_triggers_array_parallelism_hint(self):
+        # 4 shards that run sequentially (start-end staggered) -> total wall = 4 × per-shard,
+        # efficiency ~ 25%, hint must fire and mention the current slurm_array_parallelism
+        outcomes = {
+            0: _make_outcome(0, start_mono=100.0, end_mono=200.0),
+            1: _make_outcome(1, start_mono=200.0, end_mono=300.0),
+            2: _make_outcome(2, start_mono=300.0, end_mono=400.0),
+            3: _make_outcome(3, start_mono=400.0, end_mono=500.0),
+        }
+        with _LogCapture() as logs:
+            _emit_runtime_statistics(outcomes, num_shards=4,
+                                      parameters=self._params(slurm_array_parallelism=10),
+                                      stage=DistanceShardStage(num_clusters=4))
+        info = [m for (lvl, m) in logs if lvl == 20]
+        self.assertTrue(any("queue / scheduling overhead" in m for m in info))
+        self.assertTrue(any("slurm_array_parallelism (currently 10)" in m for m in info))
+
+    def test_no_timing_data_logs_fallback_message(self):
+        # All shards completed between poll cycles (no observed RUNNING -> done) so we have
+        # no timing data; the helper must still emit a coherent log line rather than crash
+        outcomes = {sid: _make_outcome(sid, start_mono=None, end_mono=200.0)
+                    for sid in range(2)}
+        with _LogCapture() as logs:
+            _emit_runtime_statistics(outcomes, num_shards=2, parameters=self._params(),
+                                      stage=DistanceShardStage(num_clusters=4))
+        info = [m for (lvl, m) in logs if lvl == 20]
+        self.assertTrue(any("no shard ran long enough" in m for m in info))
+
+    def test_internal_error_does_not_raise(self):
+        # The reporter must never let a formatting bug fail a successful stage. Drive it
+        # with a malformed outcome that triggers an exception inside the emitter and assert
+        # only a warning is logged.
+        outcomes = {0: {"shard_id": 0, "job_id": "x",
+                         "state": "COMPLETED",
+                         "start_mono": "not-a-number",  # type mismatch -> arithmetic raises
+                         "end_mono": "still-not-a-number",
+                         "category": "success", "stderr_path": None, "exception": None}}
+        with _LogCapture() as logs:
+            _report_run_stats(outcomes, num_shards=1, parameters=self._params(),
+                              stage=DistanceShardStage(num_clusters=4))
+        warnings = [m for (lvl, m) in logs if lvl >= 30]
+        self.assertTrue(any("post-run reporter failed" in w for w in warnings))
 
 
 class TestExecutorParamsCpuBindGuard(unittest.TestCase):

@@ -137,9 +137,33 @@ class AnalysisConfig:
             "slurm_num_shards": None,  # number of array tasks; None => derived automatically from the job size
             "slurm_root_folder": None,  # shared parent dir for per-stage SLURM subfolders; None => <internal_folder>/_slurm. Each stage's shards land in <slurm_root_folder>/stage<NN>_<name>/ (e.g. stage04_distances/).
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
-            "slurm_setup": None,  # comma-separated list of shell commands run by sbatch before srun (must include activating a working TransportTools env); None disables.
-            "slurm_srun_args": None,  # comma-separated extra args appended to the srun call inside the array job; None => ['--cpu-bind=none']. The launcher ALWAYS guarantees '--cpu-bind=none' is present (prepended if missing) so a stage launched from inside a SLURM allocation does not fail with 'CPU binding outside of job step allocation' even when the user overrides this knob.
-            "slurm_additional_parameters": None,  # comma-separated key=value pairs passed verbatim as #SBATCH headers via submitit's slurm_additional_parameters (e.g. 'qos=high, constraint=icelake, gres=gpu:1'). Use for cluster-specific knobs (--qos, --constraint, --gres, --reservation, --exclude, ...) that are not exposed as dedicated slurm_* parameters. Distinct from slurm_srun_args (which adds args to the srun step inside the job) - this adds sbatch headers at the allocation level.
+            # The next three knobs configure DIFFERENT layers of an sbatch submission and
+            # are NOT interchangeable. Picking the wrong layer is a frequent source of
+            # confusion, so the intended split is:
+            #
+            #   slurm_additional_parameters  ->  #SBATCH header lines (allocation request).
+            #                                    Tells the scheduler WHAT to allocate.
+            #                                    Effective BEFORE the job starts running.
+            #                                    Example: --qos, --constraint, --gres,
+            #                                    --reservation, --exclude.
+            #
+            #   slurm_setup                  ->  shell commands inserted into the sbatch
+            #                                    script BEFORE the srun line. Run ONCE per
+            #                                    array task on the compute node, in the
+            #                                    allocated shell, before the worker
+            #                                    process exists. Use for environment
+            #                                    bring-up (module load, conda/venv
+            #                                    activation, export VAR=...).
+            #
+            #   slurm_srun_args              ->  extra command-line args appended to the
+            #                                    srun invocation that actually launches
+            #                                    the worker step. Influence HOW srun
+            #                                    starts the worker (CPU/GPU binding, MPI
+            #                                    layer, --exact, ...). Effective at job
+            #                                    step launch time, after slurm_setup ran.
+            "slurm_setup": None,  # comma-separated list of shell commands prepended to the sbatch script and executed once per array task before srun launches the worker (e.g. 'module load python/3.11, source ~/envs/tt/bin/activate'). MUST leave a working TransportTools env on PATH or the worker process will fail to import. None disables (no extra setup lines emitted).
+            "slurm_srun_args": None,  # comma-separated extra args appended to the srun call that starts the worker job step (e.g. '--exact, --mpi=pmix'). The launcher ALWAYS guarantees '--cpu-bind=none' is present (prepended if missing) so a stage launched from inside a SLURM allocation does not fail with 'CPU binding outside of job step allocation'; any user-supplied '--cpu-bind=...' is honoured instead. None => default to just ['--cpu-bind=none'].
+            "slurm_additional_parameters": None,  # comma-separated 'key=value' pairs forwarded verbatim as #SBATCH headers via submitit's slurm_additional_parameters mapping (e.g. 'qos=high, constraint=icelake, gres=gpu:1'). Use for cluster-specific allocation knobs (--qos, --constraint, --gres, --reservation, --exclude, ...) that are not exposed as dedicated slurm_* parameters here. Do NOT use this to override knobs that already have a dedicated parameter (slurm_partition, slurm_account, slurm_timeout_min => 'time', slurm_cpus_per_task, slurm_mem_gb, slurm_array_parallelism, ...) - those would silently shadow the dedicated knob via the additional #SBATCH header; _validate_parameter_values() rejects such collisions at config load but only when the override would actually take effect (i.e. the dedicated knob is also active). None disables.
             "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling
             "slurm_keep_shard_results": False,  # when False (default), the per-stage SLURM folder (shard pickles, manifests, side-effects tarballs, items.json, state.pkl, submitit per-job artifacts) is deleted as soon as the launcher's assembly succeeds, so the `_slurm/` tree does not grow without bound across many runs. Set to True to keep the cache after a successful run (useful for debugging shard outputs or for iterative re-runs that change only the assembly step). Resumability of an interrupted run is unaffected either way - cleanup only fires after the stage has completed successfully end-to-end.
 
@@ -726,6 +750,62 @@ class AnalysisConfig:
                 self._test_parameter_sanity("slurm_num_shards", 1, sys.maxsize)
             if self.parameters["slurm_array_parallelism"] is not None:
                 self._test_parameter_sanity("slurm_array_parallelism", 1, sys.maxsize)
+            # Reject only ACTUAL overrides: an entry in slurm_additional_parameters is
+            # flagged only when the same knob is also being passed to submitit through a
+            # dedicated parameter (so both #SBATCH headers would land in the sbatch
+            # script and the additional_parameters entry would silently win - confusing
+            # the user into thinking the dedicated knob is being respected).
+            # Hypothetical shadowing (e.g. 'partition=foo' when slurm_partition is None)
+            # is allowed - no override actually happens in that case.
+            extra = self.parameters.get("slurm_additional_parameters") or {}
+            if extra:
+                # knobs the launcher ALWAYS passes to submitit in executor_params() -
+                # any collision here is always a real override
+                always_active = {
+                    "time": "slurm_timeout_min",
+                    "timeout_min": "slurm_timeout_min",
+                    "cpus_per_task": "slurm_cpus_per_task",
+                    "cpus-per-task": "slurm_cpus_per_task",
+                    "mem": "slurm_mem_gb",
+                    "mem_gb": "slurm_mem_gb",
+                    "nodes": "(fixed to 1 by the launcher)",
+                    "tasks_per_node": "(fixed to 1 by the launcher)",
+                    "ntasks_per_node": "(fixed to 1 by the launcher)",
+                    "ntasks-per-node": "(fixed to 1 by the launcher)",
+                    "name": "(set automatically to the stage name)",
+                    "job_name": "(set automatically to the stage name)",
+                    "job-name": "(set automatically to the stage name)",
+                    "array": "(set automatically from slurm_num_shards)",
+                    # srun_args is always passed (defaults to ['--cpu-bind=none'])
+                    "srun_args": "slurm_srun_args",
+                }
+                # knobs only forwarded when the matching dedicated parameter is set -
+                # collide only when that dedicated parameter is non-default
+                conditional = {
+                    "partition": ("slurm_partition",
+                                  self.parameters.get("slurm_partition") is not None),
+                    "account": ("slurm_account",
+                                self.parameters.get("slurm_account") is not None),
+                    "array_parallelism": ("slurm_array_parallelism",
+                                          self.parameters.get("slurm_array_parallelism") is not None),
+                    "setup": ("slurm_setup",
+                              bool(self.parameters.get("slurm_setup"))),
+                }
+                collisions = []
+                for key in extra:
+                    norm = str(key).strip().lower()
+                    if norm in always_active:
+                        collisions.append((key, always_active[norm]))
+                    elif norm in conditional and conditional[norm][1]:
+                        collisions.append((key, conditional[norm][0]))
+                if collisions:
+                    lines = ", ".join("'{}' (use '{}' instead)".format(k, target)
+                                      for k, target in collisions)
+                    raise ValueError("\nParameter 'slurm_additional_parameters' contains "
+                                     "entries that would override values already set "
+                                     "via dedicated configuration knobs: {}.\nRemove "
+                                     "them from slurm_additional_parameters and use the "
+                                     "dedicated knob instead.".format(lines))
 
         ambiguous_assignment_resolution_methods = ["exact_matching", "penetration_depth", "assign2all"]
         if self.parameters["ambiguous_event_assignment_resolution"] not in ambiguous_assignment_resolution_methods:
