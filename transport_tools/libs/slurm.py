@@ -39,6 +39,7 @@ import os
 import json
 import pickle
 import shutil
+import subprocess
 import tarfile
 import time
 import hashlib
@@ -725,6 +726,77 @@ def _invalidate_cached_shard(stage: SlurmShardStage, slurm_folder: str, shard_id
                                stale, exc)
 
 
+#: Seconds of grace between a shard's first absence from squeue and the launcher giving up on
+#: it. Bounds the NFS/race window between slurmctld dropping a job from its active view and the
+#: shard's result pickle becoming visible to the launcher's filesystem - if the pickle was
+#: about to land, it lands within this window and the next `job.done()` check at the top of the
+#: poll loop catches it on the success path before the squeue branch abandons the shard.
+_SQUEUE_MISS_GRACE_S = 5.0
+
+#: Subprocess timeout for the squeue probe. Bounded so a sick slurmctld cannot hang the
+#: launcher: on timeout, `_squeue_live_jobs()` returns None and the caller falls back to the
+#: submission-time backstop rather than false-abandoning anything.
+_SQUEUE_PROBE_TIMEOUT_S = 30.0
+
+
+def _squeue_live_jobs(job_ids: List[str],
+                      timeout_s: float = _SQUEUE_PROBE_TIMEOUT_S) -> Optional[set]:
+    """Batched 'is this job still listed by slurmctld?' check, used by `_poll_jobs` as a
+    filesystem-independent dead-shard signal that works even when sacct is unavailable
+    (slurmdbd missing - submitit's job.done() then never flips to True for scancel'd /
+    node-failed / preempted shards because both the result pickle and the SLURM state path
+    fail). One `squeue -h -j <comma-list>` call covers every still-pending shard per poll
+    cycle regardless of shard count.
+
+    Returns:
+        - the set of job_ids that squeue currently lists, when the controller is healthy;
+        - an empty set when slurmctld is healthy but knows nothing about any of the supplied
+          ids (every one of them has left its active view -> caller should abandon them after
+          the usual grace);
+        - None when squeue itself failed (binary missing, timed out, or an unexpected error
+          message). The caller MUST treat None as 'unknown' and not abandon any shard based
+          on it - the submission-time backstop is the only remaining safety net in that case.
+
+    job_ids must be submitit `Job.job_id` strings, including the '<parent>_<arr>' array-task
+    suffix where applicable (squeue accepts that format directly).
+    """
+
+    if not job_ids:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["squeue", "-h", "-j", ",".join(job_ids), "-o", "%i"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout_s, check=False)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.debug("squeue probe failed (%s); deferring to backstop timeouts.", exc)
+        return None
+
+    stdout = (proc.stdout or b"").decode("utf-8", errors="replace")
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
+
+    # squeue exits non-zero when at least one of the requested ids is unknown to the
+    # controller. Distinguish the benign "controller dropped these ids" case (we can trust
+    # an empty result -> caller abandons after grace) from "squeue itself is broken" (return
+    # None -> caller falls back to the backstop and does not abandon). Heuristic: if every
+    # non-blank stderr line is an 'invalid job id' message, it's the benign case.
+    only_unknown_ids = all(
+        "invalid job id" in line.lower()
+        for line in stderr.splitlines() if line.strip()
+    )
+    if proc.returncode != 0 and not (only_unknown_ids and stderr):
+        logger.debug("squeue probe returned exit=%d stderr=%r; deferring to backstop "
+                     "timeouts.", proc.returncode, stderr)
+        return None
+
+    live: set = set()
+    for line in stdout.splitlines():
+        token = line.strip()
+        if token:
+            live.add(token)
+    return live
+
+
 def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
                parameters: dict, stage_name: str) -> dict:
     """
@@ -739,6 +811,20 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
     without recomputing the finished ones. Failed shards (state FAILED, OOM, etc.) are reported
     via job.result() raising and do not abort collection.
 
+    A complementary fast-path catches the case where submitit's `job.done()` never flips True
+    because the cluster has no slurmdbd (sacct returns non-zero -> watcher.state is "UNKNOWN")
+    and the worker was scancel'd / node-failed / preempted before writing its result pickle.
+    Once per poll cycle, the still-pending shards' job ids are passed in one batched
+    `_squeue_live_jobs()` call; any shard the controller has dropped for at least one full
+    `_SQUEUE_MISS_GRACE_S` window is abandoned with category 'cancelled' (the grace covers
+    NFS lag between squeue dropping the job and the result pickle becoming visible). When
+    squeue itself fails, the helper returns None and this branch is skipped.
+
+    A final submission-time backstop (~6 x slurm_timeout_min) abandons any still-pending shard
+    even if both job.done() and squeue have been silent the whole time - the only remaining
+    case is a completely sick controller, where running indefinitely is worse than failing
+    loudly so the user can re-run.
+
     Returns a per-shard `outcomes` dict (keyed by shard_id) that the post-run reporter
     (`_report_run_stats`) consumes for failure categorization and runtime statistics. Each
     entry holds the shard's SLURM `state`, the monotonic timestamps of the observed
@@ -752,8 +838,14 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
     """
 
     shard_wait_timeout_s = parameters["slurm_timeout_min"] * 2 * 60 + 5 * 60
+    # Absolute backstop measured from submission. 6x walltime + 10 min so that any legitimate
+    # queue-wait-plus-run never trips it, but a permanently-stuck poll (sacct AND squeue both
+    # silent) still fails the stage in finite time instead of hanging forever.
+    submission_backstop_s = parameters["slurm_timeout_min"] * 6 * 60 + 10 * 60
+    submitted_mono = time.monotonic()
     pending: List[Tuple[int, Any]] = list(zip(missing_shards, jobs))
     running_since: dict = {}  # job_id -> monotonic time of first observed RUNNING state
+    first_squeue_miss: dict = {}  # shard_id -> monotonic time of first squeue absence
     outcomes: dict = {sid: {
         "shard_id": sid,
         "job_id": job.job_id,
@@ -765,8 +857,9 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
         "exception": None,
     } for sid, job in pending}
     logger.info("SLURM array job submitted as %d task(s); waiting for completion "
-                "(per-shard runtime timeout: %ds, measured from RUNNING state).",
-                len(jobs), shard_wait_timeout_s)
+                "(per-shard runtime timeout: %ds, measured from RUNNING state; "
+                "submission-time backstop: %ds).",
+                len(jobs), shard_wait_timeout_s, submission_backstop_s)
 
     while pending:
         now = time.monotonic()
@@ -791,6 +884,7 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
                                  stage_name, shard_id, job.job_id,
                                  outcomes[shard_id]["state"] or "?", category, error,
                                  stderr_msg, hint)
+                first_squeue_miss.pop(shard_id, None)
                 continue
 
             # Record the first time we observe this shard as RUNNING; once recorded, the
@@ -816,9 +910,70 @@ def _poll_jobs(missing_shards: List[int], jobs: List[Any], num_shards: int,
                     job.cancel()
                 except Exception as cancel_error:
                     logger.warning("Failed to cancel SLURM job %s: %s", job.job_id, cancel_error)
+                first_squeue_miss.pop(shard_id, None)
                 continue
 
             still_pending.append((shard_id, job))
+
+        # squeue-based dead-shard detection: one batched probe per poll cycle catches the
+        # case where job.done() will never flip True (no slurmdbd -> watcher state is forever
+        # "UNKNOWN" + worker was killed before writing the result pickle). A shard missing
+        # from squeue for at least _SQUEUE_MISS_GRACE_S is treated as dropped by the
+        # controller; the grace covers NFS lag between squeue dropping the job and the
+        # pickle becoming visible (if the pickle was about to land, it lands within the
+        # grace and the next iteration's job.done() catches the success path first).
+        if still_pending:
+            live = _squeue_live_jobs([job.job_id for _, job in still_pending])
+            if live is not None:
+                kept: List[Tuple[int, Any]] = []
+                for shard_id, job in still_pending:
+                    if job.job_id in live:
+                        first_squeue_miss.pop(shard_id, None)
+                        kept.append((shard_id, job))
+                        continue
+                    if shard_id not in first_squeue_miss:
+                        first_squeue_miss[shard_id] = now
+                        kept.append((shard_id, job))
+                        continue
+                    if now - first_squeue_miss[shard_id] < _SQUEUE_MISS_GRACE_S:
+                        kept.append((shard_id, job))
+                        continue
+                    logger.error("SLURM %s shard %d (job %s) is no longer listed by squeue "
+                                 "and produced no result pickle within %.0fs; treating as "
+                                 "cancelled. Re-run the stage to resume.",
+                                 stage_name, shard_id, job.job_id, _SQUEUE_MISS_GRACE_S)
+                    outcomes[shard_id]["state"] = "CANCELLED"
+                    outcomes[shard_id]["end_mono"] = now
+                    outcomes[shard_id]["category"] = "cancelled"
+                    try:
+                        job.cancel()
+                    except Exception as cancel_error:
+                        logger.warning("Failed to cancel SLURM job %s: %s",
+                                       job.job_id, cancel_error)
+                    first_squeue_miss.pop(shard_id, None)
+                still_pending = kept
+
+        # Submission-time backstop: only reached when both job.done() and the squeue probe
+        # have been silent for the entire backstop window. That's the "controller is sick"
+        # case - failing loudly so the user can re-run is strictly better than hanging.
+        if still_pending and now - submitted_mono > submission_backstop_s:
+            for shard_id, job in still_pending:
+                logger.error("SLURM %s shard %d (job %s) has been pending for more than "
+                             "%ds since submission with no resolution from either "
+                             "submitit's job state or squeue; abandoning. Re-run the "
+                             "stage to resume.",
+                             stage_name, shard_id, job.job_id, submission_backstop_s)
+                outcomes[shard_id]["state"] = outcomes[shard_id]["state"] or "TIMEOUT"
+                outcomes[shard_id]["end_mono"] = now
+                outcomes[shard_id]["category"] = "timeout"
+                try:
+                    job.cancel()
+                except Exception as cancel_error:
+                    logger.warning("Failed to cancel SLURM job %s: %s",
+                                   job.job_id, cancel_error)
+                first_squeue_miss.pop(shard_id, None)
+            still_pending = []
+
         pending = still_pending
         if pending:
             time.sleep(parameters["slurm_poll_wait_seconds"])

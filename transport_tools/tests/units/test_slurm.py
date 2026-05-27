@@ -39,6 +39,7 @@ from transport_tools.libs.slurm import (
     SlurmShardStage,
     TunnelLayeringShardStage,
     TunnelNetworksShardStage,
+    _SQUEUE_MISS_GRACE_S,
     _categorize_failure,
     _detect_parent_slurm_allocation,
     _emit_failure_categorisation,
@@ -47,7 +48,9 @@ from transport_tools.libs.slurm import (
     _missing_shards,
     _parse_slurm_time_limit_min,
     _percentile,
+    _poll_jobs,
     _report_run_stats,
+    _squeue_live_jobs,
     _warn_on_driver_misallocation,
     cleanup_stage_folder,
     derive_num_shards,
@@ -1728,6 +1731,263 @@ class TestCategorizeFailure(unittest.TestCase):
         category, _ = _categorize_failure(_FakeJob(state_raises=True),
                                            RuntimeError("dunno"))
         self.assertEqual("error", category)
+
+
+class _FakeCompletedProcess:
+    """subprocess.run() return-value stand-in for the squeue-probe tests. Returns bytes for
+    stdout/stderr to mirror the real call (`subprocess.run` returns bytes when text=False is
+    in effect, which is what `_squeue_live_jobs` uses)."""
+
+    def __init__(self, returncode=0, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class TestSqueueLiveJobs(unittest.TestCase):
+    """`_squeue_live_jobs()` probes slurmctld for the still-pending shards in one batched
+    call so `_poll_jobs` can detect a scancel'd / node-failed / preempted shard even on
+    clusters where sacct is broken (no slurmdbd). The contract is three-way - a set of live
+    ids, an empty set when the controller is healthy but knows nothing about the requested
+    ids, or None when squeue itself is broken - so the caller can distinguish 'abandon after
+    grace' from 'don't touch anything'."""
+
+    def test_empty_input_short_circuits(self):
+        # No ids -> no subprocess call (we'd see ImportError if the helper attempted one
+        # with a patched module). Returns the trivial empty live-set.
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run") as run_mock:
+            self.assertEqual(set(), _squeue_live_jobs([]))
+            run_mock.assert_not_called()
+
+    def test_parses_live_ids_from_stdout(self):
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    return_value=_FakeCompletedProcess(
+                        returncode=0,
+                        stdout=b"347_0\n347_1\n")):
+            self.assertEqual({"347_0", "347_1"},
+                             _squeue_live_jobs(["347_0", "347_1", "347_2"]))
+
+    def test_all_unknown_ids_returns_empty_set(self):
+        # squeue exits non-zero when none of the requested ids are known, with stderr made
+        # up entirely of 'Invalid job id specified' lines. The helper must treat this as
+        # 'controller has dropped them all' (empty live set) rather than 'squeue is broken'
+        # (None) - that's the whole point of the heuristic.
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    return_value=_FakeCompletedProcess(
+                        returncode=1,
+                        stdout=b"",
+                        stderr=b"slurm_load_jobs error: Invalid job id specified\n")):
+            self.assertEqual(set(), _squeue_live_jobs(["999_0"]))
+
+    def test_squeue_misconfigured_returns_none(self):
+        # exit non-zero with a stderr that is NOT just 'Invalid job id' -> squeue itself is
+        # broken (auth failure, controller unreachable, ...). Must return None so the poll
+        # loop falls back to the backstop instead of false-abandoning every shard.
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    return_value=_FakeCompletedProcess(
+                        returncode=1,
+                        stdout=b"",
+                        stderr=b"slurm_load_jobs error: Unable to contact slurm controller\n")):
+            self.assertIsNone(_squeue_live_jobs(["347_0"]))
+
+    def test_squeue_binary_missing_returns_none(self):
+        # FileNotFoundError (squeue not in PATH) must not raise into the launcher; the
+        # helper degrades gracefully to None so the backstop is the only remaining guard.
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    side_effect=FileNotFoundError("no squeue")):
+            self.assertIsNone(_squeue_live_jobs(["347_0"]))
+
+    def test_squeue_timeout_returns_none(self):
+        # A sick controller can make squeue hang indefinitely; the helper enforces a hard
+        # subprocess timeout and surfaces it as None so the poll loop keeps moving.
+        import subprocess as _sp
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    side_effect=_sp.TimeoutExpired(cmd="squeue", timeout=1.0)):
+            self.assertIsNone(_squeue_live_jobs(["347_0"]))
+
+
+class _FakePollJob:
+    """Stand-in for `submitit.Job` covering exactly the surface `_poll_jobs` reads:
+    `done()`, `result()`, `cancel()`, `state`, `job_id`, and `paths.stderr`. Each instance
+    is driven by a deterministic script of done() return values, so tests can reproduce
+    any sequence (never-done, done-on-Nth-poll, done-then-result-raises) without timing
+    flakiness. Default state is "UNKNOWN" - the realistic value on a cluster without
+    slurmdbd, which is the exact environment where the new squeue branch matters."""
+
+    def __init__(self, job_id, done_sequence=None, result_value=None, result_error=None,
+                 state="UNKNOWN", stderr_path=None):
+        self.job_id = job_id
+        self._done_sequence = list(done_sequence) if done_sequence is not None else [False]
+        self._result_value = result_value
+        self._result_error = result_error
+        self.state = state
+        self.cancel_called = False
+        self.paths = type("P", (), {"stderr": stderr_path})()
+
+    def done(self):
+        if not self._done_sequence:
+            return False  # default: never finishes - matches the scancel/no-pickle path
+        if len(self._done_sequence) == 1:
+            return self._done_sequence[0]
+        return self._done_sequence.pop(0)
+
+    def result(self):
+        if self._result_error is not None:
+            raise self._result_error
+        return self._result_value
+
+    def cancel(self):
+        self.cancel_called = True
+
+
+class _MonotonicClock:
+    """Deterministic monotonic-time source for `_poll_jobs` tests. Each `tick()` call
+    advances the virtual clock by a configurable step; this is what we patch in for both
+    `time.monotonic` (inside slurm.py) and `time.sleep` (which we also redirect to tick so
+    the sleep between poll cycles advances the clock without actually sleeping)."""
+
+    def __init__(self, start=0.0, step=1.0):
+        self._t = start
+        self._step = step
+
+    def now(self):
+        return self._t
+
+    def tick(self, _seconds=None):
+        # `time.sleep(N)` is patched to call this with N; we ignore N and advance by our
+        # configured step to keep tests deterministic. Tests can also call tick() directly
+        # to advance the clock between iterations of work other than the sleep itself.
+        self._t += self._step
+
+
+class TestPollJobsSqueueFallback(unittest.TestCase):
+    """`_poll_jobs` adds two safety nets on top of the original RUNNING-based timeout:
+    a squeue-driven dead-shard probe (catches scancel/node-fail/preempt even when sacct is
+    broken and the result pickle never lands) and a submission-time backstop (last-resort
+    bail when both signals stay silent). These tests exercise the new control-flow paths
+    without involving real SLURM or submitit."""
+
+    @staticmethod
+    def _patch_clock(step=1.0):
+        """Helper: install a virtual clock into the slurm module's `time.monotonic` and
+        `time.sleep`, returning the clock for the test to inspect/advance. The patches are
+        registered as cleanups by the caller via the returned context manager."""
+
+        from unittest.mock import patch
+        clock = _MonotonicClock(step=step)
+        patches = [
+            patch("transport_tools.libs.slurm.time.monotonic", side_effect=clock.now),
+            patch("transport_tools.libs.slurm.time.sleep", side_effect=clock.tick),
+        ]
+        for p in patches:
+            p.start()
+        return clock, patches
+
+    @staticmethod
+    def _stop_patches(patches):
+        for p in patches:
+            p.stop()
+
+    def _make_parameters(self):
+        # Tight values so even the worst-case backstop test runs in milliseconds of virtual
+        # time. slurm_poll_wait_seconds=1 mirrors the real config in docs/use_case_1.
+        return {"slurm_timeout_min": 1, "slurm_poll_wait_seconds": 1}
+
+    def test_shard_missing_from_squeue_is_abandoned_after_grace(self):
+        # The bug this fix addresses: shard scancel'd, sacct broken (job.done() never True),
+        # squeue confirms the controller has dropped it. After _SQUEUE_MISS_GRACE_S the
+        # shard is abandoned with category 'cancelled', best-effort job.cancel() is called,
+        # and the poll loop returns instead of running forever.
+        from unittest.mock import patch
+        clock, patches = self._patch_clock(step=_SQUEUE_MISS_GRACE_S + 0.5)
+        try:
+            job0 = _FakePollJob(job_id="347_0", result_value=0,
+                                 done_sequence=[True])  # finishes immediately
+            job2 = _FakePollJob(job_id="347_2")  # never finishes (scancel'd, no pickle)
+            with patch("transport_tools.libs.slurm._squeue_live_jobs",
+                        return_value={"347_0"}):  # 2 not listed
+                outcomes = _poll_jobs([0, 2], [job0, job2], num_shards=3,
+                                       parameters=self._make_parameters(),
+                                       stage_name="test")
+        finally:
+            self._stop_patches(patches)
+
+        self.assertEqual("success", outcomes[0]["category"])
+        self.assertEqual("cancelled", outcomes[2]["category"])
+        self.assertEqual("CANCELLED", outcomes[2]["state"])
+        self.assertTrue(job2.cancel_called)
+
+    def test_shard_briefly_missing_from_squeue_then_reappears(self):
+        # NFS/race window: shard is absent from squeue on one poll, then reappears (or its
+        # pickle becomes visible) on the next. The grace must absorb this - no abandonment.
+        # We model 'reappears' by having job.done() flip True on the second poll.
+        from unittest.mock import patch
+        # step=1s keeps each iteration well inside _SQUEUE_MISS_GRACE_S, so a single miss
+        # never matures into an abandonment.
+        clock, patches = self._patch_clock(step=1.0)
+        live_responses = iter([set(), {"347_2"}])  # miss, then back
+        try:
+            job2 = _FakePollJob(job_id="347_2",
+                                 done_sequence=[False, False, True],
+                                 result_value=42)
+            with patch("transport_tools.libs.slurm._squeue_live_jobs",
+                        side_effect=lambda _ids: next(live_responses)):
+                outcomes = _poll_jobs([2], [job2], num_shards=1,
+                                       parameters=self._make_parameters(),
+                                       stage_name="test")
+        finally:
+            self._stop_patches(patches)
+
+        self.assertEqual("success", outcomes[2]["category"])
+        self.assertFalse(job2.cancel_called)
+
+    def test_squeue_failure_does_not_false_abandon(self):
+        # _squeue_live_jobs returns None when squeue itself is broken. The poll loop must
+        # not interpret that as 'shard is gone' - it should keep polling until job.done()
+        # flips or the submission-time backstop fires.
+        from unittest.mock import patch
+        clock, patches = self._patch_clock(step=1.0)
+        try:
+            # Shard finishes successfully on the 3rd poll; squeue is None throughout the
+            # whole run. Expectation: success, no cancel.
+            job2 = _FakePollJob(job_id="347_2",
+                                 done_sequence=[False, False, True],
+                                 result_value=99)
+            with patch("transport_tools.libs.slurm._squeue_live_jobs", return_value=None):
+                outcomes = _poll_jobs([2], [job2], num_shards=1,
+                                       parameters=self._make_parameters(),
+                                       stage_name="test")
+        finally:
+            self._stop_patches(patches)
+
+        self.assertEqual("success", outcomes[2]["category"])
+        self.assertFalse(job2.cancel_called)
+
+    def test_submission_backstop_fires_when_both_signals_silent(self):
+        # Worst case: job.done() forever False AND squeue is broken (returns None). The
+        # backstop must still bring the loop to a halt - 'fail loudly so the user re-runs'
+        # is strictly better than hanging indefinitely. Backstop window at
+        # slurm_timeout_min=1 is 6*60+10 = 370s; we advance the virtual clock in 200s
+        # steps so it trips on the 2nd poll cycle.
+        from unittest.mock import patch
+        clock, patches = self._patch_clock(step=200.0)
+        try:
+            job2 = _FakePollJob(job_id="347_2")  # never done, default state UNKNOWN
+            with patch("transport_tools.libs.slurm._squeue_live_jobs", return_value=None):
+                outcomes = _poll_jobs([2], [job2], num_shards=1,
+                                       parameters=self._make_parameters(),
+                                       stage_name="test")
+        finally:
+            self._stop_patches(patches)
+
+        self.assertEqual("timeout", outcomes[2]["category"])
+        self.assertTrue(job2.cancel_called)
 
 
 class TestPercentile(unittest.TestCase):
