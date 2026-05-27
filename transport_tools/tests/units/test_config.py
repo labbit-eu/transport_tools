@@ -535,11 +535,113 @@ class TestAquaductNewParameterDefaults(unittest.TestCase):
         config = AnalysisConfig(file2load_from=None, logging=False)
         self.assertIn("slurm_keep_shard_results", config.boolean_params)
 
+    def test_slurm_additional_parameters_default_is_none(self):
+        # absent INI knob -> None; executor_params() then omits the slurm_additional_parameters
+        # key entirely so submitit emits no extra #SBATCH headers
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_additional_parameters", config.calculations_settings)
+        self.assertIsNone(config.calculations_settings["slurm_additional_parameters"])
+
+    def test_slurm_additional_parameters_is_dict_param(self):
+        # registered in dict_params so the INI parser coerces comma-separated key=value
+        # strings into a dict at load time (not silently kept as a string)
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_additional_parameters", config.dict_params)
+
+    def test_slurm_setup_is_list_param(self):
+        # slurm_setup moved from multi-line list to comma-separated list; the parser must
+        # still treat it as a list (not a plain str), otherwise executor_params() would
+        # pass a string to submitit which expects List[str]
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_setup", config.list_params)
+
+    def test_slurm_srun_args_is_list_param(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertIn("slurm_srun_args", config.list_params)
+
     def test_logged_empty_folders_is_set(self):
         """The warn-once cache for empty AQUA-DUCT folders must be a set instance."""
         config = AnalysisConfig(file2load_from=None, logging=False)
         self.assertIsInstance(config._logged_empty_aquaduct_folders, set)
         self.assertEqual(len(config._logged_empty_aquaduct_folders), 0)
+
+
+class TestSlurmIniParameterParsing(unittest.TestCase):
+    """Comma-separated INI -> typed Python value coercion for the SLURM knobs:
+    `slurm_setup` / `slurm_srun_args` (list_params) and `slurm_additional_parameters`
+    (dict_params). Uses the real `_load_configuration` parser branch, not a mock, so a
+    regression in the parsing path is caught here even if no other test happens to load
+    these knobs from an INI."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="TT_test_slurm_ini_")
+        self.addCleanup(shutil.rmtree, self._tmp, True)
+
+    def _load(self, calc_body: str):
+        """Write a minimal INI with the given CALCULATIONS_SETTINGS body and load it via
+        the parser branch under test; return the populated AnalysisConfig.
+
+        `_load_configuration` always calls `_set_input_paths()` and the autoactivation
+        helper at the very end - both expect a fully-populated INI. We're only testing the
+        SLURM-parameter parsing branch here, so we stub those side effects out and assert
+        directly on `calculations_settings`.
+        """
+
+        ini_path = os.path.join(self._tmp, "test.ini")
+        with open(ini_path, "w") as out:
+            out.write("[CALCULATIONS_SETTINGS]\n")
+            out.write(calc_body)
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.source_file = ini_path
+        with patch.object(config, "_set_input_paths"), \
+                patch.object(config, "_autoactivate_functionalities"):
+            config._load_configuration(ini_path)
+        return config
+
+    def test_slurm_setup_list_parsed_from_comma_separated(self):
+        cfg = self._load("slurm_setup = module load python, source ~/env/bin/activate\n")
+        self.assertEqual(["module load python", "source ~/env/bin/activate"],
+                         cfg.calculations_settings["slurm_setup"])
+
+    def test_slurm_srun_args_list_parsed_from_comma_separated(self):
+        cfg = self._load("slurm_srun_args = --cpu-bind=none, --mpi=pmix\n")
+        self.assertEqual(["--cpu-bind=none", "--mpi=pmix"],
+                         cfg.calculations_settings["slurm_srun_args"])
+
+    def test_slurm_additional_parameters_dict_parsed_from_comma_separated(self):
+        cfg = self._load("slurm_additional_parameters = qos=high, constraint=icelake, "
+                         "gres=gpu:1\n")
+        self.assertEqual({"qos": "high", "constraint": "icelake", "gres": "gpu:1"},
+                         cfg.calculations_settings["slurm_additional_parameters"])
+
+    def test_slurm_additional_parameters_allows_empty_value(self):
+        # 'gres=' is a legitimate SBATCH header meaning "no GRES request"; the parser must
+        # accept it and produce an empty-string value rather than choking
+        cfg = self._load("slurm_additional_parameters = gres=\n")
+        self.assertEqual({"gres": ""},
+                         cfg.calculations_settings["slurm_additional_parameters"])
+
+    def test_slurm_additional_parameters_rejects_missing_equals(self):
+        # a typo without '=' is the most likely user error; the parser must raise at load
+        # time so the error surfaces immediately rather than three stages in when submitit
+        # sees a malformed sbatch header
+        with self.assertRaises(ValueError) as cm:
+            self._load("slurm_additional_parameters = qos=high, oops_no_equals_here\n")
+        self.assertIn("key=value", str(cm.exception))
+        self.assertIn("oops_no_equals_here", str(cm.exception))
+
+    def test_empty_list_param_yields_empty_list(self):
+        # explicit empty value -> None via the possibly_none_params path (slurm_setup is
+        # already there for the existing default-None behaviour), so the consumer's
+        # `if parameters["slurm_setup"]:` check still works correctly. Asserting on the
+        # config attribute directly avoids depending on validation.
+        cfg = self._load("slurm_setup = \n")
+        self.assertIsNone(cfg.calculations_settings["slurm_setup"])
+
+    def test_empty_dict_param_yields_none(self):
+        # same possibly_none_params handling for slurm_additional_parameters
+        cfg = self._load("slurm_additional_parameters = \n")
+        self.assertIsNone(cfg.calculations_settings["slurm_additional_parameters"])
 
 
 class TestAquaductTracedResiduesFilterParsing(unittest.TestCase):

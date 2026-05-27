@@ -37,7 +37,11 @@ from transport_tools.libs.slurm import (
     SlurmShardStage,
     TunnelLayeringShardStage,
     TunnelNetworksShardStage,
+    _detect_parent_slurm_allocation,
+    _ensure_cpu_bind_none,
     _missing_shards,
+    _parse_slurm_time_limit_min,
+    _warn_on_driver_misallocation,
     cleanup_stage_folder,
     derive_num_shards,
     submitit_available,
@@ -1404,6 +1408,233 @@ class TestCleanupStageFolder(unittest.TestCase):
 
         self.assertFalse(os.path.exists(self._slurm_folder))
         self.assertTrue(os.path.exists(sibling_file))
+
+
+class TestEnsureCpuBindNone(unittest.TestCase):
+    """`_ensure_cpu_bind_none()` guarantees the --cpu-bind=none workaround stays in
+    slurm_srun_args even when the user overrides the knob, but honours an explicit
+    --cpu-bind=... they supply themselves."""
+
+    def test_empty_list_adds_workaround(self):
+        # the default path (user did not override slurm_srun_args; config.py left it []):
+        # the workaround must still be present so a recursive SLURM run does not break
+        self.assertEqual(["--cpu-bind=none"], _ensure_cpu_bind_none([]))
+
+    def test_prepends_to_user_args(self):
+        # user added --mpi=pmix; workaround is prepended, user's args preserved in order
+        self.assertEqual(["--cpu-bind=none", "--mpi=pmix"],
+                         _ensure_cpu_bind_none(["--mpi=pmix"]))
+
+    def test_does_not_duplicate_when_already_present(self):
+        # user explicitly asked for --cpu-bind=none; no double-insertion
+        self.assertEqual(["--cpu-bind=none"], _ensure_cpu_bind_none(["--cpu-bind=none"]))
+
+    def test_honours_explicit_user_override(self):
+        # user explicitly asked for --cpu-bind=cores; we do NOT overwrite their choice
+        # with --cpu-bind=none. The recursive-SLURM workaround is a default, not a hard
+        # requirement when the user knows what they're doing.
+        self.assertEqual(["--cpu-bind=cores", "--mpi=pmix"],
+                         _ensure_cpu_bind_none(["--cpu-bind=cores", "--mpi=pmix"]))
+
+    def test_returns_new_list(self):
+        # helper must not mutate the caller's input - the parameters dict is shared
+        # between stage calls and an in-place append would silently corrupt later calls
+        original = ["--mpi=pmix"]
+        result = _ensure_cpu_bind_none(original)
+        self.assertEqual(["--mpi=pmix"], original)
+        self.assertIsNot(original, result)
+
+
+class TestParseSlurmTimeLimitMin(unittest.TestCase):
+    """SLURM TIMELIMIT-format parsing: minutes / mm:ss / hh:mm:ss / days-hh:mm:ss."""
+
+    def test_plain_minutes(self):
+        self.assertEqual(120, _parse_slurm_time_limit_min("120"))
+
+    def test_hours_minutes_seconds(self):
+        self.assertEqual(270, _parse_slurm_time_limit_min("4:30:00"))
+
+    def test_days_hours_minutes_seconds(self):
+        # 1 day + 12 hours = 24*60 + 12*60 = 2160 min
+        self.assertEqual(2160, _parse_slurm_time_limit_min("1-12:00:00"))
+
+    def test_minutes_seconds(self):
+        # 90 minutes 0 seconds -> 90 min
+        self.assertEqual(90, _parse_slurm_time_limit_min("90:00"))
+
+    def test_unparseable_returns_none(self):
+        # any garbage -> None so callers can degrade gracefully
+        self.assertIsNone(_parse_slurm_time_limit_min("not-a-time"))
+        self.assertIsNone(_parse_slurm_time_limit_min(""))
+        self.assertIsNone(_parse_slurm_time_limit_min("1:2:3:4"))
+
+
+class TestDetectParentSlurmAllocation(unittest.TestCase):
+    """Env-var-based detection of a parent SLURM allocation (recursive-SLURM case)."""
+
+    def setUp(self):
+        # snapshot the env so the tests don't leak SLURM_* settings between cases
+        self._saved = {k: os.environ.pop(k, None)
+                       for k in ("SLURM_JOB_ID", "SLURM_JOBID",
+                                 "SLURM_CPUS_ON_NODE", "SLURM_JOB_CPUS_PER_NODE",
+                                 "SLURM_TIMELIMIT", "SBATCH_TIMELIMIT")}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is not None:
+                os.environ[k] = v
+            elif k in os.environ:
+                del os.environ[k]
+
+    def test_returns_none_when_not_inside_slurm(self):
+        self.assertIsNone(_detect_parent_slurm_allocation())
+
+    def test_detects_via_slurm_job_id(self):
+        os.environ["SLURM_JOB_ID"] = "12345"
+        info = _detect_parent_slurm_allocation()
+        self.assertIsNotNone(info)
+        self.assertEqual("12345", info["job_id"])
+
+    def test_detects_via_legacy_slurm_jobid(self):
+        # older SLURM versions export SLURM_JOBID (no underscore); we accept both
+        os.environ["SLURM_JOBID"] = "98765"
+        info = _detect_parent_slurm_allocation()
+        self.assertEqual("98765", info["job_id"])
+
+    def test_parses_cpu_count_from_slurm_cpus_on_node(self):
+        os.environ["SLURM_JOB_ID"] = "12345"
+        os.environ["SLURM_CPUS_ON_NODE"] = "16"
+        self.assertEqual(16, _detect_parent_slurm_allocation()["cpus"])
+
+    def test_parses_compressed_cpu_count(self):
+        # SLURM_JOB_CPUS_PER_NODE on multi-node allocations uses compressed form
+        os.environ["SLURM_JOB_ID"] = "12345"
+        os.environ["SLURM_JOB_CPUS_PER_NODE"] = "16(x2)"
+        self.assertEqual(16, _detect_parent_slurm_allocation()["cpus"])
+
+    def test_unparseable_cpu_count_yields_none(self):
+        os.environ["SLURM_JOB_ID"] = "12345"
+        os.environ["SLURM_CPUS_ON_NODE"] = "garbage"
+        self.assertIsNone(_detect_parent_slurm_allocation()["cpus"])
+
+    def test_parses_time_limit(self):
+        os.environ["SLURM_JOB_ID"] = "12345"
+        os.environ["SLURM_TIMELIMIT"] = "4:30:00"
+        self.assertEqual(270, _detect_parent_slurm_allocation()["time_min"])
+
+
+class TestWarnOnDriverMisallocation(unittest.TestCase):
+    """The two heuristic warnings emitted when the recursive driver looks under-allocated
+    for the array it's about to submit. Both are warn-only (the launcher proceeds either
+    way) - users can know what they're doing."""
+
+    def _capture_warnings(self, parent_info, parameters, num_shards):
+        import logging
+        from transport_tools.libs.slurm import logger as slurm_logger
+
+        captured: list = []
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                if record.levelno >= logging.WARNING:
+                    captured.append(record.getMessage())
+
+        handler = _Capture()
+        slurm_logger.addHandler(handler)
+        try:
+            _warn_on_driver_misallocation(parent_info, parameters, num_shards, "test-stage")
+        finally:
+            slurm_logger.removeHandler(handler)
+        return captured
+
+    def test_warns_when_driver_walltime_shorter_than_array(self):
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 4, "time_min": 30},
+            {"slurm_timeout_min": 240}, num_shards=4)
+        self.assertTrue(any("wall-time limit" in w for w in warnings))
+        self.assertTrue(any("12345" in w for w in warnings))
+
+    def test_no_walltime_warning_when_driver_outlasts_array(self):
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 4, "time_min": 480},
+            {"slurm_timeout_min": 240}, num_shards=4)
+        self.assertFalse(any("wall-time limit" in w for w in warnings))
+
+    def test_no_walltime_warning_when_parent_time_unknown(self):
+        # parent time_min is None (not in env / unparseable) -> don't false-positive on
+        # every plain salloc
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 4, "time_min": None},
+            {"slurm_timeout_min": 240}, num_shards=4)
+        self.assertFalse(any("wall-time limit" in w for w in warnings))
+
+    def test_warns_on_single_cpu_with_large_array(self):
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 1, "time_min": 480},
+            {"slurm_timeout_min": 240}, num_shards=64)
+        self.assertTrue(any("1 CPU" in w for w in warnings))
+
+    def test_no_cpu_warning_for_small_array(self):
+        # single-core driver is fine for a handful of shards - the threshold is 16
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 1, "time_min": 480},
+            {"slurm_timeout_min": 240}, num_shards=4)
+        self.assertFalse(any("1 CPU" in w for w in warnings))
+
+    def test_no_cpu_warning_when_multi_cpu(self):
+        # >1 CPU driver: polling overhead is fine even for large arrays
+        warnings = self._capture_warnings(
+            {"job_id": "12345", "cpus": 4, "time_min": 480},
+            {"slurm_timeout_min": 240}, num_shards=1000)
+        self.assertFalse(any("1 CPU" in w for w in warnings))
+
+
+class TestExecutorParamsCpuBindGuard(unittest.TestCase):
+    """`SlurmShardStage.executor_params()` wires _ensure_cpu_bind_none + the optional
+    slurm_additional_parameters passthrough into the dict it returns to submitit."""
+
+    def _params(self, **overrides):
+        params = {
+            "slurm_timeout_min": 240, "slurm_cpus_per_task": 4, "slurm_mem_gb": 8.0,
+            "slurm_partition": None, "slurm_account": None,
+            "slurm_array_parallelism": None, "slurm_setup": None,
+            "slurm_srun_args": None, "slurm_additional_parameters": None,
+        }
+        params.update(overrides)
+        return params
+
+    def test_default_srun_args_has_cpu_bind_none(self):
+        # user did not set slurm_srun_args -> default workaround is applied
+        stage = DistanceShardStage(num_clusters=2)
+        ep = stage.executor_params(self._params())
+        self.assertEqual(["--cpu-bind=none"], ep["slurm_srun_args"])
+
+    def test_user_srun_args_get_cpu_bind_prepended(self):
+        # user added other args; workaround must still be present
+        stage = DistanceShardStage(num_clusters=2)
+        ep = stage.executor_params(self._params(slurm_srun_args=["--mpi=pmix"]))
+        self.assertEqual(["--cpu-bind=none", "--mpi=pmix"], ep["slurm_srun_args"])
+
+    def test_user_explicit_cpu_bind_is_honoured(self):
+        # explicit user override wins
+        stage = DistanceShardStage(num_clusters=2)
+        ep = stage.executor_params(
+            self._params(slurm_srun_args=["--cpu-bind=cores"]))
+        self.assertEqual(["--cpu-bind=cores"], ep["slurm_srun_args"])
+
+    def test_additional_parameters_passthrough(self):
+        # dict passed through verbatim to submitit's slurm_additional_parameters arg
+        stage = DistanceShardStage(num_clusters=2)
+        ep = stage.executor_params(self._params(
+            slurm_additional_parameters={"qos": "high", "constraint": "icelake"}))
+        self.assertEqual({"qos": "high", "constraint": "icelake"},
+                         ep["slurm_additional_parameters"])
+
+    def test_empty_additional_parameters_omitted(self):
+        # an empty dict (or None) must not produce an empty slurm_additional_parameters
+        # key in the kwargs - submitit would still echo it as an empty #SBATCH block
+        stage = DistanceShardStage(num_clusters=2)
+        ep = stage.executor_params(self._params(slurm_additional_parameters={}))
+        self.assertNotIn("slurm_additional_parameters", ep)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,162 @@ def submitit_available() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# srun-args + parent-allocation helpers (recursive SLURM workaround)
+# ---------------------------------------------------------------------------
+#
+# When `tt_engine.py` is itself launched from inside a SLURM allocation (the most common
+# production driver pattern) and then submits its own SLURM array, the parent job's
+# `SLURM_CPU_BIND*` environment variables leak into the array job's sbatch script and make
+# the nested `srun` fail with "CPU binding outside of job step allocation". The fix is to
+# pass `--cpu-bind=none` to that nested srun. The default behaviour of `executor_params()`
+# substitutes `['--cpu-bind=none']` when the user did not set `slurm_srun_args`, but when
+# the user overrides the knob to add other args (`--mpi=pmix`, `--exact`, ...), we must
+# still guarantee the workaround is present so a recursive run does not break.
+# `_ensure_cpu_bind_none()` is what enforces that invariant.
+
+_CPU_BIND_NONE = "--cpu-bind=none"
+
+
+def _ensure_cpu_bind_none(srun_args: List[str]) -> List[str]:
+    """
+    Guarantee that `--cpu-bind=none` is present in the srun-args list, preserving the user's
+    other args. If the user already supplied any form of `--cpu-bind=...` we leave their
+    choice alone (so an explicit override is honoured even when it differs from `none`);
+    otherwise we prepend the workaround. Always returns a new list so the caller's input is
+    not mutated.
+
+    :param srun_args: list of srun args (already parsed by config.py into a list); may be
+                      empty but must not be None
+    :return: srun args list with the `--cpu-bind=none` workaround guaranteed when no
+             explicit `--cpu-bind=...` is already present
+    """
+
+    has_cpu_bind = any(str(arg).startswith("--cpu-bind") for arg in srun_args)
+    if has_cpu_bind:
+        return list(srun_args)
+    # prepend rather than append so any later `--exact` / `--mpi=...` style args still come
+    # in the canonical order users expect when reading sbatch logs
+    return [_CPU_BIND_NONE, *srun_args]
+
+
+def _detect_parent_slurm_allocation() -> Optional[dict]:
+    """
+    Detect whether the launcher itself is running inside a SLURM allocation (the recursive
+    SLURM case: `tt_engine.py` was started by `sbatch driver.sh` or by `salloc --interactive`
+    and is now about to submit its own array job). Returns a dict with the parent job's
+    identifying details, or `None` when not running inside a SLURM allocation.
+
+    The detection is purely env-var-based (no `scontrol` shell-out) so it is cheap and safe
+    to call from every launcher invocation. Keys in the returned dict:
+      * `job_id`   - parent `SLURM_JOB_ID` (always present when this returns non-None)
+      * `cpus`     - parent CPU count parsed from `SLURM_CPUS_ON_NODE` /
+                     `SLURM_JOB_CPUS_PER_NODE`, or `None` if unparseable
+      * `time_min` - parent wall-time limit in minutes parsed from `SLURM_TIMELIMIT` /
+                     `SBATCH_TIMELIMIT` formats `[days-]hours:minutes[:seconds]` or plain
+                     minutes, or `None` if unparseable / absent
+    The keys are minimal on purpose: the misallocation warning below only needs CPU count
+    and time limit to fire; we don't try to enumerate every SLURM_* var.
+    """
+
+    job_id = os.environ.get("SLURM_JOB_ID") or os.environ.get("SLURM_JOBID")
+    if not job_id:
+        return None
+
+    info: dict = {"job_id": job_id, "cpus": None, "time_min": None}
+
+    cpus_raw = (os.environ.get("SLURM_CPUS_ON_NODE")
+                or os.environ.get("SLURM_JOB_CPUS_PER_NODE"))
+    if cpus_raw:
+        # SLURM_JOB_CPUS_PER_NODE can be a compressed form like "16(x2)" on multi-node
+        # allocations; take the leading integer.
+        try:
+            info["cpus"] = int(cpus_raw.split("(")[0].split(",")[0])
+        except (ValueError, IndexError):
+            pass
+
+    time_raw = os.environ.get("SLURM_TIMELIMIT") or os.environ.get("SBATCH_TIMELIMIT")
+    if time_raw:
+        info["time_min"] = _parse_slurm_time_limit_min(time_raw)
+
+    return info
+
+
+def _parse_slurm_time_limit_min(value: str) -> Optional[int]:
+    """
+    Parse SLURM time-limit strings into minutes. Accepted forms (the same submitit / sbatch
+    accept):
+      * 'minutes'                       e.g. '120'         -> 120
+      * 'minutes:seconds'               e.g. '90:00'       -> 90
+      * 'hours:minutes:seconds'         e.g. '4:30:00'     -> 270
+      * 'days-hours:minutes:seconds'    e.g. '1-12:00:00'  -> 2160
+    Returns `None` for any unparseable value (so callers can degrade gracefully without
+    raising).
+    """
+
+    value = value.strip()
+    if not value:
+        return None
+    days_str = "0"
+    rest = value
+    if "-" in value:
+        days_str, _, rest = value.partition("-")
+    parts = rest.split(":")
+    try:
+        days = int(days_str)
+        if len(parts) == 1:           # plain minutes
+            return days * 24 * 60 + int(parts[0])
+        if len(parts) == 2:           # mm:ss
+            mm, ss = int(parts[0]), int(parts[1])
+            return days * 24 * 60 + mm + (1 if ss else 0)
+        if len(parts) == 3:           # hh:mm:ss
+            hh, mm, ss = int(parts[0]), int(parts[1]), int(parts[2])
+            return days * 24 * 60 + hh * 60 + mm + (1 if ss else 0)
+    except ValueError:
+        return None
+    return None
+
+
+def _warn_on_driver_misallocation(parent_info: dict, parameters: dict,
+                                  num_shards: int, stage_name: str) -> None:
+    """
+    Emit a warning when the recursive driver's allocation looks too small to outlive the
+    array it is about to submit. Two heuristic signals, both warn-only (the launcher does
+    not refuse to submit - the user may know what they are doing):
+
+      * **Tiny driver wall-time vs. array wall-time.** If the parent's `SLURM_TIMELIMIT` is
+        smaller than the array's `slurm_timeout_min`, the driver will die before its array
+        finishes and the user will need to manually `sacct` to retrieve results. No warning
+        when the parent's wall-time is unparseable (we'd false-positive on every plain
+        salloc).
+      * **Single-CPU driver with a large array.** A driver running on 1 CPU has only enough
+        memory / Python event-loop bandwidth to babysit a small number of pending jobs;
+        polling a thousand-shard array from a single core can run the driver out of memory
+        (submitit holds an in-memory Job object per shard). We warn when parent CPUs == 1
+        AND `num_shards` >= 16 (a soft threshold; below this the polling overhead is
+        negligible).
+    """
+
+    if parent_info.get("time_min") is not None \
+            and parent_info["time_min"] < parameters["slurm_timeout_min"]:
+        logger.warning(
+            "Driver job %s has a wall-time limit of %d min, shorter than the SLURM %s "
+            "array's per-shard limit of %d min. The driver will likely exit before the "
+            "array finishes; results will still be on disk but the launcher won't be there "
+            "to assemble them. Increase the driver's --time or reduce slurm_timeout_min.",
+            parent_info["job_id"], parent_info["time_min"], stage_name,
+            parameters["slurm_timeout_min"])
+
+    if parent_info.get("cpus") == 1 and num_shards >= 16:
+        logger.warning(
+            "Driver job %s is allocated 1 CPU but is about to poll %d SLURM %s shard(s). "
+            "Polling a large array from a single-core driver can run the driver out of "
+            "memory (submitit holds an in-memory Job object per shard). Consider "
+            "allocating the driver more CPUs / memory, or splitting the array into fewer "
+            "larger shards via slurm_num_shards.",
+            parent_info["job_id"], num_shards, stage_name)
+
+
 def derive_num_shards(n_jobs: int, *, target_per_shard: int,
                       array_parallelism: Optional[int] = None,
                       max_auto_shards: int = _DEFAULT_MAX_AUTO_SHARDS) -> int:
@@ -424,11 +580,19 @@ class SlurmShardStage(ABC):
             params["slurm_array_parallelism"] = parameters["slurm_array_parallelism"]
         if parameters["slurm_setup"]:  # non-empty list of setup commands; submitit expects a list of str
             params["slurm_setup"] = parameters["slurm_setup"]
-        # disable srun CPU pinning by default: when a SLURM stage is itself launched from inside
-        # a SLURM allocation, the parent job's SLURM_CPU_BIND* variables leak into this array
-        # job's sbatch script and make the nested srun fail with "CPU binding outside of job step
-        # allocation". The job stays confined to its allocated cores via cgroups regardless.
-        params["slurm_srun_args"] = parameters["slurm_srun_args"] or ["--cpu-bind=none"]
+        # Guarantee --cpu-bind=none is in slurm_srun_args even when the user overrides the
+        # knob. When a SLURM stage is itself launched from inside a SLURM allocation, the
+        # parent job's SLURM_CPU_BIND* variables leak into this array job's sbatch script
+        # and make the nested srun fail with "CPU binding outside of job step allocation".
+        # _ensure_cpu_bind_none() prepends the workaround unless the user already supplied
+        # an explicit --cpu-bind=... (in which case their choice is honoured). The job
+        # stays confined to its allocated cores via cgroups regardless.
+        params["slurm_srun_args"] = _ensure_cpu_bind_none(parameters["slurm_srun_args"] or [])
+        # Cluster-specific sbatch headers (--qos, --constraint, --gres, --reservation, ...)
+        # parsed by config.py from the comma-separated 'key=value' INI form into a dict.
+        # submitit translates each entry into a #SBATCH --key=value header.
+        if parameters["slurm_additional_parameters"]:
+            params["slurm_additional_parameters"] = parameters["slurm_additional_parameters"]
         return params
 
 
@@ -644,6 +808,23 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
                     num_done, num_shards, slurm_folder)
 
     if missing:
+        # Recursive-SLURM detection: log the parent allocation explicitly so the user sees
+        # in the launcher log that an outer SLURM job is hosting this driver, then warn if
+        # the driver's allocation looks too small to outlive the array it's about to
+        # submit. This catches the common "submitted a 1-core 30-min driver, then asked it
+        # to babysit a thousand-core 4-hour array" misallocation that would otherwise be
+        # discovered only when the driver vanishes mid-poll.
+        parent_info = _detect_parent_slurm_allocation()
+        if parent_info is not None:
+            logger.info("Detected recursive SLURM execution: driver runs inside parent "
+                        "job %s (cpus=%s, time_min=%s). The launcher will pass "
+                        "--cpu-bind=none to the array's srun to avoid the nested "
+                        "'CPU binding outside of job step allocation' error.",
+                        parent_info["job_id"], parent_info.get("cpus"),
+                        parent_info.get("time_min"))
+            _warn_on_driver_misallocation(parent_info, parameters, num_shards,
+                                          stage.stage_name)
+
         # cluster="slurm" makes submission fail loudly if SLURM is unavailable, rather than
         # silently falling back to local execution - the user explicitly requested this backend
         executor = submitit.AutoExecutor(folder=slurm_folder, cluster="slurm")

@@ -137,8 +137,9 @@ class AnalysisConfig:
             "slurm_num_shards": None,  # number of array tasks; None => derived automatically from the job size
             "slurm_root_folder": None,  # shared parent dir for per-stage SLURM subfolders; None => <internal_folder>/_slurm. Each stage's shards land in <slurm_root_folder>/stage<NN>_<name>/ (e.g. stage04_distances/).
             "slurm_array_parallelism": None,  # optional cap on the number of array tasks running concurrently
-            "slurm_setup": None, #  a list of command to run in sbatch before running srun, must include working TransportTools env
-            "slurm_srun_args": None,  # extra args for the srun call inside the array job; None => ['--cpu-bind=none']
+            "slurm_setup": None,  # comma-separated list of shell commands run by sbatch before srun (must include activating a working TransportTools env); None disables.
+            "slurm_srun_args": None,  # comma-separated extra args appended to the srun call inside the array job; None => ['--cpu-bind=none']. The launcher ALWAYS guarantees '--cpu-bind=none' is present (prepended if missing) so a stage launched from inside a SLURM allocation does not fail with 'CPU binding outside of job step allocation' even when the user overrides this knob.
+            "slurm_additional_parameters": None,  # comma-separated key=value pairs passed verbatim as #SBATCH headers via submitit's slurm_additional_parameters (e.g. 'qos=high, constraint=icelake, gres=gpu:1'). Use for cluster-specific knobs (--qos, --constraint, --gres, --reservation, --exclude, ...) that are not exposed as dedicated slurm_* parameters. Distinct from slurm_srun_args (which adds args to the srun step inside the job) - this adds sbatch headers at the allocation level.
             "slurm_poll_wait_seconds": 60, # period in seconds to wait for next iteration of job pooling
             "slurm_keep_shard_results": False,  # when False (default), the per-stage SLURM folder (shard pickles, manifests, side-effects tarballs, items.json, state.pkl, submitit per-job artifacts) is deleted as soon as the launcher's assembly succeeds, so the `_slurm/` tree does not grow without bound across many runs. Set to True to keep the cache after a successful run (useful for debugging shard outputs or for iterative re-runs that change only the assembly step). Resumability of an interrupted run is unaffected either way - cleanup only fires after the stage has completed successfully end-to-end.
 
@@ -263,7 +264,8 @@ class AnalysisConfig:
             "slurm_root_folder",
             "slurm_array_parallelism",
             "slurm_setup",
-            "slurm_srun_args"
+            "slurm_srun_args",
+            "slurm_additional_parameters",
         ]
 
         self.boolean_params = [
@@ -336,9 +338,21 @@ class AnalysisConfig:
         ]
 
         # parameters whose value is a list of strings, one per (non-empty) line in the INI file
+        # parameters whose value is a comma-separated list of strings in the INI file,
+        # auto-parsed into a list of stripped non-empty tokens at load time (e.g.
+        # 'cmd1, cmd2' -> ['cmd1', 'cmd2']). Consistent with the other comma-separated
+        # knobs in this file (aquaduct_results_path, aquaduct_traced_residues_filter, ...).
         self.list_params = [
             "slurm_setup",
-            "slurm_srun_args"
+            "slurm_srun_args",
+        ]
+        # parameters whose value is a comma-separated 'key=value' string in the INI file,
+        # auto-parsed into a dict at load time (e.g. 'qos=high, constraint=icelake' ->
+        # {'qos': 'high', 'constraint': 'icelake'}). Empty values are allowed (e.g. 'gres='
+        # yields {'gres': ''}); a non-empty token without '=' raises ValueError so a typo
+        # surfaces at config load instead of silently dropping the entry.
+        self.dict_params = [
+            "slurm_additional_parameters",
         ]
 
         # registry of per-stage SLURM backend override knobs. Each row is (knob_name, label) -
@@ -391,8 +405,30 @@ class AnalysisConfig:
                     elif param_name in self.float_params:
                         param_value = config[section].getfloat(param_name)
                     elif param_name in self.list_params:
-                        param_value = [line.strip() for line in str(config[section].get(param_name)).splitlines()
-                                       if line.strip()]
+                        # comma-separated list of strings; matches the format used by the
+                        # other list-typed knobs in this file (aquaduct_results_path,
+                        # aquaduct_traced_residues_filter). Whitespace around tokens is
+                        # stripped and empty tokens are dropped.
+                        param_value = [token.strip() for token
+                                       in str(config[section].get(param_name)).split(",")
+                                       if token.strip()]
+                    elif param_name in self.dict_params:
+                        # comma-separated 'key=value' pairs -> dict. Each non-empty token
+                        # must contain '=' (an empty value like 'gres=' is OK); a typo
+                        # without '=' raises so the user sees the error at config load
+                        # rather than three stages in.
+                        param_value = {}
+                        for token in str(config[section].get(param_name)).split(","):
+                            token = token.strip()
+                            if not token:
+                                continue
+                            if "=" not in token:
+                                raise ValueError(
+                                    "Parameter '{}' entries must be 'key=value' (got '{}'). "
+                                    "Use a comma-separated list like 'qos=high, "
+                                    "constraint=icelake'.".format(param_name, token))
+                            key, _, value = token.partition("=")
+                            param_value[key.strip()] = value.strip()
                     else:
                         param_value = str(config[section].get(param_name))
 
