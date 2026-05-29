@@ -70,6 +70,13 @@ class Network:
         self.layered_dump_file: str | None = None
         self.layered_viz_path: str | None = None
 
+        # Sidecar written next to layered_dump_file by save_layered_network() containing only
+        # the lightweight per-entity field listed in `_layered_summary_attr` (subclasses set
+        # these). Stage 4 (caver) and stage 9 SLURM launcher (aquaduct) read this sidecar
+        # via load_layered_summary() to avoid the heavy full-pickle load. None disables.
+        self._layered_summary_attr: str | None = None
+        self._layered_summary_suffix: str | None = None
+
     def add_layered_entity(self, entity_id: int | str, layered_pathset: LayeredPathSet):
         """
         Add layered entity to the network
@@ -171,6 +178,84 @@ class Network:
         os.makedirs(os.path.dirname(self.layered_dump_file), exist_ok=True)
         with open(self.layered_dump_file, "wb") as out_stream:
             pickle.dump(self.layered_entities, out_stream)
+
+        self._write_layered_summary_sidecar()
+
+    def _layered_summary_path(self) -> str | None:
+        """
+        Path to the lightweight summary sidecar written next to layered_dump_file, or None
+        when the subclass disables sidecar emission (both class attrs unset).
+        """
+
+        if self._layered_summary_attr is None or self._layered_summary_suffix is None:
+            return None
+        if self.layered_dump_file is None:
+            raise ValueError("Variable 'self.layered_dump_file' is not specified")
+        return self.layered_dump_file + self._layered_summary_suffix
+
+    def _write_layered_summary_sidecar(self):
+        """
+        Dump the per-entity summary field (e.g., (avg_throughput, num_tunnels) for tunnel
+        clusters, traced_event for aquaduct events) to a small sidecar next to
+        layered_dump_file. Stage 4's SLURM launcher and stage 9's SLURM launcher use the
+        sidecar to skip the multi-100-GB / multi-hour full-pickle load on large studies.
+        """
+
+        sidecar_path = self._layered_summary_path()
+        if sidecar_path is None:
+            return
+
+        attr_name = self._layered_summary_attr
+        assert attr_name is not None  # for type-checkers; guarded by _layered_summary_path
+        summary = {
+            entity_id: getattr(entity, attr_name)
+            for entity_id, entity in self.layered_entities.items()
+        }
+        sidecar_tmp = sidecar_path + ".tmp"
+        with open(sidecar_tmp, "wb") as out_stream:
+            pickle.dump(summary, out_stream, self.parameters.get("pickle_protocol", 4))
+        os.replace(sidecar_tmp, sidecar_path)
+
+    def load_layered_summary(self) -> Dict[str | int, object]:
+        """
+        Load the per-entity summary sidecar (the lightweight field declared by the subclass:
+        characteristics for tunnel clusters, traced_event for aquaduct events). Falls back
+        to a full load_layered_network() + extraction when the sidecar is missing (legacy
+        checkpoints), and writes the sidecar so subsequent runs skip the heavy load.
+        :return: dict mapping entity_id to the summary value (may be None per-entity)
+        """
+
+        sidecar_path = self._layered_summary_path()
+        if sidecar_path is None:
+            raise RuntimeError("Subclass {} did not configure _layered_summary_attr / "
+                               "_layered_summary_suffix; load_layered_summary() is not "
+                               "available.".format(type(self).__name__))
+
+        if os.path.exists(sidecar_path):
+            with open(sidecar_path, "rb") as in_stream:
+                return pickle.load(in_stream)
+
+        # Fallback: legacy checkpoint without sidecar. Load the heavy pickle, extract the
+        # summary field, and write the sidecar so subsequent runs skip the full load.
+        if self.layered_dump_file is None or not os.path.exists(self.layered_dump_file):
+            return dict()
+        self.load_layered_network()
+        attr_name = self._layered_summary_attr
+        assert attr_name is not None
+        summary = {
+            entity_id: getattr(entity, attr_name)
+            for entity_id, entity in self.layered_entities.items()
+        }
+        try:
+            sidecar_tmp = sidecar_path + ".tmp"
+            with open(sidecar_tmp, "wb") as out_stream:
+                pickle.dump(summary, out_stream, self.parameters.get("pickle_protocol", 4))
+            os.replace(sidecar_tmp, sidecar_path)
+        except OSError as exc:
+            logger.debug("Could not write summary sidecar '%s': %s", sidecar_path, exc)
+        # Drop the heavy dict so the caller doesn't keep it in memory.
+        self.layered_entities = dict()
+        return summary
 
     def save_orig_network_visualization(self):
         """
@@ -845,6 +930,11 @@ class TunnelNetwork(Network):
         self.entity_pymol_abbreviation = "cls"
         self.transformed_pdb_file_name = self.md_label + "_C_trans_rot.pdb"
 
+        # Stage 4's SLURM launcher orders tunnel clusters by importance using
+        # (avg_throughput, num_tunnels); the sidecar lets it skip the full LayeredPathSet load.
+        self._layered_summary_attr = "characteristics"
+        self._layered_summary_suffix = ".characteristics"
+
         # input paths
         root_folder = os.path.join(self.parameters["caver_results_path"], self.md_label)
         self.pdb_file = utils.get_filepath(root_folder, self.parameters["caver_relative_pdb_file"])
@@ -998,6 +1088,12 @@ class AquaductNetwork(Network):
         self.entity_pymol_abbreviation = "evt_"  # default prefix, overridden per-entity by visualization_prefix
         self.transformed_pdb_file_name = self.md_label + "_A_trans_rot.pdb"
         self.protein_pdb_filename = self.parameters["aquaduct_results_pdb_filename"]
+
+        # Stage 9's SLURM launcher only needs the (md_label, event_label, traced_event)
+        # key triples to enumerate items in submission order; the sidecar lets it skip the
+        # full LayeredPathSet load on runs with millions of events.
+        self._layered_summary_attr = "traced_event"
+        self._layered_summary_suffix = ".traced_event"
 
         # input paths
         if root_path is None:

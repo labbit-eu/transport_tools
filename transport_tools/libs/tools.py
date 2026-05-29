@@ -529,7 +529,8 @@ class TransportProcesses:
                     progressbar(i + 1, items2process)
 
     def _validate_event_resids_in_trajectory_topologies(
-            self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]], "LayeredPathSet"]):
+            self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
+                                  "LayeredPathSet | None"]):
         """
         Pre-flight check for exact-matching: verifies that every event's traced residue is
         actually present in its md_label's trajectory topology before any worker tries to
@@ -646,18 +647,30 @@ class TransportProcesses:
 
         with TimeProcess("Assignment"):
             # assemble transport events
-            path_sets = dict()
             if md_labels is None:
                 folders2process = self.aquaduct_input_folders
             else:
                 folders2process = [*set(md_labels).intersection(self.aquaduct_input_folders)]
 
+            # Pre-resolve backend: the SLURM launcher and the validator both only consume
+            # `path_sets.keys()`, so for the SLURM path we can build a key-only mapping from
+            # the lightweight per-MD .traced_event sidecar instead of pickle-loading every
+            # full LayeredPathSet. Runs with millions of events would otherwise hang the
+            # driver for hours and balloon RSS to 100s of GB before the array submits.
+            backend = self._resolve_stage_backend("stage09_backend") if folders2process else None
+            path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]], "LayeredPathSet" | None] = dict()
+
             for md_label in folders2process:
                 aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
-                aquanet.load_layered_network()
-                for event_label, layered_path_set in aquanet.layered_entities.items():
-                    event_specification = (md_label, event_label, layered_path_set.traced_event)
-                    path_sets[event_specification] = layered_path_set
+                if backend == "slurm":
+                    for event_label, traced_event in aquanet.load_layered_summary().items():
+                        event_specification = (md_label, str(event_label), traced_event)
+                        path_sets[event_specification] = None
+                else:
+                    aquanet.load_layered_network()
+                    for event_label, layered_path_set in aquanet.layered_entities.items():
+                        event_specification = (md_label, event_label, layered_path_set.traced_event)
+                        path_sets[event_specification] = layered_path_set
 
             # Per-event log dump so a stale/inconsistent layered_paths.dump (e.g. residues not in
             # the trajectory loaded for exact matching) can be diagnosed without rerunning the
@@ -678,7 +691,6 @@ class TransportProcesses:
             items2process = len(path_sets.keys())
 
             if items2process:
-                backend = self._resolve_stage_backend("stage09_backend")
                 if backend == "slurm":
                     self._assign_transport_events_slurm(folders2process, path_sets)
                 else:
@@ -794,7 +806,7 @@ class TransportProcesses:
 
     def _assign_transport_events_slurm(self, folders2process: List[str],
                                        path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
-                                                       "LayeredPathSet"]):
+                                                       "LayeredPathSet | None"]):
         """
         SLURM-backed counterpart to `_assign_transport_events_local`. The launcher writes a
         single `state.pkl` (containing `self._super_clusters` and `self._active_filters`)
@@ -1014,14 +1026,29 @@ class TransportProcesses:
 
         for md_label in self.caver_input_folders:
             tunnel_network = TunnelNetwork(self.parameters, md_label)
-            tunnel_network.load_layered_network()
+            if load_path_sets:
+                tunnel_network.load_layered_network()
+                items = (
+                    (cls_id, lps.characteristics, lps)
+                    for cls_id, lps in tunnel_network.layered_entities.items()
+                )
+            else:
+                # SLURM launcher only needs the (avg_throughput, num_tunnels) tuple to
+                # order clusters by importance; pickle.load-ing every LayeredPathSet just
+                # to peek at .characteristics costs hours of IO and 100s of GB of peak
+                # memory on large studies (600k+ clusters).
+                items = (
+                    (cls_id, characteristics, None)
+                    for cls_id, characteristics
+                    in tunnel_network.load_layered_summary().items()
+                )
 
-            for cls_id, layered_path_set in tunnel_network.layered_entities.items():
+            for cls_id, characteristics, layered_path_set in items:
                 cluster_specification = (md_label, int(cls_id))  # tunnel cluster IDs are integers
-                if layered_path_set.characteristics is None:
+                if characteristics is None:
                     raise RuntimeError(f"Variable 'characteristics' is not specified for tunnel cluster {cls_id} in {md_label}")
-                avg_throughput, num_tunnels = layered_path_set.characteristics
-                cluster_characteristics[cluster_specification] = layered_path_set.characteristics
+                avg_throughput, num_tunnels = characteristics
+                cluster_characteristics[cluster_specification] = characteristics
                 importance_key = (cls_id, 1 / avg_throughput, 1 / num_tunnels, md_label)
                 if load_path_sets:
                     path_sets[cluster_specification] = layered_path_set
