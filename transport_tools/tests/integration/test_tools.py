@@ -684,17 +684,18 @@ class TestTransportProcesses(unittest.TestCase):
             if os.path.isdir(path):
                 rmtree(path)
 
-    def _check_super_cluster_linkage_variant(self, mol_system, linkage: str):
-        """Cluster the already-computed distances with the given non-default linkage, generate the
-        supercluster details + summary, golden-compare them against the per-linkage fixtures, then
-        delete the generated outputs so the default 'average' chain (test_05+) is unaffected. The
-        distance matrix is reused, not recomputed."""
-        mol_system.parameters["clustering_linkage"] = linkage
+    def _check_super_cluster_clustering_variant(self, mol_system, variant: str, param_overrides: dict):
+        """Cluster the already-computed distances with the given non-default clustering configuration
+        (linkage and/or method), generate the supercluster details + summary, golden-compare them
+        against the per-variant fixtures, then delete the generated outputs so the default 'average'
+        chain (test_05+) is unaffected. The distance matrix is reused, not recomputed."""
+        for key, value in param_overrides.items():
+            mol_system.parameters[key] = value
         mol_system.merge_tunnel_clusters2super_clusters()
         mol_system.create_super_cluster_profiles()
         mol_system.generate_super_cluster_summary(out_filename="1-initial_tunnels_summary.txt")
 
-        fixtures = os.path.join(self.saved_data, "linkage_variants", linkage)
+        fixtures = os.path.join(self.saved_data, "clustering_variants", variant)
         compare_test_files(os.path.join(fixtures, "initial_super_cluster_details.txt"),
                             os.path.join(self.out_path, "data", "super_clusters", "details",
                                          "initial_super_cluster_details.txt"), self)
@@ -708,16 +709,23 @@ class TestTransportProcesses(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
-        # distances are linkage-independent - compute them once and reuse for every linkage below
+        # distances are clustering-independent - compute them once and reuse for every variant below
         mol_system.compute_tunnel_clusters_distances()
 
-        # validate the non-default linkages against their golden fixtures, deleting each one's
-        # generated supercluster outputs afterwards so only the 'average' results remain for the
-        # followup tests (the distance matrix is kept and reused, never recomputed)
-        for linkage in ("single", "complete", "ward"):
-            self._check_super_cluster_linkage_variant(mol_system, linkage)
+        # validate the non-default clustering variants against their golden fixtures, deleting each
+        # one's generated supercluster outputs afterwards so only the 'average' results remain for
+        # the followup tests (the distance matrix is kept and reused, never recomputed)
+        variants = (
+            ("single",   {"clustering_method": "agglomerative", "clustering_linkage": "single"}),
+            ("complete", {"clustering_method": "agglomerative", "clustering_linkage": "complete"}),
+            ("ward",     {"clustering_method": "agglomerative", "clustering_linkage": "ward"}),
+            ("hdbscan",  {"clustering_method": "hdbscan"}),
+        )
+        for variant, param_overrides in variants:
+            self._check_super_cluster_clustering_variant(mol_system, variant, param_overrides)
 
         # default 'average' linkage: historical distance-matrix golden comparison + chain checkpoint
+        mol_system.parameters["clustering_method"] = "agglomerative"
         mol_system.parameters["clustering_linkage"] = "average"
         mol_system.merge_tunnel_clusters2super_clusters()
         compare_test_folders(os.path.join(self.saved_data, "_internal", "clustering"),

@@ -27,6 +27,7 @@ import os
 import hdbscan
 import gzip
 import pickle
+import warnings
 from joblib import parallel_backend
 from itertools import groupby
 from logging import getLogger
@@ -1490,7 +1491,13 @@ class Layer:
                                              match_reference_implementation=True)
 
         # try clustering to find significant nodes of alternative paths
-        clustering = cluster_method.fit_predict(points_coords)
+        with warnings.catch_warnings():
+            # hdbscan (>=this site only) still passes the deprecated force_all_finite to
+            # sklearn.check_array (renamed to ensure_all_finite in sklearn 1.6, removed in 1.8).
+            # Silence only that external warning here; FutureWarnings from our own code remain visible.
+            warnings.filterwarnings("ignore", category=FutureWarning,
+                                    message="'force_all_finite' was renamed to 'ensure_all_finite'")
+            clustering = cluster_method.fit_predict(points_coords)
         unique, counts = np.unique(clustering, return_counts=True)
         clusters_counts = dict(zip(unique, counts))
 
@@ -2467,11 +2474,11 @@ def subcutoff_connected_components(condensed: np.ndarray, num_points: int, cutof
     """
     Partition points into the connected components of the sub-cutoff graph G = {(i, j) : d(i, j) <=
     cutoff}, where d is the condensed (upper-triangle) pairwise-distance vector of a
-    num_points x num_points symmetric matrix. This is the shared substrate of the stage-5 clustering
-    rework (see docs/clustering_rework_plan.md): partitioning by sub-cutoff connectivity lets each
-    component be clustered independently, dropping linkage/HDBSCAN cost from O(N**2) to
-    O(max |C_k|**2). It keys off the cutoff threshold only and is correct regardless of whether far
-    pairs carry real distances or the approximate-mode 999 saturation.
+    num_points x num_points symmetric matrix. This is the shared substrate of stage-5 clustering:
+    partitioning by sub-cutoff connectivity lets each component be clustered independently, dropping
+    linkage/HDBSCAN cost from O(N**2) to O(max |C_k|**2). It keys off the cutoff threshold only and
+    is correct regardless of whether far pairs carry real distances or the approximate-mode 999
+    saturation.
 
     The condensed vector (potentially terabytes for large N, so possibly a memmap) is thresholded in
     element-bounded chunks rather than all at once - each chunk's comparison and the recovery of its

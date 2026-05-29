@@ -1525,27 +1525,33 @@ class TransportProcesses:
                                     ) -> Dict[Tuple[str, int], int]:
         """
         Assigns a supercluster label to every tunnel cluster from the condensed pairwise-distance
-        vector. Dispatches by clustering linkage: 'single'/'complete'/'average' run through the
-        connected-components partition driver (transparent, exact, and far cheaper than the
-        full-matrix linkage - see docs/clustering_rework_plan.md), while 'ward' uses the historical
-        full-matrix fastcluster.linkage (its cross-component validity under the partition is
-        unresolved, so it is excluded from the driver). Only the grouping of clusters matters
-        downstream - the raw label integers are remapped to 1..K by supercluster importance in the
-        caller - so the partition driver is equivalent to the vanilla path for the supported linkages.
+        vector. Dispatches by clustering_method:
+          * 'agglomerative' (default): 'single'/'complete'/'average' run through the
+            connected-components partition driver (transparent, exact, and far cheaper than the
+            full-matrix linkage), while 'ward' uses the historical full-matrix fastcluster.linkage
+            (its cross-component validity under the partition is unresolved, so it is excluded).
+          * 'hdbscan': density-based clustering run per connected component via the same driver,
+            with clustering_cutoff acting as a hard merge floor; noise points become singletons.
+        Only the grouping of clusters matters downstream - the raw label integers are remapped to
+        1..K by supercluster importance in the caller.
         :param condensed_matrix: condensed upper-triangle pairwise-distance vector (may be a memmap)
         :param cluster_specifications: tunnel-cluster specs; index i matches row/column i of the matrix
         :return: mapping of each cluster specification to its integer supercluster label
         """
 
-        linkage = self.parameters["clustering_linkage"]
+        method = self.parameters["clustering_method"]
         cutoff = self.parameters["clustering_cutoff"]
+        num_points = len(cluster_specifications)
 
-        if linkage == "ward":
-            linkage_matrix = fastcluster.linkage(condensed_matrix, method=linkage)
-            cluster_labels = fcluster(linkage_matrix, t=cutoff, criterion='distance')
-        else:
-            cluster_labels = self._cluster_labels_partitioned(condensed_matrix,
-                                                              len(cluster_specifications), cutoff, linkage)
+        if method == "hdbscan":
+            cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, "hdbscan")
+        else:  # agglomerative
+            linkage = self.parameters["clustering_linkage"]
+            if linkage == "ward":
+                linkage_matrix = fastcluster.linkage(condensed_matrix, method=linkage)
+                cluster_labels = fcluster(linkage_matrix, t=cutoff, criterion='distance')
+            else:
+                cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, linkage)
 
         return dict(zip(cluster_specifications, cluster_labels))
 
@@ -1607,20 +1613,53 @@ class TransportProcesses:
         members. For an agglomerative backend the component's dense distance block is condensed and
         fed to fastcluster.linkage + fcluster, reproducing exactly what the full-matrix linkage would
         yield for these methods (a flat cluster at the cutoff never spans two sub-cutoff components).
+        For the 'hdbscan' backend the dense block is clustered by HDBSCAN (see
+        _cluster_component_hdbscan).
         :param condensed_matrix: condensed upper-triangle pairwise-distance vector of the full matrix
         :param num_points: side length of the full dense matrix
         :param members: global indices of this component's members (ascending)
         :param cutoff: clustering distance cutoff
-        :param backend: clustering backend - an agglomerative linkage ('single'/'complete'/'average')
-        :return: local integer label per member (in the order of 'members')
+        :param backend: 'hdbscan' or an agglomerative linkage ('single'/'complete'/'average')
+        :return: local integer label per member (in the order of 'members'; -1 marks HDBSCAN noise)
         """
+
+        dense_block = gather_dense_submatrix(condensed_matrix, num_points, members)
+
+        if backend == "hdbscan":
+            return self._cluster_component_hdbscan(dense_block, cutoff)
 
         from scipy.spatial.distance import squareform
 
-        dense_block = gather_dense_submatrix(condensed_matrix, num_points, members)
         sub_condensed = squareform(dense_block, checks=False)
         linkage_matrix = fastcluster.linkage(sub_condensed, method=backend)
         return fcluster(linkage_matrix, t=cutoff, criterion='distance')
+
+    def _cluster_component_hdbscan(self, dense_block: np.ndarray, cutoff: float) -> np.ndarray:
+        """
+        Clusters a single connected component's dense precomputed distance block with HDBSCAN
+        (density-based, opt-in alternative to agglomerative linkage). clustering_cutoff is passed as
+        cluster_selection_epsilon so it acts as a hard merge floor - clusters HDBSCAN would split
+        below the cutoff are kept merged. Members HDBSCAN marks as noise get label -1; the stitching
+        step turns each into its own singleton supercluster, preserving the 'every tunnel cluster
+        maps to exactly one supercluster' invariant. A component smaller than min_cluster_size cannot
+        form a cluster, so it is reported entirely as noise (-> singletons) without calling HDBSCAN.
+        :param dense_block: dense |C|x|C| precomputed distance block of the component
+        :param cutoff: clustering distance cutoff, used as HDBSCAN's cluster_selection_epsilon
+        :return: local integer label per member (-1 marks noise)
+        """
+
+        import hdbscan
+
+        min_cluster_size = self.parameters["hdbscan_min_cluster_size"]
+        if dense_block.shape[0] < min_cluster_size:
+            return np.full(dense_block.shape[0], -1, dtype=np.intp)
+
+        clusterer = hdbscan.HDBSCAN(metric="precomputed",
+                                    min_cluster_size=min_cluster_size,
+                                    min_samples=self.parameters["hdbscan_min_samples"],
+                                    cluster_selection_method=self.parameters["hdbscan_cluster_selection_method"],
+                                    cluster_selection_epsilon=float(cutoff))
+        return clusterer.fit_predict(np.ascontiguousarray(dense_block, dtype=np.float64))
 
     @staticmethod
     def _stitch_component_labels(cluster_labels: np.ndarray, members: np.ndarray,

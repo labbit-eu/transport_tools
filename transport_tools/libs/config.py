@@ -123,8 +123,12 @@ class AnalysisConfig:
             "min_tunnel_radius4clustering": 0.75,  # filters on tunnel load, applies for layering only
             "min_tunnel_length4clustering": 5.0,  # filters on tunnel load, applies for layering only
             "max_tunnel_curvature4clustering": 2.0,  # filters on tunnel load, applies for layering only
-            "clustering_linkage": "complete",  # for agglomerative clustering
+            "clustering_method": "agglomerative",  # 'agglomerative' (fastcluster linkage) or 'hdbscan' (density-based)
+            "clustering_linkage": "complete",  # linkage for agglomerative clustering (ignored when clustering_method='hdbscan')
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
+            "hdbscan_min_cluster_size": 2,  # smallest admissible supercluster when clustering_method='hdbscan'
+            "hdbscan_min_samples": None,  # HDBSCAN conservativeness/noise sensitivity; None => equals hdbscan_min_cluster_size
+            "hdbscan_cluster_selection_method": "eom",  # HDBSCAN flat-cluster extraction: 'eom' (fewer/larger) or 'leaf' (finer)
             "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
@@ -281,6 +285,7 @@ class AnalysisConfig:
             "worker_task_timeout_s",
             "pdb_reference_structure",
             "snapshots_per_simulation",
+            "hdbscan_min_samples",
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
             "msms",
@@ -337,6 +342,8 @@ class AnalysisConfig:
             "min_release_events",
             "random_seed",
             "clustering_max_num_rep_frag",
+            "hdbscan_min_cluster_size",
+            "hdbscan_min_samples",
             "max_layered_points4visualization",
             "max_events_per_cluster4visualization",
             "pickle_protocol",
@@ -709,6 +716,11 @@ class AnalysisConfig:
                 logger.warning("\nParameter 'slurm_poll_wait_seconds' is set to a rather large value ({:d}s); " \
                                 "possibly compromising effective job processing".format(self.parameters["slurm_poll_wait_seconds"]))
 
+        valid_clustering_methods = ("agglomerative", "hdbscan")
+        if self.parameters["clustering_method"] not in valid_clustering_methods:
+            raise ValueError("\nUnsupported value '{}' for 'clustering_method' parameter.\n Valid options are "
+                             "'{}'".format(self.parameters["clustering_method"], valid_clustering_methods))
+
         import fastcluster
         valid_linkage = fastcluster.mthidx.copy()
 
@@ -716,9 +728,19 @@ class AnalysisConfig:
             raise ValueError("\nUnsupported linkage type '{}' specified in 'clustering_linkage' parameter.\n Valid "
                              "options are '{}'".format(self.parameters["clustering_linkage"], valid_linkage.keys()))
 
-        if self.parameters["clustering_linkage"] == "single":
+        if self.parameters["clustering_method"] == "agglomerative" and self.parameters["clustering_linkage"] == "single":
             logger.warning("\nUse of 'single' for 'cluster_linkage' parameter is discouraged as it often leads to "
                            "rather poorly defined superclusters. PLEASE, consider using 'average' or 'complete'.")
+
+        if self.parameters["clustering_method"] == "hdbscan":
+            valid_selection_methods = ("eom", "leaf")
+            if self.parameters["hdbscan_cluster_selection_method"] not in valid_selection_methods:
+                raise ValueError("\nUnsupported value '{}' for 'hdbscan_cluster_selection_method' parameter.\n Valid "
+                                 "options are '{}'".format(self.parameters["hdbscan_cluster_selection_method"],
+                                                           valid_selection_methods))
+            self._test_parameter_sanity("hdbscan_min_cluster_size", 2, sys.maxsize)
+            if self.parameters["hdbscan_min_samples"] is not None:
+                self._test_parameter_sanity("hdbscan_min_samples", 1, sys.maxsize)
 
         # validate compute_backend + per-stage overrides; resolve each stage's effective backend.
         # _stage_backend_keys lists every (stage_knob_name, human_label) recognised by the
