@@ -924,5 +924,50 @@ class TestSlurmRootFolderDefault(unittest.TestCase):
                          config.parameters["slurm_root_folder"])
 
 
+class TestNumCpusLocalValidation(unittest.TestCase):
+    """The num_cpus > os.cpu_count() check is guarded by the validate_local_cpus flag.
+
+    On a normal/launcher run (validate_local_cpus=True, the default) an over-subscribed
+    num_cpus is rejected. SLURM shards rebuild the config on a compute node whose CPU count
+    is unrelated to the launcher's - and where num_cpus is inert (the inner pool is sized
+    from slurm_cpus_per_task) - so they pass validate_local_cpus=False to skip the check
+    and avoid spuriously aborting (see slurm._rebuild_mol_system)."""
+
+    def _make_config(self, validate_local_cpus):
+        """Assemble a fully-populated, otherwise-valid parameters dict from the shipped
+        defaults, overriding only the handful that default to None, then set num_cpus well
+        above this machine's reported core count. get_input_folders() (the filesystem-walking
+        tail of _validate_parameter_values) is stubbed so the test stays hermetic."""
+
+        config = AnalysisConfig(file2load_from=None, logging=False,
+                                validate_local_cpus=validate_local_cpus)
+        config.parameters = {}
+        for section in (config.calculations_settings, config.output_settings,
+                        config.input_paths, config.output_paths,
+                        config.advanced_settings, config.internal_settings):
+            config.parameters.update(section)
+        config.parameters["num_cpus"] = os.cpu_count() + 16
+        config.parameters["snapshots_per_simulation"] = 100
+        config.parameters["stop_after_stage"] = 5
+        return config
+
+    def test_oversubscribed_num_cpus_rejected_by_default(self):
+        config = self._make_config(validate_local_cpus=True)
+        with patch.object(config, "get_input_folders", return_value=({}, {}, {})):
+            with self.assertRaises(ValueError) as cm:
+                config._validate_parameter_values()
+        self.assertIn("num_cpus", str(cm.exception))
+
+    def test_oversubscribed_num_cpus_allowed_in_shard_context(self):
+        config = self._make_config(validate_local_cpus=False)
+        with patch.object(config, "get_input_folders", return_value=({}, {}, {})):
+            # must not raise: num_cpus is inert in a shard, so the local-CPU check is skipped
+            config._validate_parameter_values()
+
+    def test_flag_defaults_to_true(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        self.assertTrue(config.validate_local_cpus)
+
+
 if __name__ == '__main__':
     unittest.main()

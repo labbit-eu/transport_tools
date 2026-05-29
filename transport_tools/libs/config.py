@@ -35,13 +35,21 @@ logger = getLogger(__name__)
 
 
 class AnalysisConfig:
-    def __init__(self, file2load_from: str | None = None, logging: bool = True):
+    def __init__(self, file2load_from: str | None = None, logging: bool = True,
+                 validate_local_cpus: bool = True):
         """
         Class storing the job configuration, also enables some parameter evaluation & completion
         :param file2load_from: INI file with configuration to load from
         :param logging: if logging should be set up
+        :param validate_local_cpus: whether to reject a 'num_cpus' larger than the CPU count
+            reported by this machine. True for a normal local/launcher run. SLURM shards set this
+            False: the config is rebuilt on a compute node whose CPU count is unrelated to the
+            launcher's, and 'num_cpus' is inert there anyway - every compute_*_shard sizes its
+            inner pool from 'slurm_cpus_per_task', never 'num_cpus' - so checking it against the
+            compute node's CPU count would spuriously abort the shard (see slurm._rebuild_mol_system).
         """
 
+        self.validate_local_cpus = validate_local_cpus
         self.source_file = file2load_from
         self.calculations_settings = dict()
         self.output_settings = dict()
@@ -677,7 +685,7 @@ class AnalysisConfig:
         """
 
         if self.parameters["num_cpus"] is not None:
-            if self.parameters["num_cpus"] > os.cpu_count():
+            if self.validate_local_cpus and self.parameters["num_cpus"] > os.cpu_count():
                 raise ValueError("\nThe number of CPU({:d}) specified for parallel processing is larger than the number"
                                  " of CPU({:d}) reported as available on this computer.\n Decrease the value of "
                                  "parameter 'num_cpus'.".format(self.parameters["num_cpus"], os.cpu_count()))

@@ -1396,7 +1396,11 @@ def _rebuild_mol_system(config_file: str):
     from transport_tools.libs.config import AnalysisConfig
     from transport_tools.libs.tools import TransportProcesses
 
-    config = AnalysisConfig(config_file, logging=False)
+    # validate_local_cpus=False: this rebuild runs on a SLURM compute node whose CPU count is
+    # unrelated to the launcher's, and num_cpus is inert in a shard (the inner pool is sized from
+    # slurm_cpus_per_task). Validating num_cpus against this node's os.cpu_count() would otherwise
+    # abort the shard whenever num_cpus exceeds the compute node's core count.
+    config = AnalysisConfig(config_file, logging=False, validate_local_cpus=False)
     return config, TransportProcesses(config)
 
 
