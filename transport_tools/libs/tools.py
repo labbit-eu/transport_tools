@@ -35,7 +35,7 @@ from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperC
     TransportEvent, subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
-    iter_shard_pair_chunks, condensed_pair_index
+    iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
     transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
@@ -1520,6 +1520,161 @@ class TransportProcesses:
             pickle.dump(results, out_stream, protocol=self.parameters["pickle_protocol"])
         os.replace(tmp_file, out_file)
 
+    def _assign_supercluster_labels(self, condensed_matrix: np.ndarray,
+                                    cluster_specifications: List[Tuple[str, int]]
+                                    ) -> Dict[Tuple[str, int], int]:
+        """
+        Assigns a supercluster label to every tunnel cluster from the condensed pairwise-distance
+        vector. Dispatches by clustering linkage: 'single'/'complete'/'average' run through the
+        connected-components partition driver (transparent, exact, and far cheaper than the
+        full-matrix linkage - see docs/clustering_rework_plan.md), while 'ward' uses the historical
+        full-matrix fastcluster.linkage (its cross-component validity under the partition is
+        unresolved, so it is excluded from the driver). Only the grouping of clusters matters
+        downstream - the raw label integers are remapped to 1..K by supercluster importance in the
+        caller - so the partition driver is equivalent to the vanilla path for the supported linkages.
+        :param condensed_matrix: condensed upper-triangle pairwise-distance vector (may be a memmap)
+        :param cluster_specifications: tunnel-cluster specs; index i matches row/column i of the matrix
+        :return: mapping of each cluster specification to its integer supercluster label
+        """
+
+        linkage = self.parameters["clustering_linkage"]
+        cutoff = self.parameters["clustering_cutoff"]
+
+        if linkage == "ward":
+            linkage_matrix = fastcluster.linkage(condensed_matrix, method=linkage)
+            cluster_labels = fcluster(linkage_matrix, t=cutoff, criterion='distance')
+        else:
+            cluster_labels = self._cluster_labels_partitioned(condensed_matrix,
+                                                              len(cluster_specifications), cutoff, linkage)
+
+        return dict(zip(cluster_specifications, cluster_labels))
+
+    def _cluster_labels_partitioned(self, condensed_matrix: np.ndarray, num_points: int, cutoff: float,
+                                    backend: str) -> np.ndarray:
+        """
+        Clusters tunnel clusters by partitioning them into the connected components of the sub-cutoff
+        graph (pairs with distance <= cutoff) and clustering each component independently with the
+        requested backend, then stitching the per-component labels into one global labelling. Peak
+        cost is O(max |component|^2) instead of O(N^2). Components are processed in ascending
+        smallest-member-index order, so the labelling is deterministic across runs and backends.
+        :param condensed_matrix: condensed upper-triangle pairwise-distance vector (may be a memmap)
+        :param num_points: number of tunnel clusters (side length of the implied dense matrix)
+        :param cutoff: clustering distance cutoff defining both the sub-cutoff graph and the flat cut
+        :param backend: clustering backend - an agglomerative linkage ('single'/'complete'/'average')
+        :return: integer supercluster-label array of length num_points
+        """
+
+        n_components, component_labels = subcutoff_connected_components(condensed_matrix, num_points, cutoff)
+        components = self._components_by_min_index(component_labels)
+        self._log_component_size_histogram(components, num_points)
+
+        cluster_labels = np.empty(num_points, dtype=np.intp)
+        next_label = 1  # 1-based to mirror scipy.fcluster (purely cosmetic; labels are remapped later)
+        for members in components:
+            if members.size == 1:
+                cluster_labels[members[0]] = next_label
+                next_label += 1
+                continue
+            local_labels = self._cluster_component(condensed_matrix, num_points, members, cutoff, backend)
+            next_label = self._stitch_component_labels(cluster_labels, members, local_labels, next_label)
+
+        return cluster_labels
+
+    @staticmethod
+    def _components_by_min_index(component_labels: np.ndarray) -> List[np.ndarray]:
+        """
+        Groups point indices by their connected-component id and returns the per-component index
+        arrays ordered by their smallest member index; within each array the indices are ascending.
+        This fixed order makes the stitched labelling deterministic and independent of the order in
+        which scipy happened to number the components.
+        :param component_labels: per-point component id (as returned by connected_components)
+        :return: list of per-component global-index arrays, ordered by smallest member index
+        """
+
+        if component_labels.size == 0:
+            return list()
+        sort_idx = np.argsort(component_labels, kind='stable')
+        sorted_labels = component_labels[sort_idx]
+        boundaries = np.flatnonzero(np.diff(sorted_labels)) + 1
+        components = np.split(sort_idx, boundaries)
+        components.sort(key=lambda member_indices: member_indices[0])
+        return components
+
+    def _cluster_component(self, condensed_matrix: np.ndarray, num_points: int, members: np.ndarray,
+                           cutoff: float, backend: str) -> np.ndarray:
+        """
+        Clusters a single connected component (>= 2 members) and returns local labels for its
+        members. For an agglomerative backend the component's dense distance block is condensed and
+        fed to fastcluster.linkage + fcluster, reproducing exactly what the full-matrix linkage would
+        yield for these methods (a flat cluster at the cutoff never spans two sub-cutoff components).
+        :param condensed_matrix: condensed upper-triangle pairwise-distance vector of the full matrix
+        :param num_points: side length of the full dense matrix
+        :param members: global indices of this component's members (ascending)
+        :param cutoff: clustering distance cutoff
+        :param backend: clustering backend - an agglomerative linkage ('single'/'complete'/'average')
+        :return: local integer label per member (in the order of 'members')
+        """
+
+        from scipy.spatial.distance import squareform
+
+        dense_block = gather_dense_submatrix(condensed_matrix, num_points, members)
+        sub_condensed = squareform(dense_block, checks=False)
+        linkage_matrix = fastcluster.linkage(sub_condensed, method=backend)
+        return fcluster(linkage_matrix, t=cutoff, criterion='distance')
+
+    @staticmethod
+    def _stitch_component_labels(cluster_labels: np.ndarray, members: np.ndarray,
+                                 local_labels: np.ndarray, next_label: int) -> int:
+        """
+        Writes a component's local labels into the global label array under fresh global labels. Each
+        distinct non-negative local label becomes one global label; each -1 (reserved for HDBSCAN
+        noise) becomes its own singleton global label. The raw integers are cosmetic - only the
+        grouping matters downstream - but they are assigned deterministically given the fixed member
+        order.
+        :param cluster_labels: global label array being filled (modified in place)
+        :param members: global indices this component's labels belong to
+        :param local_labels: per-member local labels (non-negative; -1 marks noise)
+        :param next_label: next unused global label
+        :return: advanced next_label
+        """
+
+        local_labels = np.asarray(local_labels)
+        out = np.empty(local_labels.size, dtype=np.intp)
+
+        noise_mask = local_labels == -1
+        n_noise = int(np.count_nonzero(noise_mask))
+        if n_noise:
+            out[noise_mask] = next_label + np.arange(n_noise)
+            next_label += n_noise
+
+        clustered = local_labels[~noise_mask]
+        if clustered.size:
+            unique_labels, inverse = np.unique(clustered, return_inverse=True)
+            out[~noise_mask] = next_label + inverse.ravel()
+            next_label += unique_labels.size
+
+        cluster_labels[members] = out
+        return next_label
+
+    @staticmethod
+    def _log_component_size_histogram(components: List[np.ndarray], num_points: int):
+        """
+        Logs a one-line summary of the sub-cutoff component-size distribution at INFO. It explains
+        both the runtime and the O(max |component|^2) peak memory of the partition driver, and is
+        cheap to compute.
+        :param components: per-component index arrays
+        :param num_points: total number of tunnel clusters
+        """
+
+        if not components:
+            return
+        sizes = np.fromiter((member_indices.size for member_indices in components),
+                            dtype=np.intp, count=len(components))
+        logger.info("Sub-cutoff partition: %d tunnel clusters -> %d connected components "
+                    "(largest %d, median %d, %d singletons).",
+                    num_points, len(components), int(sizes.max()), int(np.median(sizes)),
+                    int(np.count_nonzero(sizes == 1)))
+
     def merge_tunnel_clusters2super_clusters(self):
         """
         Performs clustering of tunnel clusters and creates of their superclusters (SCs)
@@ -1556,10 +1711,8 @@ class TransportProcesses:
             condensed_matrix, cluster_specifications, cluster_characteristics = self._load_distance_matrix()
 
             # cluster the tunnel clusters :)
-            linkage_matrix = fastcluster.linkage(condensed_matrix, method=self.parameters["clustering_linkage"])
-            cluster_labels = fcluster(linkage_matrix, t=self.parameters["clustering_cutoff"], criterion='distance')
-            cluster_specs2label = dict(zip(cluster_specifications, cluster_labels))
-            logger.info("Identified {:d} superclusters.".format(np.unique(cluster_labels).size))
+            cluster_specs2label = self._assign_supercluster_labels(condensed_matrix, cluster_specifications)
+            logger.info("Identified {:d} superclusters.".format(len(set(cluster_specs2label.values()))))
 
             label2cluster_specs = dict()
             for cls_spec, cls_label in cluster_specs2label.items():

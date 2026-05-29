@@ -739,6 +739,91 @@ class TestHelpers(unittest.TestCase):
         single_shard = [pair for chunk in iter_shard_pair_chunks(num_clusters, 1, 0, 100) for pair in chunk]
         self.assertListEqual(single_shard, expected_pairs)
 
+    @staticmethod
+    def _partition(labels):
+        """Convert a per-point component-label array into the order-independent set of point groups"""
+        groups = dict()
+        for idx, lab in enumerate(labels):
+            groups.setdefault(int(lab), set()).add(idx)
+        return frozenset(frozenset(group) for group in groups.values())
+
+    def test_subcutoff_connected_components(self):
+        """Verify subcutoff_connected_components() partitions points by the sub-cutoff graph,
+        is chunk-size invariant, keeps zero-distance edges connected, and handles edge cases"""
+        from transport_tools.libs.geometry import subcutoff_connected_components
+        from scipy.spatial.distance import squareform
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        far = 999.0
+        # two tight groups {0,1,2} and {3,4} plus an isolated point 5; all cross distances are far
+        dense = np.full((6, 6), far)
+        np.fill_diagonal(dense, 0.0)
+        dense[0, 1] = dense[1, 0] = 0.0   # legitimate zero-distance edge must stay connected
+        dense[1, 2] = dense[2, 1] = 1.0
+        dense[0, 2] = dense[2, 0] = 1.5
+        dense[3, 4] = dense[4, 3] = 0.8
+        condensed = squareform(dense)
+        cutoff = 2.0
+
+        # ground truth: components of the dense thresholded adjacency
+        adjacency = (dense <= cutoff).astype(np.uint8)
+        np.fill_diagonal(adjacency, 0)
+        n_expected, labels_expected = connected_components(coo_matrix(adjacency), directed=False)
+
+        n_comp, labels = subcutoff_connected_components(condensed, 6, cutoff)
+        self.assertEqual(n_comp, n_expected)
+        self.assertEqual(self._partition(labels), self._partition(labels_expected))
+        self.assertEqual(self._partition(labels),
+                         frozenset({frozenset({0, 1, 2}), frozenset({3, 4}), frozenset({5})}))
+
+        # chunk_size is a pure performance knob - identical partition for any chunk size
+        for chunk_size in (1, 2, 3, 7, 100):
+            n_c, labels_c = subcutoff_connected_components(condensed, 6, cutoff, chunk_size=chunk_size)
+            self.assertEqual(n_c, n_comp)
+            self.assertEqual(self._partition(labels_c), self._partition(labels))
+
+        # everything beyond the cutoff -> every point its own component
+        n_far, labels_far = subcutoff_connected_components(np.full(condensed.size, far), 6, cutoff)
+        self.assertEqual(n_far, 6)
+        self.assertEqual(self._partition(labels_far), frozenset(frozenset({i}) for i in range(6)))
+
+        # everything within the cutoff -> a single component
+        n_near, labels_near = subcutoff_connected_components(np.zeros(condensed.size), 6, cutoff)
+        self.assertEqual(n_near, 1)
+        self.assertEqual(self._partition(labels_near), frozenset({frozenset(range(6))}))
+
+        # trivial point counts
+        self.assertEqual(subcutoff_connected_components(np.empty(0), 0, cutoff)[0], 0)
+        self.assertEqual(subcutoff_connected_components(np.empty(0), 1, cutoff)[0], 1)
+
+    def test_gather_dense_submatrix(self):
+        """Verify gather_dense_submatrix() reconstructs the dense sub-block from condensed form"""
+        from transport_tools.libs.geometry import gather_dense_submatrix
+        from scipy.spatial.distance import squareform
+
+        rng = np.random.default_rng(0)
+        num_points = 8
+        dense = rng.random((num_points, num_points))
+        dense = dense + dense.T
+        np.fill_diagonal(dense, 0.0)
+        condensed = squareform(dense)
+
+        members = np.array([1, 3, 4, 6])
+        block = gather_dense_submatrix(condensed, num_points, members)
+        np.testing.assert_allclose(block, dense[np.ix_(members, members)])
+        np.testing.assert_allclose(block, block.T)               # symmetric
+        self.assertTrue(np.all(np.diag(block) == 0.0))           # zero diagonal
+
+        # member order defines the block order; the block stays correct when members is unsorted
+        members_unsorted = np.array([6, 1, 4, 3])
+        block_unsorted = gather_dense_submatrix(condensed, num_points, members_unsorted)
+        np.testing.assert_allclose(block_unsorted, dense[np.ix_(members_unsorted, members_unsorted)])
+
+        # 1-member and empty blocks
+        self.assertEqual(gather_dense_submatrix(condensed, num_points, np.array([2])).shape, (1, 1))
+        self.assertEqual(gather_dense_submatrix(condensed, num_points, np.array([], dtype=int)).shape, (0, 0))
+
 
 if __name__ == '__main__':
     unittest.main()

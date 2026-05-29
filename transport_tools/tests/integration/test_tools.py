@@ -672,13 +672,53 @@ class TestTransportProcesses(unittest.TestCase):
         self.assertFalse(np.isinf(sharded_matrix).any())
         self.assertTrue(np.array_equal(local_condensed, squareform(sharded_matrix, checks=False)))
 
+    def _purge_super_cluster_outputs(self):
+        """Remove the supercluster outputs of a merge/profiles/summary run while keeping the
+        (linkage-independent) distance matrix, so a subsequent run starts from a clean state."""
+        from shutil import rmtree
+
+        for path in (os.path.join(self.out_path, "data", "super_clusters"),
+                     os.path.join(self.out_path, "statistics"),
+                     os.path.join(self.out_path, "_internal", "super_cluster_pathsets"),
+                     os.path.join(self.out_path, "_internal", "super_cluster_profiles")):
+            if os.path.isdir(path):
+                rmtree(path)
+
+    def _check_super_cluster_linkage_variant(self, mol_system, linkage: str):
+        """Cluster the already-computed distances with the given non-default linkage, generate the
+        supercluster details + summary, golden-compare them against the per-linkage fixtures, then
+        delete the generated outputs so the default 'average' chain (test_05+) is unaffected. The
+        distance matrix is reused, not recomputed."""
+        mol_system.parameters["clustering_linkage"] = linkage
+        mol_system.merge_tunnel_clusters2super_clusters()
+        mol_system.create_super_cluster_profiles()
+        mol_system.generate_super_cluster_summary(out_filename="1-initial_tunnels_summary.txt")
+
+        fixtures = os.path.join(self.saved_data, "linkage_variants", linkage)
+        compare_test_files(os.path.join(fixtures, "initial_super_cluster_details.txt"),
+                            os.path.join(self.out_path, "data", "super_clusters", "details",
+                                         "initial_super_cluster_details.txt"), self)
+        compare_test_files(os.path.join(fixtures, "1-initial_tunnels_summary.txt"),
+                            os.path.join(self.out_path, "statistics", "1-initial_tunnels_summary.txt"), self)
+        self._purge_super_cluster_outputs()
+
     def test_04merge_tunnel_clusters2super_clusters(self):
         try:
             mol_system = load_checkpoint(self._get_dumpfile(3))
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
+        # distances are linkage-independent - compute them once and reuse for every linkage below
         mol_system.compute_tunnel_clusters_distances()
+
+        # validate the non-default linkages against their golden fixtures, deleting each one's
+        # generated supercluster outputs afterwards so only the 'average' results remain for the
+        # followup tests (the distance matrix is kept and reused, never recomputed)
+        for linkage in ("single", "complete", "ward"):
+            self._check_super_cluster_linkage_variant(mol_system, linkage)
+
+        # default 'average' linkage: historical distance-matrix golden comparison + chain checkpoint
+        mol_system.parameters["clustering_linkage"] = "average"
         mol_system.merge_tunnel_clusters2super_clusters()
         compare_test_folders(os.path.join(self.saved_data, "_internal", "clustering"),
                               os.path.join(self.out_path, "_internal", "clustering"), self)

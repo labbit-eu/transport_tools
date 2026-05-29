@@ -2460,3 +2460,111 @@ def iter_shard_pair_chunks(num_clusters: int, num_shards: int, shard_id: int,
             pair_index += 1
     if chunk:
         yield chunk
+
+
+def subcutoff_connected_components(condensed: np.ndarray, num_points: int, cutoff: float,
+                                   chunk_size: int = 1 << 22) -> Tuple[int, np.ndarray]:
+    """
+    Partition points into the connected components of the sub-cutoff graph G = {(i, j) : d(i, j) <=
+    cutoff}, where d is the condensed (upper-triangle) pairwise-distance vector of a
+    num_points x num_points symmetric matrix. This is the shared substrate of the stage-5 clustering
+    rework (see docs/clustering_rework_plan.md): partitioning by sub-cutoff connectivity lets each
+    component be clustered independently, dropping linkage/HDBSCAN cost from O(N**2) to
+    O(max |C_k|**2). It keys off the cutoff threshold only and is correct regardless of whether far
+    pairs carry real distances or the approximate-mode 999 saturation.
+
+    The condensed vector (potentially terabytes for large N, so possibly a memmap) is thresholded in
+    element-bounded chunks rather than all at once - each chunk's comparison and the recovery of its
+    surviving (i, j) pairs are fully vectorised. The condensed position k of a survivor is mapped
+    back to (i, j) exactly via a vectorised search over the precomputed row-start offsets:
+    i = searchsorted(row_offsets, k) - 1 and j = k - row_offsets[i] + i + 1 (no fragile float-sqrt
+    inversion, no per-row Python loop). The chunk_size is a pure performance/memory knob: the
+    surviving edge set, and hence the partition, is identical for any chunk_size. The graph handed to
+    scipy is a structural all-ones uint8 adjacency: only the connectivity matters, so storing 1 per
+    edge keeps a legitimate zero-distance edge from being pruned (tocsr() does not call
+    eliminate_zeros(), but relying on that is version-fragile) and shrinks the data array 8x versus
+    float64.
+
+    :param condensed: condensed upper-triangle distance vector of length num_points*(num_points-1)/2
+                      (may be a numpy memmap; only chunk_size elements are materialised at a time)
+    :param num_points: number of points (side length of the implied dense matrix)
+    :param cutoff: distance threshold; pairs with d <= cutoff form the graph edges
+    :param chunk_size: number of condensed elements thresholded per vectorised pass (perf/memory only)
+    :return: (number of connected components, per-point component-label array of length num_points)
+    """
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    num_points = int(num_points)
+    if num_points <= 0:
+        return 0, np.empty(0, dtype=np.intp)
+    if num_points == 1:
+        return 1, np.zeros(1, dtype=np.intp)
+
+    # start offset of each matrix row within the condensed vector; row i holds columns i+1..num_points-1
+    rows_axis = np.arange(num_points, dtype=np.int64)
+    row_offsets = rows_axis * num_points - (rows_axis * (rows_axis + 1)) // 2
+
+    total_pairs = num_points * (num_points - 1) // 2
+    row_indices: List[np.ndarray] = list()
+    col_indices: List[np.ndarray] = list()
+    for start in range(0, total_pairs, chunk_size):
+        block = np.asarray(condensed[start: start + chunk_size])
+        local_hits = np.nonzero(block <= cutoff)[0]
+        if not local_hits.size:
+            continue
+        # recover the surviving (i, j) pairs from their condensed positions, fully vectorised
+        positions = local_hits + start
+        i = np.searchsorted(row_offsets, positions, side='right') - 1
+        j = positions - row_offsets[i] + i + 1
+        row_indices.append(i.astype(np.int32, copy=False))
+        col_indices.append(j.astype(np.int32, copy=False))
+
+    if row_indices:
+        rows = np.concatenate(row_indices)
+        cols = np.concatenate(col_indices)
+    else:
+        rows = np.empty(0, dtype=np.int32)
+        cols = np.empty(0, dtype=np.int32)
+
+    data = np.ones(rows.size, dtype=np.uint8)
+    graph = coo_matrix((data, (rows, cols)), shape=(num_points, num_points)).tocsr()
+    n_components, labels = connected_components(graph, directed=False, return_labels=True)
+
+    return n_components, labels.astype(np.intp, copy=False)
+
+
+def gather_dense_submatrix(condensed: np.ndarray, num_points: int,
+                           members: np.ndarray) -> np.ndarray:
+    """
+    Build the dense |members| x |members| distance block of a subset of points from the condensed
+    upper-triangle distance vector of the full num_points x num_points matrix. Used by the stage-5
+    partition driver to hand one connected component's distances to a clustering backend (HDBSCAN
+    needs a dense precomputed block; agglomerative consumes its condensed form). The off-diagonal
+    entries are gathered in a single fancy-index read of the condensed vector; the diagonal stays 0.
+
+    :param condensed: condensed upper-triangle distance vector of the full matrix (may be a memmap)
+    :param num_points: side length of the full dense matrix the condensed vector represents
+    :param members: global indices of the points in the block; order defines the block's row/column
+                    order (the returned block is symmetric regardless of whether members is sorted)
+    :return: dense (|members|, |members|) float64 distance block with a zero diagonal
+    """
+
+    members = np.asarray(members, dtype=np.intp)
+    m = members.size
+    block = np.zeros((m, m), dtype=np.float64)
+    if m <= 1:
+        return block
+
+    local_i, local_j = np.triu_indices(m, k=1)
+    # min/max so condensed_pair_index always sees i < j even if members is not sorted ascending
+    global_i = np.minimum(members[local_i], members[local_j])
+    global_j = np.maximum(members[local_i], members[local_j])
+    positions = condensed_pair_index(global_i, global_j, num_points)
+    values = np.asarray(condensed[positions])
+
+    block[local_i, local_j] = values
+    block[local_j, local_i] = values
+
+    return block
