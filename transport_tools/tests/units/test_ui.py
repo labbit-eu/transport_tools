@@ -159,34 +159,35 @@ class TestLoggingFunctions(unittest.TestCase):
     def test_set_logging_level_info(self):
         """Test setting logging level to INFO"""
         init_logging(verbose_logging=False, logfile=self.log_file)
-
-        set_logging_level("INFO")
-
         import transport_tools.libs.ui as ui_module
+        set_logging_level("INFO", ui_module._CONSOLE_HANDLER)
+
+
         self.assertEqual(ui_module._CONSOLE_HANDLER.level, logging.INFO)
 
     def test_set_logging_level_debug(self):
         """Test setting logging level to DEBUG"""
         init_logging(verbose_logging=False, logfile=self.log_file)
-
-        set_logging_level("DEBUG")
-
         import transport_tools.libs.ui as ui_module
+        set_logging_level("DEBUG", ui_module._CONSOLE_HANDLER)
+
+
         self.assertEqual(ui_module._CONSOLE_HANDLER.level, logging.DEBUG)
 
     def test_set_logging_level_case_insensitive(self):
         """Test that set_logging_level is case-insensitive"""
         init_logging(verbose_logging=False, logfile=self.log_file)
-
-        set_logging_level("info")  # lowercase
-
         import transport_tools.libs.ui as ui_module
+        set_logging_level("info", ui_module._CONSOLE_HANDLER)  # lowercase
+
+
         self.assertEqual(ui_module._CONSOLE_HANDLER.level, logging.INFO)
 
     def test_set_logging_level_before_init_raises(self):
         """Test that set_logging_level raises error if called before init_logging"""
+        import transport_tools.libs.ui as ui_module        
         with self.assertRaises(RuntimeError) as context:
-            set_logging_level("INFO")
+            set_logging_level("INFO", ui_module._CONSOLE_HANDLER)
 
         self.assertIn("not been initialized", str(context.exception))
 
@@ -204,7 +205,7 @@ class TestLoggingFunctions(unittest.TestCase):
 
         import transport_tools.libs.ui as ui_module
         for level_str, level_int in level_mapping.items():
-            set_logging_level(level_str)
+            set_logging_level(level_str, ui_module._CONSOLE_HANDLER)
             self.assertEqual(ui_module._CONSOLE_HANDLER.level, level_int)
 
 
@@ -409,7 +410,7 @@ class TestInitiateTools(unittest.TestCase):
     @patch('transport_tools.libs.ui.greetings')
     def test_initiate_tools_creates_log_directory(self, mock_greetings, mock_register):
         """Test that initiate_tools creates log file directory"""
-        initiate_tools(level="INFO", verbose_logging=False, logfile=self.log_file)
+        initiate_tools(std_level="INFO", verbose_logging=False, logfile=self.log_file)
 
         self.assertTrue(os.path.exists(os.path.dirname(self.log_file)))
 
@@ -417,7 +418,7 @@ class TestInitiateTools(unittest.TestCase):
     @patch('transport_tools.libs.ui.greetings')
     def test_initiate_tools_sets_logging_level(self, mock_greetings, mock_register):
         """Test that initiate_tools sets correct logging level"""
-        initiate_tools(level="DEBUG", verbose_logging=False, logfile=self.log_file)
+        initiate_tools(std_level="DEBUG", verbose_logging=False, logfile=self.log_file)
 
         import transport_tools.libs.ui as ui_module
         self.assertEqual(ui_module._CONSOLE_HANDLER.level, logging.DEBUG)
@@ -426,7 +427,7 @@ class TestInitiateTools(unittest.TestCase):
     @patch('transport_tools.libs.ui.greetings')
     def test_initiate_tools_calls_greetings(self, mock_greetings, mock_register):
         """Test that initiate_tools calls greetings"""
-        initiate_tools(level="INFO", verbose_logging=False, logfile=self.log_file)
+        initiate_tools(std_level="INFO", verbose_logging=False, logfile=self.log_file)
 
         mock_greetings.assert_called_once()
 
@@ -434,7 +435,7 @@ class TestInitiateTools(unittest.TestCase):
     @patch('transport_tools.libs.ui.greetings')
     def test_initiate_tools_registers_bye_bye(self, mock_greetings, mock_register):
         """Test that initiate_tools registers bye_bye at exit"""
-        initiate_tools(level="INFO", verbose_logging=False, logfile=self.log_file)
+        initiate_tools(std_level="INFO", verbose_logging=False, logfile=self.log_file)
 
         mock_register.assert_called_once()
 

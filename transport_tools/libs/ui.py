@@ -190,7 +190,7 @@ def init_logging(verbose_logging: bool = False, logfile: str = "transport_tools.
     _LOG_HANDLER = fh
 
 
-def set_logging_level(level: str):
+def set_logging_level(level: str, handler):
     """
     Sets currently used level of logging
     :param level: logging level to be used
@@ -208,9 +208,9 @@ def set_logging_level(level: str):
         "NOTSET": logging.NOTSET,
     }
 
-    if _CONSOLE_HANDLER is None:
+    if handler is None:
         raise RuntimeError("Logging has not been initialized. Call init_logging() first.")
-    _CONSOLE_HANDLER.setLevel(mapping.get(level, logging.NOTSET))
+    handler.setLevel(mapping.get(level, logging.NOTSET))
 
 
 def process_count(num_processes: int) -> str:
@@ -220,17 +220,19 @@ def process_count(num_processes: int) -> str:
         return "parallel processes"
 
 
-def initiate_tools(level: str = "info", verbose_logging: bool = False, logfile: str = "transport_tools.log"):
+def initiate_tools(std_level: str = "info", log_level: str = "info", verbose_logging: bool = False, logfile: str = "transport_tools.log"):
     """
     Starts logging, enables initial and terminal messages
-    :param level: logging level to be used
+    :param std_level: logging level to be used for std
+    :param log_level: logging level to be used for logfile
     :param verbose_logging: if more details should be provided on debug level
     :param logfile: file to log into
     """
 
     os.makedirs(os.path.dirname(logfile), exist_ok=True)
     init_logging(verbose_logging, logfile)
-    set_logging_level(level)
+    set_logging_level(std_level, _CONSOLE_HANDLER)
+    set_logging_level(log_level, _LOG_HANDLER)
     greetings()
     register(bye_bye, START_TIME)
 

@@ -1294,7 +1294,7 @@ def run_stage_on_slurm(stage: SlurmShardStage, config_file: str,
         # discovered only when the driver vanishes mid-poll.
         parent_info = _detect_parent_slurm_allocation()
         if parent_info is not None:
-            logger.info("Detected recursive SLURM execution: driver runs inside parent "
+            logger.debug("Detected recursive SLURM execution: driver runs inside parent "
                         "job %s (cpus=%s, time_min=%s). The launcher will pass "
                         "--cpu-bind=none to the array's srun to avoid the nested "
                         "'CPU binding outside of job step allocation' error.",

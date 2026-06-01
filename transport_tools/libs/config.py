@@ -68,7 +68,7 @@ class AnalysisConfig:
             self.parameters.update(self.advanced_settings)
             self.parameters.update(self.internal_settings)
             if logging:
-                initiate_tools(self.get_parameter("log_level"), self.get_parameter("verbose_logging"),
+                initiate_tools(self.get_parameter("std_level"), self.get_parameter("log_level"), self.get_parameter("verbose_logging"),
                                self.get_parameter("logfile_path"))
             self._test_input_data()
             self._autocomplete_parameters()
@@ -244,6 +244,7 @@ class AnalysisConfig:
             "trajectory_engine": "mdtraj",  # mdtraj or pytraj if installed additionally
             "logfilename": "transport_tools.log",
             "log_level": "info",
+            "std_level": "info",
             "msms": None,  # path to binary of  https://ccsb.scripps.edu/msms/ program for faster volume visulaization
             "max_events_per_cluster4visualization": 1000
         }
