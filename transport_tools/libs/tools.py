@@ -275,7 +275,11 @@ class TransportProcesses:
         self.filter_flag = 0
         self._aquaduct_single_event_inputs = False
         if self.parameters["start_from_stage"] == 1:
-            logger.debug(str(config))  # log initial configuration
+            from transport_tools.libs.ui import _LOG_HANDLER, set_logging_level
+            if _LOG_HANDLER is not None:  # skip when logging has not been initialized (e.g. tests)
+                set_logging_level("debug", _LOG_HANDLER)
+                logger.debug(str(config))  # log initial configuration
+                set_logging_level(self.parameters["log_level"], _LOG_HANDLER)
 
     def update_configuration(self, new_config: AnalysisConfig):
         """
@@ -367,7 +371,7 @@ class TransportProcesses:
             chunk_size = max(1, -(-n_jobs // target_num_chunks))
 
             done_calcs = 0
-            progressbar(done_calcs, n_jobs)
+            progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
             # use the 'spawn' start method: the workers must not be forked from this (typically
             # multi-threaded, e.g. via numpy/BLAS) process, as forking while another thread holds
@@ -389,7 +393,7 @@ class TransportProcesses:
                     cols = chunk[:, 1].astype(np.intp)
                     condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = chunk[:, 2]
                     done_calcs += chunk.shape[0]
-                    progressbar(done_calcs, n_jobs)
+                    progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
         return condensed_distances
 
@@ -519,14 +523,14 @@ class TransportProcesses:
                             "using {:d} {}:".format(items2process, self.parameters["num_cpus"],
                                                     process_count(self.parameters["num_cpus"])))
 
-                progressbar(0, items2process)
+                progressbar(0, items2process, self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 for i, (sc_id, avg_direction) in enumerate(utils.iter_pool_results(processing,
                                                                                    timeout=timeout,
                                                                                    pool=pool)):
                     self._super_clusters[sc_id].avg_direction = avg_direction
                     del self._super_clusters[sc_id].tunnel_clusters  # remove extensive data
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def _validate_event_resids_in_trajectory_topologies(
             self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
@@ -736,7 +740,7 @@ class TransportProcesses:
                 initializer=init_event_assigner_worker,
                 initargs=(self.parameters, self._super_clusters, self._active_filters,
                           num_cpus, num_cpus)) as pool:
-            progressbar(0, items2process)
+            progressbar(0, items2process, self.parameters["log_level"])
             tasks = [(event_specification, event_path_set)
                      for event_specification, event_path_set in path_sets.items()]
             timeout = self.parameters["worker_task_timeout_s"]
@@ -756,7 +760,7 @@ class TransportProcesses:
             for i, result in enumerate(results_iter):
                 event_specification = result[0]
                 buffered_assignments[event_specification] = result
-                progressbar(i + 1, items2process)
+                progressbar(i + 1, items2process, self.parameters["log_level"])
 
             self._apply_event_assignments(path_sets.keys(), buffered_assignments)
 
@@ -1177,7 +1181,7 @@ class TransportProcesses:
         chunk_size = max(1, -(-n_jobs // max(num_cpus * 64, 1)))
         results: List[Tuple[int, int, float]] = list()
         done_calcs = 0
-        progressbar(done_calcs, n_jobs)
+        progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
         # 'spawn' start method - this shard process is multi-threaded (numpy/BLAS), so forking
         # the worker processes here would intermittently deadlock the children on inherited locks
@@ -1193,7 +1197,7 @@ class TransportProcesses:
                                                          label="distance-chunk (shard {})".format(shard_id)):
                 results.extend(chunk_results)
                 done_calcs += len(chunk_results)
-                progressbar(done_calcs, n_jobs)
+                progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
         return results
 
@@ -1250,7 +1254,7 @@ class TransportProcesses:
 
         results: List[Tuple[int, str, LayeredPathSet]] = list()
         done = 0
-        progressbar(done, n_jobs)
+        progressbar(done, n_jobs, self.parameters["log_level"])
 
         # 'spawn' inner pool with the BLAS thread cap - identical pattern to compute_distance_shard
         with get_context("spawn").Pool(processes=num_cpus,
@@ -1264,7 +1268,7 @@ class TransportProcesses:
                     extract_task_label=lambda r: "{}/{}".format(r[1], r[0])):
                 results.append(result)
                 done += 1
-                progressbar(done, n_jobs)
+                progressbar(done, n_jobs, self.parameters["log_level"])
 
         # persist the side-effects backup (per-cluster .py scripts + per-layer node PDBs) so
         # a future resume hit with a wiped visualisation folder can restore them without
@@ -1358,7 +1362,7 @@ class TransportProcesses:
 
         results: List[Tuple[str, str, LayeredPathSet]] = list()
         done = 0
-        progressbar(done, n_jobs)
+        progressbar(done, n_jobs, self.parameters["log_level"])
 
         # 'spawn' inner pool with the BLAS thread cap - identical pattern to
         # compute_tunnel_layering_shard / compute_distance_shard
@@ -1373,7 +1377,7 @@ class TransportProcesses:
                     extract_task_label=lambda r: "{}/{}".format(r[1], r[0])):
                 results.append(result)
                 done += 1
-                progressbar(done, n_jobs)
+                progressbar(done, n_jobs, self.parameters["log_level"])
 
         # persist the side-effects backup (per-event .py scripts + per-layer node PDBs) so a
         # future resume hit with a wiped visualisation folder can restore them without
@@ -1481,7 +1485,7 @@ class TransportProcesses:
 
         results: List[Tuple] = list()
         done = 0
-        progressbar(done, n_jobs)
+        progressbar(done, n_jobs, self.parameters["log_level"])
 
         # 'spawn' inner pool with the shared event-assigner initializer - identical pattern to
         # the local backend, with super_clusters + active_filters routed via the initializer
@@ -1498,7 +1502,7 @@ class TransportProcesses:
                     extract_task_label=lambda r: "{}/{}".format(r[0][0], r[0][1])):
                 results.append(result)
                 done += 1
-                progressbar(done, n_jobs)
+                progressbar(done, n_jobs, self.parameters["log_level"])
 
         self._write_event_assignment_shard_result(slurm_folder, shard_id, results)
         return len(results)
@@ -1816,7 +1820,7 @@ class TransportProcesses:
 
             progress_counter = 0
             num_folders2process = 2 * len(self.caver_input_folders) + len(self.aquaduct_input_folders)
-            progressbar(progress_counter, num_folders2process)
+            progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
 
             # compute transformation matrices from caver PDB files
             num_raw_paths = 0
@@ -1834,7 +1838,7 @@ class TransportProcesses:
                 for matrix, md_label in utils.iter_pool_results(processing, timeout=timeout, pool=pool):
                     tunnel_transform_mat[md_label] = matrix
                     progress_counter += 1
-                    progressbar(progress_counter, num_folders2process)
+                    progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
 
                 # Batch 2 (avg-starting-point) and batch 3 (aquaduct-transform) are independent of
                 # each other - both only depend on batch 1's per-md_label transform matrices, which
@@ -1872,7 +1876,7 @@ class TransportProcesses:
                     transformed_average_sp_y.append(transformed_sp[1])
                     transformed_average_sp_z.append(transformed_sp[2])
                     progress_counter += 1
-                    progressbar(progress_counter, num_folders2process)
+                    progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
 
                 overall_starting_point = (np.average(transformed_average_sp_x), np.average(transformed_average_sp_y),
                                           np.average(transformed_average_sp_z))
@@ -1893,7 +1897,7 @@ class TransportProcesses:
                     num_raw_paths += _num_raw_paths
                     aquaduct_transform_mat[md_label] = matrix
                     progress_counter += 1
-                    progressbar(progress_counter, num_folders2process)
+                    progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
 
             if self.aquaduct_input_folders and (num_raw_paths / len(self.aquaduct_input_folders)) \
                     <= self.parameters["num_cpus"]:
@@ -1960,10 +1964,10 @@ class TransportProcesses:
                                                         args=(md_label, self.parameters))))
 
                 items2process = len(processing)
-                progressbar(0, items2process)
+                progressbar(0, items2process, self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def _process_tunnel_networks_slurm(self):
         """
@@ -2066,7 +2070,7 @@ class TransportProcesses:
         logger.info("SLURM tunnel-networks shard %d/%d: processing %d md_label(s) using %d %s.",
                     shard_id + 1, num_shards, n_jobs, num_cpus, process_count(num_cpus))
 
-        progressbar(0, n_jobs)
+        progressbar(0, n_jobs, self.parameters["log_level"])
         done = 0
         processed_md_labels: List[str] = list()
 
@@ -2090,7 +2094,7 @@ class TransportProcesses:
                                                                    timeout=timeout, pool=pool)):
                 processed_md_labels.append(md_label)
                 done += 1
-                progressbar(done, n_jobs)
+                progressbar(done, n_jobs, self.parameters["log_level"])
 
         # Persist the side-effects backup (per-md dump + optional viz folder) BEFORE the
         # result pickle so the existence of the pickle implies the manifest + archive are
@@ -2163,7 +2167,7 @@ class TransportProcesses:
                 logger.info("Computing layered representation for {:d} tunnel clusters "
                             "using {:d} {}:".format(items2process, num_cpus, process_count(num_cpus)))
 
-                progressbar(0, items2process)
+                progressbar(0, items2process, self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 imap_iter = pool.imap_unordered(create_layered_cluster_worker, clusters_to_process)
                 # On timeout/failure, log the last few completed identities to point at the region
@@ -2204,7 +2208,7 @@ class TransportProcesses:
                         del tunnel_networks[md_label]
                         del buffered_layered_paths[md_label]
 
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def _create_layered_description4tunnel_networks_slurm(self):
         """
@@ -2292,7 +2296,7 @@ class TransportProcesses:
             #    finished at this point, and the heavy work that remains is the
             #    save_layered_network() pickle dump which has md_label granularity.
             num_md = len(self.caver_input_folders)
-            progressbar(0, num_md)
+            progressbar(0, num_md, self.parameters["log_level"])
             for i, md_label in enumerate(self.caver_input_folders):
                 tunnel_network = TunnelNetwork(self.parameters, md_label)
                 for cls_id in cls_ids2process4md_label[md_label]:
@@ -2301,7 +2305,7 @@ class TransportProcesses:
                 if self.parameters["visualize_layered_clusters"]:
                     tunnel_network.save_layered_visualization(save_pdb_files=True)
                 tunnel_network.save_layered_network()
-                progressbar(i + 1, num_md)
+                progressbar(i + 1, num_md, self.parameters["log_level"])
 
             # Assembly succeeded end-to-end (every md_label's layered_network.dump and
             # optional per-cluster visualisations are on disk); drop the per-shard cache
@@ -2369,7 +2373,7 @@ class TransportProcesses:
             raise RuntimeError("Not enough AQUA-DUCT networks are available to perform their layering")
 
         with TimeProcess("Processing"):
-            progressbar(0, items2process)
+            progressbar(0, items2process, self.parameters["log_level"])
             if self._aquaduct_single_event_inputs:
                 num_cpus = self.parameters["num_cpus"]
                 with get_context("spawn").Pool(processes=num_cpus,
@@ -2388,12 +2392,12 @@ class TransportProcesses:
                         imap_iter, timeout=timeout, pool=pool,
                         label="aquaduct-network[{} MD label(s)]".format(len(submitted)))
                     for i, _ in enumerate(results_iter):
-                        progressbar(i + 1, items2process)
+                        progressbar(i + 1, items2process, self.parameters["log_level"])
             else:
                 for i, md_label in enumerate(self.aquaduct_input_folders):
                     self._pre_process_single_aquaduct_network(md_label, self.parameters,
                                                               self.aquaduct_md_to_roots[md_label], True)
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def _process_aquaduct_networks_slurm(self):
         """
@@ -2506,7 +2510,7 @@ class TransportProcesses:
                     "%d %s.", shard_id + 1, num_shards, n_jobs, num_cpus,
                     process_count(num_cpus))
 
-        progressbar(0, n_jobs)
+        progressbar(0, n_jobs, self.parameters["log_level"])
         done = 0
         processed_md_labels: List[str] = list()
 
@@ -2532,7 +2536,7 @@ class TransportProcesses:
                                                                    timeout=timeout, pool=pool)):
                 processed_md_labels.append(md_label)
                 done += 1
-                progressbar(done, n_jobs)
+                progressbar(done, n_jobs, self.parameters["log_level"])
 
         # Persist the side-effects backup (per-md dump + optional viz folder) BEFORE the
         # result pickle so the existence of the pickle implies the manifest + archive are
@@ -2605,7 +2609,7 @@ class TransportProcesses:
                 if not items2process > 0:
                     raise RuntimeError("Not enough transport events are available to perform their layering")
 
-                progressbar(0, items2process)
+                progressbar(0, items2process, self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 imap_iter = pool.imap_unordered(create_layered_event_worker, events_to_process)
                 # Workers return (event_id, md_label, ...); use that for last-completed labels.
@@ -2646,7 +2650,7 @@ class TransportProcesses:
                         del aqua_networks[md_label]
                         del buffered_layered_paths[md_label]
 
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def _create_layered_description4aquaduct_networks_slurm(self):
         """
@@ -2739,7 +2743,7 @@ class TransportProcesses:
             #    at this point, and the heavy work that remains is the save_layered_network()
             #    pickle dump + visualisation prep which have md_label granularity.
             num_md = len(self.aquaduct_input_folders)
-            progressbar(0, num_md)
+            progressbar(0, num_md, self.parameters["log_level"])
             for i, md_label in enumerate(self.aquaduct_input_folders):
                 for event_id in event_ids2process4md_label[md_label]:
                     aqua_networks[md_label].add_layered_entity(
@@ -2750,7 +2754,7 @@ class TransportProcesses:
                 aqua_networks[md_label].save_layered_visualization(self.parameters["visualize_layered_events"])
                 aqua_networks[md_label].save_layered_network()
                 aqua_networks[md_label].clean_tempfile()
-                progressbar(i + 1, num_md)
+                progressbar(i + 1, num_md, self.parameters["log_level"])
 
             # Assembly succeeded end-to-end (every md_label's aqua_layered_network.dump and
             # visualisations are on disk); drop the per-shard cache unless the user opted in
@@ -2783,7 +2787,7 @@ class TransportProcesses:
                 if items2process == 0:
                     raise RuntimeError("Not enough superclusters are available to create their profiles")
 
-                progressbar(0, items2process)
+                progressbar(0, items2process, self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 imap_iter = pool.imap_unordered(process_supercluster_profile_worker, superclusters_to_process)
                 # Workers return (sc_id, ...); identify completions by sc_id in error logs.
@@ -2796,7 +2800,7 @@ class TransportProcesses:
                     self._super_clusters[sc_id].set_properties(sc_properties)
                     self._super_clusters[sc_id].set_bottleneck_residue_freq(sc_residues_freq)
                     self._super_clusters[sc_id].update_caver_clusters_validity(retained_tunnel_clusters)
-                    progressbar(i + 1, items2process)
+                    progressbar(i + 1, items2process, self.parameters["log_level"])
 
             self._prioritize_super_clusters()
             self._report_super_cluster_details("initial_super_cluster_details.txt")
@@ -2872,7 +2876,7 @@ class TransportProcesses:
                 if not len(processing) > 0:
                     raise RuntimeError("Not enough superclusters are available to filter their profiles")
 
-                progressbar(0, len(processing))
+                progressbar(0, len(processing), self.parameters["log_level"])
                 timeout = self.parameters["worker_task_timeout_s"]
                 for i, result in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                     # SC properties cannot be directly assigned within the object since SC are copied during processing
@@ -2884,7 +2888,7 @@ class TransportProcesses:
                                                                      active_filters=self._active_filters):
                         num_retained_sc += 1
 
-                    progressbar(i + 1, len(processing))
+                    progressbar(i + 1, len(processing), self.parameters["log_level"])
 
             logger.info("{:d} superclusters kept after filtering.".format(num_retained_sc))
             self._prioritize_super_clusters()
@@ -3124,10 +3128,10 @@ class TransportProcesses:
                                                                   params[4], surface_cgo))))
                     if len(processing) > 0:
                         items2process = len(processing)
-                        progressbar(0, items2process)
+                        progressbar(0, items2process, self.parameters["log_level"])
                         timeout = self.parameters["worker_task_timeout_s"]
                         for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
-                            progressbar(i + 1, items2process)
+                            progressbar(i + 1, items2process, self.parameters["log_level"])
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict, sc_id: int | None = None,
                                          missing_value_default: float = 0) -> Dict[int, Dict[str, np.ndarray]]:

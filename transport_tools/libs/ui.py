@@ -64,7 +64,7 @@ def init_parser() -> ArgumentParser:
     return in_parser
 
 
-def progressbar(iteration: int, total: int):
+def progressbar(iteration: int, total: int, log_level: str = "info"):
     """
     Generates progress bar for processes
     :param iteration: current iteration of the process
@@ -91,7 +91,7 @@ def progressbar(iteration: int, total: int):
         else:
             logger.info("|{}| {}%".format(bar, percent))
 
-        _LOG_HANDLER.setLevel(logging.DEBUG)
+        set_logging_level(log_level, _LOG_HANDLER)
 
 
 def greetings():
