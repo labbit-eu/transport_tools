@@ -129,6 +129,18 @@ class AnalysisConfig:
             "hdbscan_min_cluster_size": 2,  # smallest admissible supercluster when clustering_method='hdbscan'
             "hdbscan_min_samples": None,  # HDBSCAN conservativeness/noise sensitivity; None => equals hdbscan_min_cluster_size
             "hdbscan_cluster_selection_method": "eom",  # HDBSCAN flat-cluster extraction: 'eom' (fewer/larger) or 'leaf' (finer)
+            # Decoupled clustering scales (None => inherit clustering_cutoff, preserving legacy behavior). They let a
+            # single clustering pass be multi-scale: a generous partition/merge scale for context+assignment with a
+            # tight selection scale for separating spatially overlapping branches.
+            "clustering_partition_cutoff": None,  # sub-cutoff connected-components partition threshold (HDBSCAN only; agglomerative always partitions at its flat-cut for exactness). None => clustering_cutoff
+            "hdbscan_cluster_selection_epsilon": None,  # HDBSCAN cluster_selection_epsilon (branch-separation fineness). None => clustering_cutoff
+            "hdbscan_noise_merge_cutoff": None,  # per-component floor for absorbing HDBSCAN noise into the nearest in-component cluster. None => clustering_cutoff
+            # Global, method-agnostic orphan consolidation (Phase B): reassign every supercluster smaller than
+            # supercluster_core_min_size to the nearest 'core' supercluster, stitching periphery the partition isolated
+            # back into the major branches. Off by default.
+            "consolidate_orphan_superclusters": False,  # enable the global orphan->core consolidation pass
+            "supercluster_core_min_size": 5,  # min tunnel clusters for a supercluster to count as a core / assignment target
+            "orphan_assignment_cutoff": None,  # max orphan-to-core distance allowed for absorption; None => uncapped
             "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
@@ -287,6 +299,10 @@ class AnalysisConfig:
             "pdb_reference_structure",
             "snapshots_per_simulation",
             "hdbscan_min_samples",
+            "clustering_partition_cutoff",
+            "hdbscan_cluster_selection_epsilon",
+            "hdbscan_noise_merge_cutoff",
+            "orphan_assignment_cutoff",
             "comparative_groups_definition",
             "aquaduct_traced_residues_filter",
             "msms",
@@ -308,6 +324,7 @@ class AnalysisConfig:
 
         self.boolean_params = [
             "process_bottleneck_residues",
+            "consolidate_orphan_superclusters",
             "calculate_exact_path_distances",
             "use_cluster_spread",
             "perform_exact_matching_analysis",
@@ -345,6 +362,7 @@ class AnalysisConfig:
             "clustering_max_num_rep_frag",
             "hdbscan_min_cluster_size",
             "hdbscan_min_samples",
+            "supercluster_core_min_size",
             "max_layered_points4visualization",
             "max_events_per_cluster4visualization",
             "pickle_protocol",
@@ -361,6 +379,10 @@ class AnalysisConfig:
             "min_tunnel_length4clustering",
             "max_tunnel_curvature4clustering",
             "clustering_cutoff",
+            "clustering_partition_cutoff",
+            "hdbscan_cluster_selection_epsilon",
+            "hdbscan_noise_merge_cutoff",
+            "orphan_assignment_cutoff",
             "min_length",
             "max_length",
             "min_bottleneck_radius",
@@ -742,6 +764,19 @@ class AnalysisConfig:
             self._test_parameter_sanity("hdbscan_min_cluster_size", 2, sys.maxsize)
             if self.parameters["hdbscan_min_samples"] is not None:
                 self._test_parameter_sanity("hdbscan_min_samples", 1, sys.maxsize)
+
+        # decoupled clustering scales: each None inherits clustering_cutoff (legacy behavior); when set they must be
+        # non-negative distances. They only take effect for clustering_method='hdbscan'.
+        for cutoff_param in ("clustering_partition_cutoff", "hdbscan_cluster_selection_epsilon",
+                             "hdbscan_noise_merge_cutoff"):
+            if self.parameters[cutoff_param] is not None:
+                self._test_parameter_sanity(cutoff_param, 0.0, sys.maxsize)
+
+        # global orphan->core consolidation (method-agnostic post-pass)
+        if self.parameters["consolidate_orphan_superclusters"]:
+            self._test_parameter_sanity("supercluster_core_min_size", 2, sys.maxsize)
+            if self.parameters["orphan_assignment_cutoff"] is not None:
+                self._test_parameter_sanity("orphan_assignment_cutoff", 0.0, sys.maxsize)
 
         # validate compute_backend + per-stage overrides; resolve each stage's effective backend.
         # _stage_backend_keys lists every (stage_knob_name, human_label) recognised by the

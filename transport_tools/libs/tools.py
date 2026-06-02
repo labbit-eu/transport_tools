@@ -24,7 +24,7 @@ import os
 import pickle
 import numpy as np
 import fastcluster
-from typing import List, Dict, Tuple, Any, cast
+from typing import List, Dict, Tuple, Any, Optional, cast
 from scipy.cluster.hierarchy import fcluster
 from multiprocessing import Pool, get_context, parent_process
 from transport_tools.libs.config import AnalysisConfig
@@ -1535,7 +1535,11 @@ class TransportProcesses:
             full-matrix linkage), while 'ward' uses the historical full-matrix fastcluster.linkage
             (its cross-component validity under the partition is unresolved, so it is excluded).
           * 'hdbscan': density-based clustering run per connected component via the same driver,
-            with clustering_cutoff acting as a hard merge floor; noise points become singletons.
+            with clustering_cutoff acting as a hard merge floor; noise within the cutoff of a cluster
+            is absorbed into the nearest one, only noise beyond the cutoff becomes a singleton.
+        When consolidate_orphan_superclusters is enabled, a final method-agnostic pass
+        (_consolidate_orphans_to_cores) reassigns every sub-core-size supercluster to the nearest
+        core, stitching periphery the partition isolated back into the major branches.
         Only the grouping of clusters matters downstream - the raw label integers are remapped to
         1..K by supercluster importance in the caller.
         :param condensed_matrix: condensed upper-triangle pairwise-distance vector (may be a memmap)
@@ -1548,8 +1552,15 @@ class TransportProcesses:
         num_points = len(cluster_specifications)
 
         if method == "hdbscan":
-            cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, "hdbscan")
-        else:  # agglomerative
+            # the partition scale is decoupled from the HDBSCAN selection/merge scales; a generous
+            # partition keeps each branch and its periphery in one component (see _cluster_component_hdbscan)
+            partition_cutoff = self.parameters["clustering_partition_cutoff"]
+            if partition_cutoff is None:
+                partition_cutoff = cutoff
+            cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, "hdbscan",
+                                                              partition_cutoff)
+        else:  # agglomerative - partitions at the flat cut (clustering_partition_cutoff does not apply here, as a
+               # sub-flat-cut partition would break the exact equivalence with the full-matrix linkage)
             linkage = self.parameters["clustering_linkage"]
             if linkage == "ward":
                 linkage_matrix = fastcluster.linkage(condensed_matrix, method=linkage)
@@ -1557,24 +1568,92 @@ class TransportProcesses:
             else:
                 cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, linkage)
 
+        if self.parameters["consolidate_orphan_superclusters"]:
+            cluster_labels = self._consolidate_orphans_to_cores(
+                cluster_labels, condensed_matrix, num_points,
+                self.parameters["supercluster_core_min_size"],
+                self.parameters["orphan_assignment_cutoff"])
+
         return dict(zip(cluster_specifications, cluster_labels))
 
-    def _cluster_labels_partitioned(self, condensed_matrix: np.ndarray, num_points: int, cutoff: float,
-                                    backend: str) -> np.ndarray:
+    @staticmethod
+    def _consolidate_orphans_to_cores(cluster_labels: np.ndarray, condensed_matrix: np.ndarray,
+                                      num_points: int, core_min_size: int,
+                                      assignment_cutoff: Optional[float]) -> np.ndarray:
         """
-        Clusters tunnel clusters by partitioning them into the connected components of the sub-cutoff
-        graph (pairs with distance <= cutoff) and clustering each component independently with the
-        requested backend, then stitching the per-component labels into one global labelling. Peak
-        cost is O(max |component|^2) instead of O(N^2). Components are processed in ascending
-        smallest-member-index order, so the labelling is deterministic across runs and backends.
+        Global, method-agnostic post-clustering consolidation: every 'orphan' tunnel cluster - one
+        whose supercluster has fewer than core_min_size members - is reassigned to the nearest
+        'core' supercluster (>= core_min_size members) by the minimum distance to any of that core's
+        members. This is the inter-component counterpart to the per-component HDBSCAN noise
+        absorption: the connected-components partition can isolate a peripheral cluster in its own
+        component (or linkage/HDBSCAN can leave it a small fragment) even though it spatially belongs
+        to a major branch; this pass stitches such fragments back into the nearest major supercluster.
+
+        Only orphans move, and only onto the ORIGINAL cores in one simultaneous pass, so an orphan
+        never attaches to another orphan and the assignment cannot transitively chain distant
+        clusters together. An orphan farther than assignment_cutoff from every core stays on its own
+        (a true outlier); assignment_cutoff=None means uncapped (every orphan joins its nearest
+        core). Relabel-only: every tunnel cluster still maps to exactly one supercluster.
+        :param cluster_labels: per-point supercluster labels (a relabeled copy is returned)
+        :param condensed_matrix: condensed upper-triangle distance vector of the full matrix (may be a memmap)
+        :param num_points: number of tunnel clusters (side length of the implied dense matrix)
+        :param core_min_size: minimum membership for a supercluster to count as a core / assignment target
+        :param assignment_cutoff: max orphan-to-core distance allowed for absorption; None => uncapped
+        :return: consolidated label array
+        """
+
+        cluster_labels = np.asarray(cluster_labels).copy()
+        if num_points == 0:
+            return cluster_labels
+
+        _, inverse, counts = np.unique(cluster_labels, return_inverse=True, return_counts=True)
+        point_in_core = (counts >= core_min_size)[inverse.ravel()]
+        core_points = np.flatnonzero(point_in_core)
+        orphan_points = np.flatnonzero(~point_in_core)
+        if core_points.size == 0 or orphan_points.size == 0:
+            return cluster_labels  # no cores to attach to, or nothing orphaned
+
+        cap = np.inf if assignment_cutoff is None else float(assignment_cutoff)
+        for orphan in orphan_points:
+            # nearest core member to this orphan, read straight from the condensed vector
+            lows = np.minimum(orphan, core_points)
+            highs = np.maximum(orphan, core_points)
+            dists = np.asarray(condensed_matrix[condensed_pair_index(lows, highs, num_points)])
+            nearest = int(np.argmin(dists))
+            if dists[nearest] <= cap:
+                cluster_labels[orphan] = cluster_labels[core_points[nearest]]
+        return cluster_labels
+
+    def _cluster_labels_partitioned(self, condensed_matrix: np.ndarray, num_points: int, cutoff: float,
+                                    backend: str, partition_cutoff: Optional[float] = None) -> np.ndarray:
+        """
+        Clusters tunnel clusters by partitioning them into the connected components of the
+        sub-partition_cutoff graph (pairs with distance <= partition_cutoff) and clustering each
+        component independently with the requested backend, then stitching the per-component labels
+        into one global labelling. Peak cost is O(max |component|^2) instead of O(N^2). Components
+        are processed in ascending smallest-member-index order, so the labelling is deterministic
+        across runs and backends.
+
+        partition_cutoff (the graph/component scale) is decoupled from cutoff (the per-component
+        clustering scale) so a single pass can be multi-scale: a generous partition keeps a branch
+        and its periphery in one component for context, while the backend separates them at a tighter
+        cutoff. For agglomerative linkages the caller passes partition_cutoff == cutoff (the flat
+        cut), which keeps the partition exact; for HDBSCAN partition_cutoff may be larger than the
+        cluster-selection scale. Defaults to cutoff when not given (the legacy single-scale behavior).
         :param condensed_matrix: condensed upper-triangle pairwise-distance vector (may be a memmap)
         :param num_points: number of tunnel clusters (side length of the implied dense matrix)
-        :param cutoff: clustering distance cutoff defining both the sub-cutoff graph and the flat cut
+        :param cutoff: per-component clustering scale (flat cut for agglomerative; passed to the
+                       HDBSCAN backend as its selection/merge fallback)
         :param backend: clustering backend - an agglomerative linkage ('single'/'complete'/'average')
+                        or 'hdbscan'
+        :param partition_cutoff: sub-cutoff graph threshold defining the components; None => cutoff
         :return: integer supercluster-label array of length num_points
         """
 
-        n_components, component_labels = subcutoff_connected_components(condensed_matrix, num_points, cutoff)
+        if partition_cutoff is None:
+            partition_cutoff = cutoff
+        n_components, component_labels = subcutoff_connected_components(condensed_matrix, num_points,
+                                                                        partition_cutoff)
         components = self._components_by_min_index(component_labels)
         self._log_component_size_histogram(components, num_points)
 
@@ -1641,18 +1720,35 @@ class TransportProcesses:
     def _cluster_component_hdbscan(self, dense_block: np.ndarray, cutoff: float) -> np.ndarray:
         """
         Clusters a single connected component's dense precomputed distance block with HDBSCAN
-        (density-based, opt-in alternative to agglomerative linkage). clustering_cutoff is passed as
-        cluster_selection_epsilon so it acts as a hard merge floor - clusters HDBSCAN would split
-        below the cutoff are kept merged. Members HDBSCAN marks as noise get label -1; the stitching
-        step turns each into its own singleton supercluster, preserving the 'every tunnel cluster
-        maps to exactly one supercluster' invariant. A component smaller than min_cluster_size cannot
-        form a cluster, so it is reported entirely as noise (-> singletons) without calling HDBSCAN.
+        (density-based, opt-in alternative to agglomerative linkage). Two scales govern it, each
+        decoupled from the partition and defaulting to clustering_cutoff (passed in as cutoff):
+          * hdbscan_cluster_selection_epsilon - HDBSCAN's cluster_selection_epsilon, a hard merge
+            floor: clusters HDBSCAN would split below it are kept merged (the branch-separation
+            fineness).
+          * hdbscan_noise_merge_cutoff - members HDBSCAN marks as noise (-1) but lying within this
+            distance of an actual cluster are absorbed into the nearest such cluster by
+            _reassign_hdbscan_noise_within_cutoff, so the merge floor also holds for noise: a tunnel
+            cluster coincident with (or within the floor of) a real cluster never becomes its own
+            spatially-overlapping singleton.
+        Only noise farther than the noise-merge floor from every clustered point keeps label -1,
+        which the stitching step turns into a singleton supercluster - preserving the 'every tunnel
+        cluster maps to exactly one supercluster' invariant. A component smaller than
+        min_cluster_size cannot form a cluster, so it is reported entirely as noise (-> singletons)
+        without calling HDBSCAN.
         :param dense_block: dense |C|x|C| precomputed distance block of the component
-        :param cutoff: clustering distance cutoff, used as HDBSCAN's cluster_selection_epsilon
-        :return: local integer label per member (-1 marks noise)
+        :param cutoff: clustering_cutoff, the fallback for both the selection epsilon and the noise
+                       merge floor when their dedicated parameters are None
+        :return: local integer label per member (-1 marks residual noise beyond the merge floor)
         """
 
         import hdbscan
+
+        epsilon = self.parameters["hdbscan_cluster_selection_epsilon"]
+        if epsilon is None:
+            epsilon = cutoff
+        noise_merge_cutoff = self.parameters["hdbscan_noise_merge_cutoff"]
+        if noise_merge_cutoff is None:
+            noise_merge_cutoff = cutoff
 
         min_cluster_size = self.parameters["hdbscan_min_cluster_size"]
         if dense_block.shape[0] < min_cluster_size:
@@ -1662,8 +1758,45 @@ class TransportProcesses:
                                     min_cluster_size=min_cluster_size,
                                     min_samples=self.parameters["hdbscan_min_samples"],
                                     cluster_selection_method=self.parameters["hdbscan_cluster_selection_method"],
-                                    cluster_selection_epsilon=float(cutoff))
-        return clusterer.fit_predict(np.ascontiguousarray(dense_block, dtype=np.float64))
+                                    cluster_selection_epsilon=float(epsilon))
+        local_labels = clusterer.fit_predict(np.ascontiguousarray(dense_block, dtype=np.float64))
+        return self._reassign_hdbscan_noise_within_cutoff(local_labels, dense_block, noise_merge_cutoff)
+
+    @staticmethod
+    def _reassign_hdbscan_noise_within_cutoff(local_labels: np.ndarray, dense_block: np.ndarray,
+                                              cutoff: float) -> np.ndarray:
+        """
+        Enforces clustering_cutoff as a hard merge floor for HDBSCAN noise: each point HDBSCAN
+        labelled as noise (-1) but lying within cutoff of an actual cluster is absorbed into the
+        nearest such cluster (single-link style - by the minimum distance to any clustered member).
+        This stops a tunnel cluster that spatially overlaps a real cluster (down to a coincident
+        0 A pair) from being emitted as its own singleton supercluster. Points farther than the
+        cutoff from every clustered point keep label -1 and become singletons downstream.
+
+        The reassignment is a single simultaneous pass keyed only on HDBSCAN's original clustered
+        points: noise is never attached to other (reassigned) noise, so this cannot transitively
+        chain distant points together the way single linkage would. Ties on the nearest clustered
+        point are broken by lowest index, keeping the labelling deterministic.
+        :param local_labels: per-member HDBSCAN labels (-1 marks noise)
+        :param dense_block: dense |C|x|C| precomputed distance block these labels belong to
+        :param cutoff: merge floor; noise within this distance of a cluster is absorbed into it
+        :return: local labels with within-cutoff noise reassigned (a copy; input is not mutated)
+        """
+
+        local_labels = np.asarray(local_labels).copy()
+        noise = np.flatnonzero(local_labels == -1)
+        clustered = np.flatnonzero(local_labels != -1)
+        if noise.size == 0 or clustered.size == 0:
+            # nothing to absorb, or HDBSCAN found no cluster in this component to absorb into
+            return local_labels
+
+        # |noise| x |clustered| distances; nearest clustered point per noise point
+        sub = dense_block[np.ix_(noise, clustered)]
+        nearest = np.argmin(sub, axis=1)
+        nearest_dist = sub[np.arange(noise.size), nearest]
+        within = nearest_dist <= cutoff
+        local_labels[noise[within]] = local_labels[clustered[nearest[within]]]
+        return local_labels
 
     @staticmethod
     def _stitch_component_labels(cluster_labels: np.ndarray, members: np.ndarray,
@@ -1745,9 +1878,18 @@ class TransportProcesses:
 
         total_num_md_sims = len(self.caver_input_folders)
         with TimeProcess("Clustering"):
-            logger.info("Clustering tunnel clusters into superclusters using {}-linkage agglomerative clustering "
-                        "with distance cutoff {:.2f} A:".format(self.parameters["clustering_linkage"],
-                                                                self.parameters["clustering_cutoff"]))
+            if self.parameters["clustering_method"] == "hdbscan":
+                logger.info("Clustering tunnel clusters into superclusters using HDBSCAN density-based clustering "
+                            "(min_cluster_size {:d}, min_samples {}, selection method '{}') with distance cutoff "
+                            "{:.2f} A as a hard merge floor:".format(
+                                self.parameters["hdbscan_min_cluster_size"],
+                                self.parameters["hdbscan_min_samples"],
+                                self.parameters["hdbscan_cluster_selection_method"],
+                                self.parameters["clustering_cutoff"]))
+            else:
+                logger.info("Clustering tunnel clusters into superclusters using {}-linkage agglomerative clustering "
+                            "with distance cutoff {:.2f} A:".format(self.parameters["clustering_linkage"],
+                                                                    self.parameters["clustering_cutoff"]))
 
             # load the condensed pairwise dissimilarities (already in the upper-triangle form
             # fastcluster expects - no dense matrix is materialized)

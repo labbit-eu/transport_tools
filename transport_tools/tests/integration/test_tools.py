@@ -720,9 +720,25 @@ class TestTransportProcesses(unittest.TestCase):
             ("complete", {"clustering_method": "agglomerative", "clustering_linkage": "complete"}),
             ("ward",     {"clustering_method": "agglomerative", "clustering_linkage": "ward"}),
             ("hdbscan",  {"clustering_method": "hdbscan"}),
+            # HDBSCAN with the partition scale decoupled from the selection scale (Phase A) plus the
+            # global orphan->core consolidation pass (Phase B) - exercises both multi-scale features
+            ("hdbscan_consolidated", {"clustering_method": "hdbscan",
+                                      "clustering_partition_cutoff": 4.0,
+                                      "consolidate_orphan_superclusters": True,
+                                      "supercluster_core_min_size": 3,
+                                      "orphan_assignment_cutoff": 3.0}),
         )
         for variant, param_overrides in variants:
             self._check_super_cluster_clustering_variant(mol_system, variant, param_overrides)
+
+        # restore the multi-scale knobs to their defaults so the 'average' chain (and the downstream
+        # stage-5 checkpoint feeding test_05+) is unaffected by the consolidated variant above
+        for param, default in (("clustering_partition_cutoff", None),
+                               ("hdbscan_cluster_selection_epsilon", None),
+                               ("hdbscan_noise_merge_cutoff", None),
+                               ("consolidate_orphan_superclusters", False),
+                               ("orphan_assignment_cutoff", None)):
+            mol_system.parameters[param] = default
 
         # default 'average' linkage: historical distance-matrix golden comparison + chain checkpoint
         mol_system.parameters["clustering_method"] = "agglomerative"
