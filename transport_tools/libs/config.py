@@ -126,10 +126,10 @@ class AnalysisConfig:
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
 
             # Clustering of tunnel clusters into superclusters
-            "relevant_tunnel_cluster_min_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not stored at all 
-            "relevant_tunnel_min_radius": 0.75,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
-            "relevant_tunnel_min_length": 5.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
-            "relevant_tunnel_max_curvature": 2.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
+            "relevant_tunnel_cluster_min_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not layered at all
+            "relevant_tunnel_min_radius": 0.75,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered 
+            "relevant_tunnel_min_length": 5.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered 
+            "relevant_tunnel_max_curvature": 2.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered 
 
             "min_tunnel_radius4clustering": None,  # legacy name for relevant_tunnel_min_radius 
             "min_tunnel_length4clustering": None,  # legacy name for relevant_tunnel_min_length
@@ -918,7 +918,7 @@ class AnalysisConfig:
         self._test_parameter_sanity("snapshots_per_simulation", 1, sys.maxsize)
         self._test_parameter_sanity("caver_traj_offset", 0, 1)
         self._test_parameter_sanity("snapshot_id_position", 0, sys.maxsize)
-        self._test_parameter_sanity("relevant_min_cluster_size", 1, sys.maxsize)
+        self._test_parameter_sanity("relevant_tunnel_cluster_min_size", 1, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_radius", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_length", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_max_curvature", 1, sys.maxsize)
@@ -1540,7 +1540,7 @@ class AnalysisConfig:
             "aquaduct_results_path": "# AQUA-DUCT results",
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
-            "relevant_min_cluster_size": "# Clustering of tunnel clusters into superclusters",
+            "relevant_tunnel_cluster_min_size": "# Clustering of tunnel clusters into superclusters",
             "compute_backend": "# SLURM execution backend "
                                "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",

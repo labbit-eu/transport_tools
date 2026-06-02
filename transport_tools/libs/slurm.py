@@ -1576,8 +1576,14 @@ class TunnelNetworksShardStage(SlurmShardStage):
         paths: List[str] = []
         visualize = bool(parameters.get("visualize_transformed_tunnels", False))
         for md_label in processed_md_labels:
-            paths.append(os.path.join(parameters["orig_caver_network_data_path"],
-                                      "{}_caver.dump".format(md_label)))
+            dump_path = os.path.join(parameters["orig_caver_network_data_path"],
+                                     "{}_caver.dump".format(md_label))
+            paths.append(dump_path)
+            # size sidecar written by save_orig_network() next to the dump (suffix
+            # TunnelNetwork._orig_summary_suffix = ".cluster_sizes"); the stage-3 layering
+            # launcher reads it to skip the full orig_network load, so it must be backed up /
+            # restored with the dump or a resume that wipes network_data would lose it.
+            paths.append(dump_path + ".cluster_sizes")
             if visualize:
                 md_vis_folder = os.path.join(parameters["orig_caver_vis_path"], md_label)
                 paths.append(os.path.join(md_vis_folder,

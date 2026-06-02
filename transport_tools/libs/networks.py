@@ -77,6 +77,13 @@ class Network:
         self._layered_summary_attr: str | None = None
         self._layered_summary_suffix: str | None = None
 
+        # Sidecar written next to orig_dump_file by save_orig_network() holding only the
+        # per-entity sizes needed to enumerate layering work (see _compute_orig_summary).
+        # The stage-3 SLURM tunnel-layering launcher reads it via get_clusters4layering_ids()
+        # so it can build the (md_label, cluster_id) enumeration without the heavy full-pickle
+        # load of every orig_network on a single node. None disables (e.g. aquaduct).
+        self._orig_summary_suffix: str | None = None
+
     def add_layered_entity(self, entity_id: int | str, layered_pathset: LayeredPathSet):
         """
         Add layered entity to the network
@@ -150,6 +157,48 @@ class Network:
         os.makedirs(os.path.dirname(self.orig_dump_file), exist_ok=True)
         with open(self.orig_dump_file, "wb") as out_stream:
             pickle.dump(self.orig_entities, out_stream)
+
+        self._write_orig_summary_sidecar()
+
+    def _orig_summary_path(self) -> str | None:
+        """
+        Path to the lightweight size sidecar written next to orig_dump_file, or None when the
+        subclass disables sidecar emission (_orig_summary_suffix unset, e.g. aquaduct).
+        """
+
+        if self._orig_summary_suffix is None:
+            return None
+        if self.orig_dump_file is None:
+            raise ValueError("Variable 'self.orig_dump_file' is not specified")
+        return self.orig_dump_file + self._orig_summary_suffix
+
+    def _compute_orig_summary(self) -> dict:
+        """
+        Build the lightweight per-entity summary persisted to the orig size sidecar. Subclasses
+        that set `_orig_summary_suffix` must override this. The default raises so a misconfigured
+        subclass fails loudly rather than writing an empty/meaningless sidecar.
+        """
+
+        raise NotImplementedError("Subclass {} set _orig_summary_suffix but did not override "
+                                  "_compute_orig_summary().".format(type(self).__name__))
+
+    def _write_orig_summary_sidecar(self):
+        """
+        Dump the lightweight per-entity size summary (see _compute_orig_summary) to a small
+        sidecar next to orig_dump_file. The stage-3 SLURM tunnel-layering launcher reads it
+        to enumerate layering work without the heavy full orig_network load on a single node.
+        No-op when the subclass leaves _orig_summary_suffix unset.
+        """
+
+        sidecar_path = self._orig_summary_path()
+        if sidecar_path is None:
+            return
+
+        summary = self._compute_orig_summary()
+        sidecar_tmp = sidecar_path + ".tmp"
+        with open(sidecar_tmp, "wb") as out_stream:
+            pickle.dump(summary, out_stream, self.parameters.get("pickle_protocol", 4))
+        os.replace(sidecar_tmp, sidecar_path)
 
     def load_layered_network(self):
         """
@@ -935,6 +984,11 @@ class TunnelNetwork(Network):
         self._layered_summary_attr = "characteristics"
         self._layered_summary_suffix = ".characteristics"
 
+        # Stage 3's SLURM tunnel-layering launcher enumerates (md_label, cluster_id) pairs by
+        # the per-cluster valid-tunnel count; this sidecar lets it skip the full orig_network
+        # load (see get_clusters4layering_ids).
+        self._orig_summary_suffix = ".cluster_sizes"
+
         # input paths
         root_folder = os.path.join(self.parameters["caver_results_path"], self.md_label)
         self.pdb_file = utils.get_filepath(root_folder, self.parameters["caver_relative_pdb_file"])
@@ -1061,7 +1115,7 @@ class TunnelNetwork(Network):
         """
 
         clusters = list()
-        
+
         for cls_id, cluster in enumerate(reversed(self.orig_entities)):  # reversed to start processing smaller clusters
             assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
             if cluster.count_valid_tunnels() >= self.parameters["relevant_tunnel_cluster_min_size"]:
@@ -1070,6 +1124,70 @@ class TunnelNetwork(Network):
                 logger.debug("Cluster {} of {} has no valid tunnels to layer".format(cluster.cluster_id, self.md_label))
 
         return clusters
+
+    # parameters whose stage-2 values are baked into Tunnel.filters_passed (and therefore into
+    # count_valid_tunnels); the sidecar records them so it can self-invalidate if these are
+    # changed before stage 3 - today they have no stage-3 effect (the flag is frozen at stage 2),
+    # but storing them protects the enumeration should that invariant ever change.
+    _ORIG_SUMMARY_FILTER_KEYS = ("relevant_tunnel_min_radius", "relevant_tunnel_min_length",
+                                 "relevant_tunnel_max_curvature")
+
+    def _compute_orig_summary(self) -> dict:
+        """
+        Build the size sidecar payload: the per-cluster valid-tunnel counts in orig_entities
+        order (so reversing reproduces get_clusters4layering's processing order), plus the
+        per-tunnel filter parameters baked into those counts for self-validation on read.
+        """
+
+        counts = list()
+        for cluster in self.orig_entities:
+            assert isinstance(cluster, TunnelCluster), \
+                f"Expected TunnelCluster but got {type(cluster).__name__}"
+            counts.append((cluster.cluster_id, cluster.count_valid_tunnels()))
+        return {
+            "filter_params": tuple(self.parameters[k] for k in self._ORIG_SUMMARY_FILTER_KEYS),
+            "counts": counts,
+        }
+
+    def get_clusters4layering_ids(self) -> List[int]:
+        """
+        Enumerate the cluster_ids that get_clusters4layering() would return, reading the size
+        sidecar to avoid the heavy orig_network load when possible. Used by the stage-3 SLURM
+        launcher to build the (md_label, cluster_id) work enumeration; the returned order is
+        identical to get_clusters4layering() so the SLURM and local backends emit byte-identical
+        items.
+
+        Falls back to a full load_orig_network() + get_clusters4layering() when the sidecar is
+        missing (legacy checkpoint) or stale (the baked-in per-tunnel filter parameters no longer
+        match the current ones), rewriting the sidecar so subsequent runs are fast, then drops
+        orig_entities so the caller does not retain the heavy objects.
+        :return: cluster_ids in get_clusters4layering() order
+        """
+
+        min_size = self.parameters["relevant_tunnel_cluster_min_size"]
+        sidecar_path = self._orig_summary_path()
+        if sidecar_path is not None and os.path.exists(sidecar_path):
+            with open(sidecar_path, "rb") as in_stream:
+                summary = pickle.load(in_stream)
+            current_filter_params = tuple(self.parameters[k] for k in self._ORIG_SUMMARY_FILTER_KEYS)
+            if summary.get("filter_params") == current_filter_params:
+                # mirror get_clusters4layering(): reversed orig order, keep clusters meeting the
+                # (live) cluster-size threshold
+                return [cls_id for cls_id, n_valid in reversed(summary["counts"])
+                        if n_valid >= min_size]
+            logger.debug("Orig size sidecar '{}' is stale (filter params changed); reloading "
+                         "the full network.".format(sidecar_path))
+
+        # Fallback: legacy checkpoint without sidecar, or stale sidecar. Load the heavy pickle,
+        # rewrite the sidecar for subsequent runs, then drop orig_entities.
+        self.load_orig_network()
+        ids = [cluster.cluster_id for cluster in self.get_clusters4layering()]
+        try:
+            self._write_orig_summary_sidecar()
+        except OSError as exc:
+            logger.debug("Could not write orig size sidecar '{}': {}".format(sidecar_path, exc))
+        self.orig_entities = list()
+        return ids
 
 
 # ---- AquaDuct related classes ----

@@ -22,6 +22,7 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 import os
+import pickle
 import pytest
 from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_files, compare_test_folders
 from transport_tools.libs.networks import TunnelCluster
@@ -131,6 +132,60 @@ class TestTunnelNetwork(unittest.TestCase):
         for cluster in self.network.get_clusters4layering():
             entity_ids.append(cluster.cluster_id)
         self.assertTrue(self.network.is_layering_complete(entity_ids))
+
+    def test_get_clusters4layering_ids_matches_via_sidecar(self):
+        # The stage-3 SLURM launcher enumerates cluster_ids via the size sidecar instead of
+        # loading the full orig_network; the IDs (and their order) must match get_clusters4layering().
+        from transport_tools.libs.networks import TunnelNetwork
+
+        self.network.save_orig_network()  # writes the dump + the .cluster_sizes sidecar
+        expected_ids = [cluster.cluster_id for cluster in self.network.get_clusters4layering()]
+
+        fresh = TunnelNetwork(self.parameters, "md1")
+        sidecar_path = fresh._orig_summary_path()
+        self.assertTrue(os.path.exists(sidecar_path))
+        ids = fresh.get_clusters4layering_ids()
+        self.assertEqual(expected_ids, ids)
+        # reading the sidecar must NOT pull the heavy clusters into memory
+        self.assertEqual(0, len(fresh.orig_entities))
+
+    def test_get_clusters4layering_ids_fallback_when_sidecar_missing(self):
+        # Legacy checkpoint: no sidecar on disk -> full load, same result, sidecar regenerated.
+        from transport_tools.libs.networks import TunnelNetwork
+
+        self.network.save_orig_network()
+        expected_ids = [cluster.cluster_id for cluster in self.network.get_clusters4layering()]
+
+        fresh = TunnelNetwork(self.parameters, "md1")
+        sidecar_path = fresh._orig_summary_path()
+        if os.path.exists(sidecar_path):
+            os.remove(sidecar_path)
+        ids = fresh.get_clusters4layering_ids()
+        self.assertEqual(expected_ids, ids)
+        # the fallback rewrote the sidecar so the next launcher run is fast
+        self.assertTrue(os.path.exists(sidecar_path))
+
+    def test_get_clusters4layering_ids_fallback_when_sidecar_stale(self):
+        # Sidecar whose baked-in per-tunnel filter params no longer match the current ones must
+        # self-invalidate and fall back to a full load (filters_passed is frozen in the dump, so
+        # the resulting IDs are unchanged), then rewrite the sidecar with the new filter params.
+        from transport_tools.libs.networks import TunnelNetwork
+
+        self.network.save_orig_network()
+        expected_ids = [cluster.cluster_id for cluster in self.network.get_clusters4layering()]
+
+        fresh = TunnelNetwork(self.parameters, "md1")
+        fresh.parameters["relevant_tunnel_min_radius"] = \
+            fresh.parameters["relevant_tunnel_min_radius"] + 1.0
+        ids = fresh.get_clusters4layering_ids()
+        self.assertEqual(expected_ids, ids)
+
+        with open(fresh._orig_summary_path(), "rb") as in_stream:
+            summary = pickle.load(in_stream)
+        self.assertEqual(fresh.parameters["relevant_tunnel_min_radius"],
+                         summary["filter_params"][0])
+        # restore a sidecar consistent with the shared config for any later test
+        self.network.save_orig_network()
 
     def test_save_layered_network(self):
         from transport_tools.libs.networks import TunnelNetwork

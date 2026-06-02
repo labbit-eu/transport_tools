@@ -20,6 +20,7 @@ __version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
+import gc
 import os
 import pickle
 import numpy as np
@@ -35,7 +36,8 @@ from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperC
     TransportEvent, subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
-    iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix
+    iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix, \
+    gather_condensed_subvector
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
     transform_pdb_file, get_general_rot_mat_from_2_ca_atoms, transform_aquaduct, save_caver_starting_points
 
@@ -328,10 +330,18 @@ class TransportProcesses:
         Allocate the condensed pairwise-distance vector as a disk-backed memmap. The .npy file is
         created in the clustering folder so that the workers/shards scatter their results straight
         onto disk - the full N(N-1)/2 vector is never held fully resident, and stage 5 can load it
-        via mmap. Initialised to +inf so any pair the workers/shards fail to fill is still
-        detectable by the completeness check on the result.
+        via mmap.
+
+        The memmap is left lazily zero-filled (a freshly created mode='w+' file is sparse and reads
+        as zeros) rather than pre-filled with a +inf sentinel: for N in the 10**5 range the vector
+        is ~1 TB and an explicit fill would write all of it through the memmap page by page before
+        anything else could proceed (on a SLURM run, before the array is even submitted). Completeness
+        is instead guaranteed by the callers without inspecting values - the local backend enumerates
+        every pair exactly once, and the SLURM assembler verifies each shard contributed its expected
+        strided pair count - which is also more robust than the old sentinel scan (0.0 is itself a
+        valid distance, so no value could serve as a reliable "unfilled" marker).
         :param num_pairs: number of upper-triangle pairs, i.e. N(N-1)/2 for N clusters
-        :return: memmap-backed condensed distance vector of shape (num_pairs,), pre-filled with +inf
+        :return: memmap-backed condensed distance vector of shape (num_pairs,)
         """
 
         from numpy.lib.format import open_memmap
@@ -342,7 +352,6 @@ class TransportProcesses:
         # runtime; suppress the false positive.
         condensed_distances = open_memmap(self._condensed_distances_path(), mode='w+',  # type: ignore[arg-type]
                                           dtype=np.float64, shape=(num_pairs,))  # type: ignore[arg-type]
-        condensed_distances[:] = np.inf
         return condensed_distances
 
     def _compute_intercluster_distances(self, cluster_specifications: List[Tuple[str, int]],
@@ -1108,9 +1117,9 @@ class TransportProcesses:
                                "file - the SLURM compute nodes need it to rebuild the analysis state.")
 
         num_clusters = len(cluster_specifications)
-        condensed_distances = self._allocate_condensed_distances(num_clusters * (num_clusters - 1) // 2)
+        num_pairs = num_clusters * (num_clusters - 1) // 2
         if num_clusters <= 1:
-            return condensed_distances
+            return self._allocate_condensed_distances(num_pairs)
 
         # 1) Submit and wait via the generic launcher; framework handles fingerprint check,
         #    completion-order polling, and per-shard runtime timeout.
@@ -1124,27 +1133,41 @@ class TransportProcesses:
                                    still_missing, slurm_folder,
                                    num_shards - len(still_missing), num_shards))
 
-        # 2) Load the per-shard (K, 3) float64 arrays and concatenate; the shards already store
-        #    their pairs in this compact form, so concatenating directly avoids the ~150 B/pair
-        #    Python-tuple expansion that would cost tens of GB for large studies.
-        shard_arrays: List[np.ndarray] = [
-            np.load(stage.shard_result_path(slurm_folder, sid)) for sid in range(num_shards)
-        ]
-        results = np.concatenate(shard_arrays) if shard_arrays \
-            else np.empty((0, 3), dtype=np.float64)
+        # 2) Allocate the condensed vector only now that the shards have completed. Deferring it
+        #    past run_stage_on_slurm keeps the launcher from blocking for hours on the creation of
+        #    the full ~N(N-1)/2 memmap before any shard is even submitted (it is disk-backed and
+        #    lazily zero-filled; see _allocate_condensed_distances).
+        condensed_distances = self._allocate_condensed_distances(num_pairs)
 
-        # 3) Scatter the shard pairs straight into the condensed vector in one vectorised
-        #    assignment - the dense N x N matrix is never materialised.
-        rows = results[:, 0].astype(np.intp)
-        cols = results[:, 1].astype(np.intp)
-        condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = results[:, 2]
+        # 3) Scatter each shard's compact (K, 3) float64 array straight into the condensed vector
+        #    one shard at a time, freeing each before loading the next. The full result set
+        #    (~24 B/pair, terabytes for large studies) is never held resident and the dense N x N
+        #    matrix is never materialised. Each shard must return exactly its strided pair count;
+        #    a short array means a silently truncated result file.
+        total_rows = 0
+        for sid in range(num_shards):
+            shard_array = np.load(stage.shard_result_path(slurm_folder, sid))
+            expected_rows = count_pairs_for_shard(num_clusters, num_shards, sid)
+            if shard_array.shape[0] != expected_rows:
+                raise RuntimeError("SLURM distance shard {} returned {} pair(s) but {} were "
+                                   "expected; its result file in '{}' is incomplete - re-run "
+                                   "stage 4 to recompute it.".format(
+                                       sid, shard_array.shape[0], expected_rows, slurm_folder))
+            if expected_rows:
+                rows = shard_array[:, 0].astype(np.intp)
+                cols = shard_array[:, 1].astype(np.intp)
+                condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = shard_array[:, 2]
+                total_rows += expected_rows
+            del shard_array
         logger.info("Assembled distance matrix from {:d} SLURM shards.".format(num_shards))
 
-        # 4) Verify completeness cheaply on the 1-D vector: any pair the shards failed to
-        #    compute is still set to its initial +inf sentinel.
-        if np.isinf(condensed_distances).any():
-            raise RuntimeError("Some cluster-cluster distances were not computed by the SLURM "
-                               "shards; inspect the shard logs in '{}'.".format(slurm_folder))
+        # 4) Completeness check without inspecting values: the strided assignment partitions the
+        #    upper triangle exactly, so the shards' pair counts must sum to N(N-1)/2. This replaces
+        #    the old +inf-sentinel scan, which required pre-filling the whole ~1 TB memmap.
+        if total_rows != num_pairs:
+            raise RuntimeError("SLURM distance shards produced {} pair(s) but {} were expected; "
+                               "some shard results are incomplete - inspect the shard logs in "
+                               "'{}'.".format(total_rows, num_pairs, slurm_folder))
 
         # 5) Assembly succeeded end-to-end; drop the per-shard cache unless the user opted in
         #    to keep it via slurm_keep_shard_results. The condensed_distances memmap above is
@@ -1189,6 +1212,14 @@ class TransportProcesses:
                                        initargs=(path_sets, cluster_specifications,
                                                  precision, cutoff,
                                                  num_cpus, num_cpus)) as pool:
+            # The spawn Pool pickles a private copy of path_sets + cluster_specifications into
+            # every worker as its constructor starts them, so the parent's own copies are now
+            # dead weight held for the whole pool lifetime. Drop them: the workers read their
+            # copies via init_distance_worker / calc_distance_chunk, and the parent only needs
+            # num_clusters (a plain int) to enumerate this shard's pairs below. On a large study
+            # this removes one full path-set corpus from the shard's resident set.
+            del path_sets, cluster_specifications
+            gc.collect()
             timeout = self.parameters["worker_task_timeout_s"]
             imap_iter = pool.imap_unordered(calc_distance_chunk,
                                             iter_shard_pair_chunks(num_clusters, num_shards,
@@ -1706,14 +1737,16 @@ class TransportProcesses:
         :return: local integer label per member (in the order of 'members'; -1 marks HDBSCAN noise)
         """
 
-        dense_block = gather_dense_submatrix(condensed_matrix, num_points, members)
-
         if backend == "hdbscan":
+            # HDBSCAN(metric="precomputed") needs the full dense block
+            dense_block = gather_dense_submatrix(condensed_matrix, num_points, members)
             return self._cluster_component_hdbscan(dense_block, cutoff)
 
-        from scipy.spatial.distance import squareform
-
-        sub_condensed = squareform(dense_block, checks=False)
+        # Agglomerative: gather the component's distances directly in condensed form and feed them
+        # to fastcluster, skipping the dense |members| x |members| block and its squareform copy
+        # (the direct condensed vector holds ~4 |C|**2 bytes vs. ~12 |C|**2 for the dense round-trip).
+        # The ordering matches squareform exactly, so the linkage is bit-identical to before.
+        sub_condensed = gather_condensed_subvector(condensed_matrix, num_points, members)
         linkage_matrix = fastcluster.linkage(sub_condensed, method=backend)
         return fcluster(linkage_matrix, t=cutoff, criterion='distance')
 
@@ -2377,11 +2410,12 @@ class TransportProcesses:
             cls_ids2process4md_label: Dict[str, List[int]] = dict()
             for md_label in self.caver_input_folders:
                 tunnel_network = TunnelNetwork(self.parameters, md_label)
-                tunnel_network.load_orig_network()
+                # enumerate via the size sidecar to avoid loading every orig_network in full on
+                # this single launcher node (falls back to a full load for legacy/stale sidecars)
                 cls_ids2process4md_label[md_label] = list()
-                for cluster in tunnel_network.get_clusters4layering():
-                    items.append((md_label, int(cluster.cluster_id)))
-                    cls_ids2process4md_label[md_label].append(int(cluster.cluster_id))
+                for cls_id in tunnel_network.get_clusters4layering_ids():
+                    items.append((md_label, int(cls_id)))
+                    cls_ids2process4md_label[md_label].append(int(cls_id))
 
             items2process = len(items)
             if not items2process > 0:

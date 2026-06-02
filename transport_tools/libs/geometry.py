@@ -2449,24 +2449,39 @@ def iter_shard_pair_chunks(num_clusters: int, num_shards: int, shard_id: int,
     Lazily yields chunks of the upper-triangle cluster index pairs assigned to a single shard.
     Pairs are distributed across shards in a strided fashion (pair i goes to shard i % num_shards),
     which balances the load well because the per-pair cost varies along the matrix rows.
+
+    The shard's pairs are exactly the condensed positions range(shard_id, N(N-1)/2, num_shards) -
+    the upper triangle is enumerated row-major, so a pair's running index equals its condensed
+    position (see condensed_pair_index). Rather than scanning all N(N-1)/2 positions in Python to
+    pick out this shard's stride (an O(N**2) interpreter loop in *every* shard - tens of minutes of
+    pure enumeration overhead for N in the 10**5 range), generate only this shard's positions and
+    invert them to (i, j) vectorised: i = searchsorted(row_offsets, pos) - 1, j = pos -
+    row_offsets[i] + i + 1, where row_offsets[i] is the condensed start of row i. This yields the
+    identical set of pairs, in the identical (ascending-position) order, as the old scan.
     :param num_clusters: total number of clusters
     :param num_shards: total number of shards the work is split into
     :param shard_id: 0-based ID of the shard whose pairs are yielded
     :param chunk_size: maximal number of index pairs per yielded chunk
     """
 
-    chunk = list()
-    pair_index = 0
-    for cls1 in range(num_clusters):
-        for cls2 in range(cls1 + 1, num_clusters):
-            if pair_index % num_shards == shard_id:
-                chunk.append((cls1, cls2))
-                if len(chunk) >= chunk_size:
-                    yield chunk
-                    chunk = list()
-            pair_index += 1
-    if chunk:
-        yield chunk
+    total_pairs = num_clusters * (num_clusters - 1) // 2
+    if total_pairs == 0 or shard_id >= total_pairs:
+        return
+
+    # condensed start offset of each matrix row: row i holds columns i+1..num_clusters-1, so its
+    # first pair (i, i+1) sits at row_offsets[i] in the condensed vector
+    rows_axis = np.arange(num_clusters, dtype=np.int64)
+    row_offsets = rows_axis * num_clusters - (rows_axis * (rows_axis + 1)) // 2
+
+    # this shard owns every num_shards-th condensed position starting at shard_id; walk them in
+    # blocks of chunk_size positions (a stride of num_shards * chunk_size between block starts)
+    block_stride = num_shards * chunk_size
+    for block_start in range(shard_id, total_pairs, block_stride):
+        positions = np.arange(block_start, min(block_start + block_stride, total_pairs),
+                              num_shards, dtype=np.int64)
+        i = np.searchsorted(row_offsets, positions, side='right') - 1
+        j = positions - row_offsets[i] + i + 1
+        yield list(zip(i.tolist(), j.tolist()))
 
 
 def subcutoff_connected_components(condensed: np.ndarray, num_points: int, cutoff: float,
@@ -2542,19 +2557,26 @@ def subcutoff_connected_components(condensed: np.ndarray, num_points: int, cutof
     return n_components, labels.astype(np.intp, copy=False)
 
 
-def gather_dense_submatrix(condensed: np.ndarray, num_points: int,
-                           members: np.ndarray) -> np.ndarray:
+def gather_dense_submatrix(condensed: np.ndarray, num_points: int, members: np.ndarray,
+                           stripe_elements: int = 1 << 22) -> np.ndarray:
     """
     Build the dense |members| x |members| distance block of a subset of points from the condensed
     upper-triangle distance vector of the full num_points x num_points matrix. Used by the stage-5
-    partition driver to hand one connected component's distances to a clustering backend (HDBSCAN
-    needs a dense precomputed block; agglomerative consumes its condensed form). The off-diagonal
-    entries are gathered in a single fancy-index read of the condensed vector; the diagonal stays 0.
+    partition driver to hand one connected component's distances to the HDBSCAN backend (which needs
+    a dense precomputed block; the agglomerative backend uses gather_condensed_subvector instead).
+    The diagonal stays 0.
+
+    The block is filled in row-stripes so the index/value temporaries stay bounded to
+    O(stripe_rows * m) rather than the O(m**2) full-triangle arrays a single np.triu_indices(m, 1)
+    gather would allocate (~24 m**2 transient bytes of int64/float64 - several times the block
+    itself for m in the 10**5 range, which is the stage-5 peak-memory bottleneck on large studies).
 
     :param condensed: condensed upper-triangle distance vector of the full matrix (may be a memmap)
     :param num_points: side length of the full dense matrix the condensed vector represents
     :param members: global indices of the points in the block; order defines the block's row/column
                     order (the returned block is symmetric regardless of whether members is sorted)
+    :param stripe_elements: target number of (row x m) grid elements materialised per stripe; pure
+                            performance/memory knob, the returned block is identical for any value
     :return: dense (|members|, |members|) float64 distance block with a zero diagonal
     """
 
@@ -2564,14 +2586,68 @@ def gather_dense_submatrix(condensed: np.ndarray, num_points: int,
     if m <= 1:
         return block
 
-    local_i, local_j = np.triu_indices(m, k=1)
-    # min/max so condensed_pair_index always sees i < j even if members is not sorted ascending
-    global_i = np.minimum(members[local_i], members[local_j])
-    global_j = np.maximum(members[local_i], members[local_j])
-    positions = condensed_pair_index(global_i, global_j, num_points)
-    values = np.asarray(condensed[positions])
-
-    block[local_i, local_j] = values
-    block[local_j, local_i] = values
+    cols = members[np.newaxis, :]                                   # (1, m)
+    stripe_rows = max(1, stripe_elements // m)
+    for a in range(0, m, stripe_rows):
+        b = min(a + stripe_rows, m)
+        rows = members[a:b, np.newaxis]                             # (h, 1)
+        # min/max so condensed_pair_index always sees i < j even if members is not sorted ascending
+        global_i = np.minimum(rows, cols)                           # (h, m)
+        global_j = np.maximum(rows, cols)
+        # members are distinct, so global_i == global_j marks exactly the block diagonal; its slots
+        # are placeholders (condensed_pair_index assumes i < j) and are zeroed after the gather
+        on_diagonal = global_i == global_j
+        positions = condensed_pair_index(global_i.ravel(), global_j.ravel(), num_points)
+        positions[on_diagonal.ravel()] = 0
+        values = np.asarray(condensed[positions]).reshape(b - a, m)
+        values[on_diagonal] = 0.0
+        block[a:b, :] = values
 
     return block
+
+
+def gather_condensed_subvector(condensed: np.ndarray, num_points: int, members: np.ndarray,
+                               chunk_size: int = 1 << 22) -> np.ndarray:
+    """
+    Gather a subset's pairwise distances directly in condensed (upper-triangle) form, i.e. exactly
+    what squareform(gather_dense_submatrix(...), checks=False) would return, but WITHOUT
+    materialising the dense |members| x |members| block. The stage-5 agglomerative backend feeds
+    this straight to fastcluster.linkage, so for a component of m members the path holds ~4 m**2
+    bytes (this vector) instead of ~12 m**2 (the dense block plus its squareform copy).
+
+    The output enumerates local upper-triangle pairs (i, j), i < j, in the same row-major order as
+    scipy.spatial.distance.squareform / condensed_pair_index, so the linkage it produces is
+    bit-identical to the previous dense-block path. It is gathered in chunks of the condensed index
+    space, so the temporaries are bounded to O(chunk_size).
+
+    :param condensed: condensed upper-triangle distance vector of the full matrix (may be a memmap)
+    :param num_points: side length of the full dense matrix the condensed vector represents
+    :param members: global indices of the points; order defines the local pair ordering
+    :param chunk_size: number of condensed sub-vector positions gathered per vectorised pass
+                       (performance/memory only; the returned vector is identical for any value)
+    :return: condensed (m(m-1)/2,) float64 distance vector over the members, in squareform order
+    """
+
+    members = np.asarray(members, dtype=np.intp)
+    m = members.size
+    sub_pairs = m * (m - 1) // 2
+    out = np.empty(sub_pairs, dtype=np.float64)
+    if sub_pairs == 0:
+        return out
+
+    # condensed start offset of each local row i within the sub-vector (row i holds cols i+1..m-1)
+    rows_axis = np.arange(m, dtype=np.int64)
+    sub_row_offsets = rows_axis * m - (rows_axis * (rows_axis + 1)) // 2
+
+    for start in range(0, sub_pairs, chunk_size):
+        sub_positions = np.arange(start, min(start + chunk_size, sub_pairs), dtype=np.int64)
+        # invert sub-vector position -> local (i, j), then map to global via members (min/max so
+        # condensed_pair_index sees i < j even when members is unsorted)
+        i = np.searchsorted(sub_row_offsets, sub_positions, side='right') - 1
+        j = sub_positions - sub_row_offsets[i] + i + 1
+        global_i = np.minimum(members[i], members[j])
+        global_j = np.maximum(members[i], members[j])
+        out[start: start + sub_positions.size] = condensed[condensed_pair_index(global_i, global_j,
+                                                                                num_points)]
+
+    return out

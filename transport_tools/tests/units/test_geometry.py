@@ -824,6 +824,36 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(gather_dense_submatrix(condensed, num_points, np.array([2])).shape, (1, 1))
         self.assertEqual(gather_dense_submatrix(condensed, num_points, np.array([], dtype=int)).shape, (0, 0))
 
+        # row-striping is a pure perf/memory knob: the block is identical for any stripe size,
+        # including a stripe height of 1 (one row materialised at a time) and a single full stripe
+        for stripe_elements in (1, 3, num_points, 10 ** 9):
+            np.testing.assert_array_equal(
+                gather_dense_submatrix(condensed, num_points, members, stripe_elements=stripe_elements),
+                dense[np.ix_(members, members)])
+
+    def test_gather_condensed_subvector(self):
+        """gather_condensed_subvector() equals squareform of the dense block, for any chunk size"""
+        from transport_tools.libs.geometry import gather_dense_submatrix, gather_condensed_subvector
+        from scipy.spatial.distance import squareform
+
+        rng = np.random.default_rng(1)
+        num_points = 12
+        dense = rng.random((num_points, num_points))
+        dense = dense + dense.T
+        np.fill_diagonal(dense, 0.0)
+        condensed = squareform(dense)
+
+        for members in (np.array([1, 3, 4, 6, 9]), np.array([9, 1, 6, 3, 4]), np.array([0, 11])):
+            reference = squareform(gather_dense_submatrix(condensed, num_points, members), checks=False)
+            for chunk_size in (1, 2, 7, 10 ** 9):
+                np.testing.assert_array_equal(
+                    gather_condensed_subvector(condensed, num_points, members, chunk_size=chunk_size),
+                    reference)
+
+        # degenerate components produce an empty condensed vector
+        self.assertEqual(gather_condensed_subvector(condensed, num_points, np.array([5])).shape, (0,))
+        self.assertEqual(gather_condensed_subvector(condensed, num_points, np.array([], dtype=int)).shape, (0,))
+
 
 if __name__ == '__main__':
     unittest.main()

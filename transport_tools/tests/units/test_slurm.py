@@ -796,10 +796,12 @@ class TestTunnelNetworksShardSideEffectPaths(unittest.TestCase):
     def test_dump_only_when_visualization_disabled(self):
         params = self._params(visualize=False)
         paths = TunnelNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
-        # exactly one dump per md_label, no viz files
+        # one dump + its .cluster_sizes size sidecar per md_label, no viz files
         self.assertEqual([
             os.path.join(params["orig_caver_network_data_path"], "md1_caver.dump"),
+            os.path.join(params["orig_caver_network_data_path"], "md1_caver.dump.cluster_sizes"),
             os.path.join(params["orig_caver_network_data_path"], "md2_caver.dump"),
+            os.path.join(params["orig_caver_network_data_path"], "md2_caver.dump.cluster_sizes"),
         ], paths)
 
     def test_dump_plus_viz_files_when_visualization_enabled(self):
