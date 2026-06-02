@@ -1064,7 +1064,7 @@ class TunnelNetwork(Network):
         
         for cls_id, cluster in enumerate(reversed(self.orig_entities)):  # reversed to start processing smaller clusters
             assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
-            if cluster.count_valid_tunnels() >= self.parameters["min_cluster_size"]:
+            if cluster.count_valid_tunnels() >= self.parameters["relevant_tunnel_cluster_min_size"]:
                 clusters.append(cluster)
             else:
                 logger.debug("Cluster {} of {} has no valid tunnels to layer".format(cluster.cluster_id, self.md_label))

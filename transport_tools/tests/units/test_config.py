@@ -651,6 +651,7 @@ class TestAquaductTracedResiduesFilterParsing(unittest.TestCase):
         """Build a config object with the minimum parameters needed to run
         _autocomplete_parameters() without triggering filesystem auto-detection."""
         config = AnalysisConfig(file2load_from=None, logging=False)
+        config.legacy_params = {}
         config.parameters = {
             "aquaduct_traced_residues_filter": filter_value,
             "stop_after_stage": 5,
@@ -885,6 +886,7 @@ class TestSlurmRootFolderDefault(unittest.TestCase):
 
     def test_autocompletes_under_internal_folder(self):
         config = AnalysisConfig(file2load_from=None, logging=False)
+        config.legacy_params = {}
         config.parameters = {
             "stop_after_stage": 5,
             "num_cpus": 1,
@@ -905,6 +907,7 @@ class TestSlurmRootFolderDefault(unittest.TestCase):
 
     def test_explicit_value_is_respected(self):
         config = AnalysisConfig(file2load_from=None, logging=False)
+        config.legacy_params = {}
         config.parameters = {
             "stop_after_stage": 5,
             "num_cpus": 1,

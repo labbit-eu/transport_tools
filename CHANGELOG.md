@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 ## [Unreleased] - v0.9.8
 ### Features
 - renamed tunnel-relevance filter parameters for clarity: `min_tunnel_radius4clustering` → `relevant_tunnel_min_radius`, `min_tunnel_length4clustering` → `relevant_tunnel_min_length`, `max_tunnel_curvature4clustering` → `relevant_tunnel_max_curvature`; old names are accepted as legacy aliases with a deprecation warning to preserve backwards compatibility
-- new `min_cluster_size` calculations setting (default `1`): tunnel clusters with fewer relevant tunnels than this threshold are excluded from processing entirely, rather than only from layering
+- new `relevant_tunnel_cluster_min_size` calculations setting (default `1`): tunnel clusters with fewer relevant tunnels than this threshold are not layered
 
 
 ## [Unreleased] - v0.9.7

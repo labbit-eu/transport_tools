@@ -126,7 +126,7 @@ class AnalysisConfig:
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
 
             # Clustering of tunnel clusters into superclusters
-            "min_cluster_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not stored at all 
+            "relevant_tunnel_cluster_min_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not stored at all 
             "relevant_tunnel_min_radius": 0.75,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
             "relevant_tunnel_min_length": 5.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
             "relevant_tunnel_max_curvature": 2.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
@@ -374,7 +374,7 @@ class AnalysisConfig:
             "snapshots_per_simulation",
             "caver_traj_offset",
             "snapshot_id_position",
-            "min_cluster_size",
+            "relevant_tunnel_cluster_min_size",
             "min_sims_num",
             "min_snapshots_num",
             "min_total_events",
@@ -663,11 +663,10 @@ class AnalysisConfig:
         Completing parameters that can be derived from existing ones, or otherwise
         """
 
-        if hasattr(self.__class__, 'legacy_params'):
-            for leg_par, new_par in self.legacy_params.items():
-                if leg_par is not None:
-                    logger.warning("\nLegacy parameter '{}' in use, this will be deperciated soon, do use parameter '{}' instead".format(leg_par, new_par))
-                    self.parameters[new_par] = self.parameters[leg_par]
+        for leg_par, new_par in self.legacy_params.items():
+            if self.parameters[leg_par] is not None:
+                logger.warning("\nLegacy parameter '{}' in use, this will be deperciated soon, use parameter '{}' instead!".format(leg_par, new_par))
+                self.parameters[new_par] = self.parameters[leg_par]
 
         if self.parameters["stop_after_stage"] is None:
             self.parameters["stop_after_stage"] = sys.maxsize
@@ -919,7 +918,7 @@ class AnalysisConfig:
         self._test_parameter_sanity("snapshots_per_simulation", 1, sys.maxsize)
         self._test_parameter_sanity("caver_traj_offset", 0, 1)
         self._test_parameter_sanity("snapshot_id_position", 0, sys.maxsize)
-        self._test_parameter_sanity("min_cluster_size", 1, sys.maxsize)
+        self._test_parameter_sanity("relevant_min_cluster_size", 1, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_radius", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_length", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_max_curvature", 1, sys.maxsize)
@@ -1541,7 +1540,7 @@ class AnalysisConfig:
             "aquaduct_results_path": "# AQUA-DUCT results",
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
-            "min_cluster_size": "# Clustering of tunnel clusters into superclusters",
+            "relevant_min_cluster_size": "# Clustering of tunnel clusters into superclusters",
             "compute_backend": "# SLURM execution backend "
                                "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",
