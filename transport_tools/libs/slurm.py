@@ -31,7 +31,7 @@
 # Submission is handled by the optional 'submitit' package (an extra dependency); it is imported
 # lazily so that the rest of TransportTools installs and runs without it.
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -1642,9 +1642,9 @@ class TunnelLayeringShardStage(SlurmShardStage):
     # entry forces a full resubmission on the False→True transition.
     fingerprint_keys: Tuple[str, ...] = (
         "layer_thickness",
-        "min_tunnel_radius4clustering",
-        "min_tunnel_length4clustering",
-        "max_tunnel_curvature4clustering",
+        "relevant_tunnel_min_radius",
+        "relevant_tunnel_min_length",
+        "relevant_tunnel_max_curvature",
         "random_seed",
         "clustering_max_num_rep_frag",
         "use_cluster_spread",

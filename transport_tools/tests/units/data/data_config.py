@@ -27,7 +27,7 @@ trajectory_path = /path/to/trajectory
 start_from_stage = 1
 stop_after_stage = 5
 snapshots_per_simulation = 100
-min_tunnel_radius4clustering = 3.0
+relevant_tunnel_min_radius = 3.0
 event_min_distance = 2.5
 
 [OUTPUT_SETTINGS]
@@ -42,7 +42,7 @@ aquaduct_results_path = /path/to/aquaduct
 
 [CALCULATIONS_SETTINGS]
 start_from_stage = 1
-min_tunnel_radius4clustering = 3.0
+relevant_tunnel_min_radius = 3.0
 
 [OUTPUT_SETTINGS]
 output_path = /path/to/output
@@ -57,7 +57,7 @@ old_parameters_no_changes = {
     "start_from_stage": 1,
     "stop_after_stage": 5,
     "snapshots_per_simulation": 100,
-    "min_tunnel_radius4clustering": 3.0,
+    "relevant_tunnel_min_radius": 3.0,
     "output_path": "/path/to/output",
     "verbose_logging": False,
 }
@@ -66,7 +66,7 @@ old_parameters_with_changes = {
     "start_from_stage": 2,  # Changed from 1
     "stop_after_stage": 4,  # Changed from 5
     "snapshots_per_simulation": 100,  # Same
-    "min_tunnel_radius4clustering": 2.5,  # Changed from 3.0
+    "relevant_tunnel_min_radius": 2.5,  # Changed from 3.0
     "output_path": "/path/to/old_output",  # Changed
     "verbose_logging": True,  # Changed from False
 }

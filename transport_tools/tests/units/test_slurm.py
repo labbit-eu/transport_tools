@@ -20,7 +20,7 @@
 These exercise pure-Python logic (folder derivation, num_shards resolution, fingerprint
 content, stale-result detection); they do not submit any SLURM jobs."""
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -360,9 +360,9 @@ class TestMissingShardsSideEffectRecovery(unittest.TestCase):
         # shard's outcome individually
         self.params = {
             "layer_thickness": 1.5,
-            "min_tunnel_radius4clustering": 0.75,
-            "min_tunnel_length4clustering": 5.0,
-            "max_tunnel_curvature4clustering": 2.0,
+            "relevant_tunnel_min_radius": 0.75,
+            "relevant_tunnel_min_length": 5.0,
+            "relevant_tunnel_max_curvature": 2.0,
             "random_seed": 4,
             "clustering_max_num_rep_frag": 3,
             "use_cluster_spread": True,
@@ -553,9 +553,9 @@ class TestTunnelLayeringShardStageFingerprint(unittest.TestCase):
     def _params(self, **overrides):
         params = {
             "layer_thickness": 1.5,
-            "min_tunnel_radius4clustering": 0.75,
-            "min_tunnel_length4clustering": 5.0,
-            "max_tunnel_curvature4clustering": 2.0,
+            "relevant_tunnel_min_radius": 0.75,
+            "relevant_tunnel_min_length": 5.0,
+            "relevant_tunnel_max_curvature": 2.0,
             "random_seed": 4,
             "clustering_max_num_rep_frag": 3,
             "use_cluster_spread": True,

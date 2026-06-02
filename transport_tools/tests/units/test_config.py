@@ -187,7 +187,7 @@ class TestReportUpdates(unittest.TestCase):
             "start_from_stage": 1,
             "stop_after_stage": 5,
             "snapshots_per_simulation": 100,
-            "min_tunnel_radius4clustering": 3.0,
+            "relevant_tunnel_min_radius": 3.0,
         }
         self.config.output_settings = {
             "output_path": "/path/to/output",
@@ -286,7 +286,7 @@ class TestWriteTemplateFile(unittest.TestCase):
         """Set up test environment"""
         self.temp_dir = tempfile.mkdtemp(prefix="TT_test_config_template_")
         self.config = AnalysisConfig(file2load_from=None, logging=False)
-        self.config.float_params = ["min_tunnel_radius4clustering", "event_min_distance"]
+        self.config.float_params = ["relevant_tunnel_min_radius", "event_min_distance"]
 
     def tearDown(self):
         """Clean up temporary directory"""
@@ -366,7 +366,7 @@ class TestWriteTemplateFile(unittest.TestCase):
         template_path = os.path.join(self.temp_dir, "template.ini")
 
         # Set a float parameter
-        self.config.calculations_settings["min_tunnel_radius4clustering"] = 3.5
+        self.config.calculations_settings["relevant_tunnel_min_radius"] = 3.5
 
         self.config.write_template_file(template_path, advanced=False)
 
@@ -374,7 +374,7 @@ class TestWriteTemplateFile(unittest.TestCase):
             content = f.read()
 
         # Should be formatted with 2 decimal places
-        self.assertIn("min_tunnel_radius4clustering = 3.50", content)
+        self.assertIn("relevant_tunnel_min_radius = 3.50", content)
 
     def test_write_template_file_excludes_caver_relative(self):
         """Test that caver_relative_ parameters are excluded"""

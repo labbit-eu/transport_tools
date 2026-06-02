@@ -4,8 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 
 
+## [Unreleased] - v0.9.8
+### Features
+- renamed tunnel-relevance filter parameters for clarity: `min_tunnel_radius4clustering` → `relevant_tunnel_min_radius`, `min_tunnel_length4clustering` → `relevant_tunnel_min_length`, `max_tunnel_curvature4clustering` → `relevant_tunnel_max_curvature`; old names are accepted as legacy aliases with a deprecation warning to preserve backwards compatibility
+- new `min_cluster_size` calculations setting (default `1`): tunnel clusters with fewer relevant tunnels than this threshold are excluded from processing entirely, rather than only from layering
+
+
 ## [Unreleased] - v0.9.7
 ### Features
+- stage-5 connected-components partition driver for agglomerative clustering: tunnel clusters are first partitioned by sub-cutoff connectivity and each component is clustered independently (single/complete/average), dropping linkage cost from O(N²) to O(max|C|²); ward stays on vanilla full-matrix linkage
+- optional HDBSCAN stage-5 clustering method via new `clustering_method=hdbscan` setting; runs density-based clustering per connected component with `clustering_cutoff` as a hard merge floor; noise points become singleton superclusters
+- optional multi-scale stage-5 clustering to prevent spatially-overlapping superclusters via new Phase A (decoupled partition/epsilon/noise handling) and Phase B (orphan consolidation) parameters, both default-off
 - support multiple AQUA-DUCT input paths for multi-residue analyses
 - per-residue event tracking and unique entity labels for multi-residue merging
 - optional `aquaduct_traced_residues_filter` parameter (comma-separated uppercase resnames, e.g. `WAT, O2`) to skip unwanted residues; `None` (default) processes all residues, preserving backwards compatibility
@@ -28,10 +37,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/).
 - new `slurm_keep_shard_results` calculations setting (default `False`) that controls whether the per-stage SLURM folder is cleaned up automatically after a successful stage assembly. When false (default), every `_slurm` assembler ends with `slurm.cleanup_stage_folder(stage, parameters)` and the whole `<slurm_root_folder>/<stage.folder_name>/` tree - per-shard pickles, manifests, side-effects tarballs, `items.json` / `state.pkl` / `partial_shards_info.json`, and submitit per-job artifacts - is removed in one shot; without this the `_slurm/` tree grows without bound across many stages × runs × resubmissions. Set to `True` to keep the cache after a successful run (useful for debugging shard outputs or for iterative re-runs that change only the assembly step). Resumability of an interrupted run is unaffected either way: cleanup only fires after a successful end-to-end assembly
 
 ### Bug Fixes
+- ensure logging levels are maintained consistently across the whole codebase so that the level set at startup is honoured in every module without being silently reset
 - eliminate intermittent fork-with-threads deadlocks by pinning the multiprocessing start method to `spawn` in every process entry point (the launcher and every SLURM shard) before any `Pool`/`Process`/`Queue` is constructed; previously, worker processes could inherit numpy/BLAS internal locks from a multi-threaded parent and silently hang
 - guard `_pre_process_single_aquaduct_network` against nested-pool deadlocks: passing `parallel_processing=True` from inside a multiprocessing worker now raises `RuntimeError` immediately instead of silently deadlocking on the inner pool's children
 
 ### Misc
+- separate `std_level` (standard output) and `log_level` (logfile) configuration parameters to allow independent control over verbosity of console vs. file logging; previously `log_level` governed both outputs
 - cap BLAS thread budget per worker so that `pool_size × threads_per_worker ≤ allocated_CPUs` (with allocated CPUs being `num_cpus` locally or `slurm_cpus_per_task` inside a SLURM shard); avoids the `num_cpus × BLAS_threads` oversubscription that previously caused stalls resembling deadlocks. Pre-existing `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS` / `MKL_NUM_THREADS` / `NUMEXPR_NUM_THREADS` / `BLIS_NUM_THREADS` values from the user shell, SLURM, or cluster prolog are respected via `setdefault`
 - worker exceptions and timeouts now surface with the failing task's identity (md_label / sc_id / event_specification / cluster_id / shard label) so a stage failure can be triaged from a single log line instead of an anonymous traceback; every `apply_async`/`imap_unordered` call site in `tools.py` and the raw-paths loop in `networks.py` was converted to label each submitted task with a stable identifier and iterate via the new `utils.iter_pool_results()` / `utils.iter_imap_results()` helpers
 - stage-4 SLURM launcher now polls shards in completion order (rather than submission order) and applies a per-shard runtime timeout of `2 × slurm_timeout_min + 5 min` (measured from the SLURM `RUNNING` state, so queued shards are never abandoned for queueing alone); a shard that runs past its deadline is cancelled and abandoned, and the existing per-shard atomic result files plus resumability path let the next stage-4 invocation pick up the abandoned shards without recomputing the finished ones. Replaces the previous submission-order `job.result()` loop that could block indefinitely on a stuck SLURM node

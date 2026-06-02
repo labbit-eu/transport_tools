@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -563,9 +563,9 @@ class Tunnel:
                 self.length = float(array[10])
             dataset[property_name] = array[13:]
 
-        if round(self.bottleneck_radius, 6) >= self.parameters["min_tunnel_radius4clustering"] and \
-                round(self.length, 6) >= self.parameters["min_tunnel_length4clustering"] and \
-                round(self.curvature, 6) <= self.parameters["max_tunnel_curvature4clustering"]:
+        if round(self.bottleneck_radius, 6) >= self.parameters["relevant_tunnel_min_radius"] and \
+                round(self.length, 6) >= self.parameters["relevant_tunnel_min_length"] and \
+                round(self.curvature, 6) <= self.parameters["relevant_tunnel_max_curvature"]:
             self.filters_passed = True
 
         #  here we transform the data to fit the reference structure
@@ -1061,10 +1061,10 @@ class TunnelNetwork(Network):
         """
 
         clusters = list()
-
+        
         for cls_id, cluster in enumerate(reversed(self.orig_entities)):  # reversed to start processing smaller clusters
             assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
-            if 0 < cluster.count_valid_tunnels():
+            if cluster.count_valid_tunnels() >= self.parameters["min_cluster_size"]:
                 clusters.append(cluster)
             else:
                 logger.debug("Cluster {} of {} has no valid tunnels to layer".format(cluster.cluster_id, self.md_label))

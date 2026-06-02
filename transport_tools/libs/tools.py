@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -486,9 +486,9 @@ class TransportProcesses:
         pr_min_release_events = self._active_filters["min_release_events"]
 
         msg = "\nParameters used for pre-selection of input tunnels for clustering:\n"
-        msg += "length >= {:.2f} A\n".format(self.parameters["min_tunnel_length4clustering"])
-        msg += "radius >= {:.2f} A\n".format(self.parameters["min_tunnel_radius4clustering"])
-        msg += "curvature <= {:.2f}\n\n".format(self.parameters["max_tunnel_curvature4clustering"])
+        msg += "length >= {:.2f} A\n".format(self.parameters["relevant_tunnel_min_length"])
+        msg += "radius >= {:.2f} A\n".format(self.parameters["relevant_tunnel_min_radius"])
+        msg += "curvature <= {:.2f}\n\n".format(self.parameters["relevant_tunnel_max_curvature"])
 
         msg += "Active tunnel filters:\n"
         msg += "length = ({:.2f}, {:.2f}) A\n".format(pr_min_length, pr_max_length)

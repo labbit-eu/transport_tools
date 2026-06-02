@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -35,9 +35,9 @@ class TestTunnel(unittest.TestCase):
 
         self.maxDiff = None
         parameters = {
-            "min_tunnel_radius4clustering": 0,
-            "min_tunnel_length4clustering": 5,
-            "max_tunnel_curvature4clustering": 999,
+            "relevant_tunnel_min_radius": 0,
+            "relevant_tunnel_min_length": 5,
+            "relevant_tunnel_max_curvature": 999,
             "tunnel_properties_quantile": 0.9,
             "md_label": "",
             "layer_thickness": 1.5
@@ -169,9 +169,9 @@ class TestTunnelCluster(unittest.TestCase):
         self.maxDiff = None
 
         self.parameters = {
-            "min_tunnel_radius4clustering": 0,
-            "min_tunnel_length4clustering": 5,
-            "max_tunnel_curvature4clustering": 999,
+            "relevant_tunnel_min_radius": 0,
+            "relevant_tunnel_min_length": 5,
+            "relevant_tunnel_max_curvature": 999,
             "tunnel_properties_quantile": 0.9,
             "layer_thickness": 1.5,
             "md_label": "e10s1_e9s3p0f1600",

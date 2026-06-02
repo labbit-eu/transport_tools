@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-__version__ = '0.9.7'
+__version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
@@ -57,6 +57,12 @@ class AnalysisConfig:
         self.output_paths = dict()
         self.advanced_settings = dict()
         self._logged_empty_aquaduct_folders: set = set()
+        self.legacy_params = {
+                                "min_tunnel_radius4clustering":"relevant_tunnel_min_radius",
+                                "min_tunnel_length4clustering":"relevant_tunnel_min_length",
+                                "max_tunnel_curvature4clustering":"relevant_tunnel_max_curvature"
+                             }
+        
 
         self._set_initial_sections_w_defaults()
         if file2load_from is not None:
@@ -120,12 +126,24 @@ class AnalysisConfig:
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
 
             # Clustering of tunnel clusters into superclusters
-            "min_tunnel_radius4clustering": 0.75,  # filters on tunnel load, applies for layering only
-            "min_tunnel_length4clustering": 5.0,  # filters on tunnel load, applies for layering only
-            "max_tunnel_curvature4clustering": 2.0,  # filters on tunnel load, applies for layering only
+            "min_cluster_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not stored at all 
+            "relevant_tunnel_min_radius": 0.75,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
+            "relevant_tunnel_min_length": 5.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
+            "relevant_tunnel_max_curvature": 2.0,  # filters on tunnel load, defines RELEVANT tunnels, irrelevant tunnels are not layered nor processed furhter (absent from saved original tunnel networks)
+
+            "min_tunnel_radius4clustering": None,  # legacy name for relevant_tunnel_min_radius 
+            "min_tunnel_length4clustering": None,  # legacy name for relevant_tunnel_min_length
+            "max_tunnel_curvature4clustering": None,  # legacy name for relevant_tunnel_max_curvature
+
+            #Global clustering settings
             "clustering_method": "agglomerative",  # 'agglomerative' (fastcluster linkage) or 'hdbscan' (density-based)
-            "clustering_linkage": "complete",  # linkage for agglomerative clustering (ignored when clustering_method='hdbscan')
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
+            "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
+
+            #Agglomerative clustering settings:
+            "clustering_linkage": "complete",  # linkage for agglomerative clustering (ignored when clustering_method='hdbscan')
+
+            #HDBscan clustering settings
             "hdbscan_min_cluster_size": 2,  # smallest admissible supercluster when clustering_method='hdbscan'
             "hdbscan_min_samples": None,  # HDBSCAN conservativeness/noise sensitivity; None => equals hdbscan_min_cluster_size
             "hdbscan_cluster_selection_method": "eom",  # HDBSCAN flat-cluster extraction: 'eom' (fewer/larger) or 'leaf' (finer)
@@ -135,13 +153,13 @@ class AnalysisConfig:
             "clustering_partition_cutoff": None,  # sub-cutoff connected-components partition threshold (HDBSCAN only; agglomerative always partitions at its flat-cut for exactness). None => clustering_cutoff
             "hdbscan_cluster_selection_epsilon": None,  # HDBSCAN cluster_selection_epsilon (branch-separation fineness). None => clustering_cutoff
             "hdbscan_noise_merge_cutoff": None,  # per-component floor for absorbing HDBSCAN noise into the nearest in-component cluster. None => clustering_cutoff
-            # Global, method-agnostic orphan consolidation (Phase B): reassign every supercluster smaller than
+
+            # Global, method-agnostic orphan consolidation: reassign every supercluster smaller than
             # supercluster_core_min_size to the nearest 'core' supercluster, stitching periphery the partition isolated
             # back into the major branches. Off by default.
             "consolidate_orphan_superclusters": False,  # enable the global orphan->core consolidation pass
             "supercluster_core_min_size": 5,  # min tunnel clusters for a supercluster to count as a core / assignment target
             "orphan_assignment_cutoff": None,  # max orphan-to-core distance allowed for absorption; None => uncapped
-            "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
@@ -298,6 +316,9 @@ class AnalysisConfig:
             "worker_task_timeout_s",
             "pdb_reference_structure",
             "snapshots_per_simulation",
+            "min_tunnel_radius4clustering",
+            "min_tunnel_length4clustering",
+            "max_tunnel_curvature4clustering",
             "hdbscan_min_samples",
             "clustering_partition_cutoff",
             "hdbscan_cluster_selection_epsilon",
@@ -353,6 +374,7 @@ class AnalysisConfig:
             "snapshots_per_simulation",
             "caver_traj_offset",
             "snapshot_id_position",
+            "min_cluster_size",
             "min_sims_num",
             "min_snapshots_num",
             "min_total_events",
@@ -375,6 +397,9 @@ class AnalysisConfig:
 
         self.float_params = [
             "layer_thickness",
+            "relevant_tunnel_min_radius",
+            "relevant_tunnel_min_length",
+            "relevant_tunnel_max_curvature",
             "min_tunnel_radius4clustering",
             "min_tunnel_length4clustering",
             "max_tunnel_curvature4clustering",
@@ -638,6 +663,12 @@ class AnalysisConfig:
         Completing parameters that can be derived from existing ones, or otherwise
         """
 
+        if hasattr(self.__class__, 'legacy_params'):
+            for leg_par, new_par in self.legacy_params.items():
+                if leg_par is not None:
+                    logger.warning("\nLegacy parameter '{}' in use, this will be deperciated soon, do use parameter '{}' instead".format(leg_par, new_par))
+                    self.parameters[new_par] = self.parameters[leg_par]
+
         if self.parameters["stop_after_stage"] is None:
             self.parameters["stop_after_stage"] = sys.maxsize
 
@@ -688,9 +719,9 @@ class AnalysisConfig:
 
         suboptimal_params_borders = {
             "layer_thickness": (1, 5),
-            "min_tunnel_radius4clustering": (0.5, 2),
-            "min_tunnel_length4clustering": (3, 10),
-            "max_tunnel_curvature4clustering": (2, 5),
+            "relevant_tunnel_min_radius": (0.5, 2),
+            "relevant_tunnel_min_length": (3, 10),
+            "relevant_tunnel_max_curvature": (2, 5),
             "clustering_cutoff": (1, 3),
             "event_min_distance": (5, 10),
             "event_assignment_cutoff": (0.5, 1),
@@ -888,9 +919,10 @@ class AnalysisConfig:
         self._test_parameter_sanity("snapshots_per_simulation", 1, sys.maxsize)
         self._test_parameter_sanity("caver_traj_offset", 0, 1)
         self._test_parameter_sanity("snapshot_id_position", 0, sys.maxsize)
-        self._test_parameter_sanity("min_tunnel_radius4clustering", 0, sys.maxsize)
-        self._test_parameter_sanity("min_tunnel_length4clustering", 0, sys.maxsize)
-        self._test_parameter_sanity("max_tunnel_curvature4clustering", 1, sys.maxsize)
+        self._test_parameter_sanity("min_cluster_size", 1, sys.maxsize)
+        self._test_parameter_sanity("relevant_tunnel_min_radius", 0, sys.maxsize)
+        self._test_parameter_sanity("relevant_tunnel_min_length", 0, sys.maxsize)
+        self._test_parameter_sanity("relevant_tunnel_max_curvature", 1, sys.maxsize)
         self._test_parameter_sanity("clustering_cutoff", 0, sys.maxsize)
         self._test_parameter_sanity("event_min_distance", 0, sys.maxsize)
         self._test_parameter_sanity("event_assignment_cutoff", 0, 1)
@@ -1509,7 +1541,7 @@ class AnalysisConfig:
             "aquaduct_results_path": "# AQUA-DUCT results",
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
-            "min_tunnel_radius4clustering": "# Clustering of tunnel clusters into superclusters",
+            "min_cluster_size": "# Clustering of tunnel clusters into superclusters",
             "compute_backend": "# SLURM execution backend "
                                "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",
@@ -1529,7 +1561,7 @@ class AnalysisConfig:
                 for name, value in section_dict.items():
                     if name in commentaries.keys():
                         out_stream.write("{}\n".format(commentaries[name]))
-                    if not name.startswith("caver_relative_"):  # these are autocompleted here => do not show to users
+                    if not name.startswith("caver_relative_") and name not in self.legacy_params :  # these are autocompleted here or legacy => do not show to users
                         if name in self.float_params:
                             out_stream.write("{} = {:.2f}\n".format(name, value))
                         else:

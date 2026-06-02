@@ -40,9 +40,9 @@ tunnel_data_section_snapshot3 = [
 
 # Parameters for creating test tunnels
 test_parameters = {
-    "min_tunnel_radius4clustering": 0,
-    "min_tunnel_length4clustering": 5,
-    "max_tunnel_curvature4clustering": 999,
+    "relevant_tunnel_min_radius": 0,
+    "relevant_tunnel_min_length": 5,
+    "relevant_tunnel_max_curvature": 999,
     "tunnel_properties_quantile": 0.9,
     "md_label": "md1",
     "layer_thickness": 1.5,
