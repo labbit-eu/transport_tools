@@ -400,7 +400,7 @@ class LayeredPathSet:
         """
         Test if the pathset is same as the other pathset
         :param other: other pathset to compare with
-        :precision: tolerated deviation when comparing data
+        :param precision: tolerated deviation when comparing data
         :return: are two pathset same?
         """
 
@@ -1284,7 +1284,8 @@ class LayeredPathSet:
                                          dist_type: int = 1) -> float:
         """
         Original pure-Python implementation of avg_distance2path_set, retained as a reference for regression
-        testing of the vectorized avg_distance2path_set. Not used in production code.
+        testing of the vectorized avg_distance2path_set. Used in production only when adjacent nodes are missing as 
+        the vectorized variant cannot handle that.
         :param other_set: other set to which the distance is calculated
         :param distance_cutoff: cutoff on accurate distance calculation, anything beyond this value is far (999)
         :param dist_type: 0 - center distances, 1 - surface distances, 2 - surface and rmsf distances
@@ -1378,6 +1379,7 @@ class Layer:
         :param layer_thickness: layer thickness
         :param parameters: job configuration parameters
         :param entity_label: name of the entity (tunnel cluster or transport event) to be layered
+        :param md_label: name of folder with the source MD simulation data
         """
 
         self.id = layer_id

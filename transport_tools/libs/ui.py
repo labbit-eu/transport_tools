@@ -69,6 +69,8 @@ def progressbar(iteration: int, total: int, log_level: str = "info"):
     Generates progress bar for processes
     :param iteration: current iteration of the process
     :param total: total number of iterations
+    :param log_level: logfile logging level restored once the bar is drawn (the logfile handler is
+                      muted to WARNING while the bar updates to keep it out of the log file)
     """
 
     if _CONSOLE_HANDLER is not None and _LOG_HANDLER is not None:
@@ -194,6 +196,7 @@ def set_logging_level(level: str, handler):
     """
     Sets currently used level of logging
     :param level: logging level to be used
+    :param handler: the logging handler whose level is set (the console or the logfile handler)
     """
 
     level = level.upper()

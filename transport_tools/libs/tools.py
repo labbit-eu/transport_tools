@@ -3432,6 +3432,7 @@ class EventAssigner:
         of ligand responsible for this path, supplemented with info on beginning and last frames for the transport event
         :param event: pathset containing representative path for evaluated event
         :param superclusters: dictionary with SuperCluster objects to assign to
+        :param active_filters: mapping of active supercluster filters applied during assignment
         """
 
         self.parameters = parameters

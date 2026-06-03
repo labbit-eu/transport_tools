@@ -771,6 +771,7 @@ class TunnelCluster:
         :param cluster_id: ID of the cluster from CAVER
         :param parameters: job configuration parameters
         :param transform_mat: transformation matrix to be applied on the nodes coordinates
+        :param starting_point_coords: coordinates of the tunnel starting point
         """
 
         self.tunnels: Dict[int, Tunnel] = dict()
@@ -1506,6 +1507,7 @@ class TransportEvent:
         :param md_label: name of folder with the source MD simulation data
         :param traced_residue: tuple containing resname & resid of ligand responsible for this path,
                                 and beginning and last frames for entry and release event
+        :param transform_mat: transformation matrix to be applied on the event coordinates
         """
 
         if event_type in ["inside", "entry", "release", "outside"]:
