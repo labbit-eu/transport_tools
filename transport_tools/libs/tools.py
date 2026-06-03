@@ -1582,7 +1582,7 @@ class TransportProcesses:
         if method == "hdbscan":
             # the partition scale is decoupled from the HDBSCAN selection/merge scales; a generous
             # partition keeps each branch and its periphery in one component (see _cluster_component_hdbscan)
-            partition_cutoff = self.parameters["clustering_partition_cutoff"]
+            partition_cutoff = self.parameters["hdbscan_clustering_partition_cutoff"]
             if partition_cutoff is None:
                 partition_cutoff = cutoff
             cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, "hdbscan",
