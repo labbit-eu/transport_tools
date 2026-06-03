@@ -1587,7 +1587,7 @@ class TransportProcesses:
                 partition_cutoff = cutoff
             cluster_labels = self._cluster_labels_partitioned(condensed_matrix, num_points, cutoff, "hdbscan",
                                                               partition_cutoff)
-        else:  # agglomerative - partitions at the flat cut (clustering_partition_cutoff does not apply here, as a
+        else:  # agglomerative - partitions at the flat cut (hdbscan_clustering_partition_cutoff does not apply here, as a
                # sub-flat-cut partition would break the exact equivalence with the full-matrix linkage)
             linkage = self.parameters["clustering_linkage"]
             if linkage == "ward":

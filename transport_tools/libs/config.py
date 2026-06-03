@@ -157,7 +157,7 @@ class AnalysisConfig:
             # Decoupled clustering scales (None => inherit clustering_cutoff, preserving legacy behavior). They let a
             # single clustering pass be multi-scale: a generous partition/merge scale for context+assignment with a
             # tight selection scale for separating spatially overlapping branches.
-            "clustering_partition_cutoff": None,  # sub-cutoff connected-components partition threshold (HDBSCAN only; agglomerative always partitions at its flat-cut for exactness). None => clustering_cutoff
+            "hdbscan_clustering_partition_cutoff": None,  # sub-cutoff connected-components partition threshold (HDBSCAN only; agglomerative always partitions at its flat-cut for exactness). None => clustering_cutoff
             "hdbscan_cluster_selection_epsilon": None,  # HDBSCAN cluster_selection_epsilon (branch-separation fineness). None => clustering_cutoff
             "hdbscan_noise_merge_cutoff": None,  # per-component floor for absorbing HDBSCAN noise into the nearest in-component cluster. None => clustering_cutoff
 
@@ -321,7 +321,7 @@ class AnalysisConfig:
             "min_tunnel_length4clustering",
             "max_tunnel_curvature4clustering",
             "hdbscan_min_samples",
-            "clustering_partition_cutoff",
+            "hdbscan_clustering_partition_cutoff",
             "hdbscan_cluster_selection_epsilon",
             "hdbscan_noise_merge_cutoff",
             "orphan_assignment_cutoff",
@@ -405,7 +405,7 @@ class AnalysisConfig:
             "min_tunnel_length4clustering",
             "max_tunnel_curvature4clustering",
             "clustering_cutoff",
-            "clustering_partition_cutoff",
+            "hdbscan_clustering_partition_cutoff",
             "hdbscan_cluster_selection_epsilon",
             "hdbscan_noise_merge_cutoff",
             "orphan_assignment_cutoff",
@@ -798,7 +798,7 @@ class AnalysisConfig:
 
         # decoupled clustering scales: each None inherits clustering_cutoff (legacy behavior); when set they must be
         # non-negative distances. They only take effect for clustering_method='hdbscan'.
-        for cutoff_param in ("clustering_partition_cutoff", "hdbscan_cluster_selection_epsilon",
+        for cutoff_param in ("hdbscan_clustering_partition_cutoff", "hdbscan_cluster_selection_epsilon",
                              "hdbscan_noise_merge_cutoff"):
             if self.parameters[cutoff_param] is not None:
                 self._test_parameter_sanity(cutoff_param, 0.0, sys.maxsize)

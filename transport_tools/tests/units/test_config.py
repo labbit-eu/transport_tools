@@ -208,20 +208,22 @@ class TestReportUpdates(unittest.TestCase):
 
     @patch('transport_tools.libs.config.logger')
     def test_report_updates_no_changes(self, mock_logger):
-        """Test report_updates when no parameters changed"""
-        old_params = self.config.calculations_settings.copy()
+        """Test report_updates emits nothing when no parameters changed"""
+        old_params = {}
+        old_params.update(self.config.calculations_settings)
         old_params.update(self.config.output_settings)
+        old_params.update(self.config.input_paths)
+        old_params.update(self.config.output_paths)
+        old_params.update(self.config.advanced_settings)
 
         self.config.report_updates(old_params)
 
-        # Should still log the header message
-        mock_logger.debug.assert_called_once()
-        log_message = mock_logger.debug.call_args[0][0]
-        self.assertIn("Job configuration UPDATED", log_message)
+        # Nothing changed -> no report should be logged
+        mock_logger.warning.assert_not_called()
 
     @patch('transport_tools.libs.config.logger')
     def test_report_updates_with_changes(self, mock_logger):
-        """Test report_updates logs changed parameters"""
+        """Test report_updates logs changed parameters at warning level"""
         old_params = {
             "start_from_stage": 2,  # Different
             "stop_after_stage": 5,  # Same
@@ -230,10 +232,11 @@ class TestReportUpdates(unittest.TestCase):
 
         self.config.report_updates(old_params)
 
-        mock_logger.debug.assert_called_once()
-        log_message = mock_logger.debug.call_args[0][0]
+        mock_logger.warning.assert_called_once()
+        log_message = mock_logger.warning.call_args[0][0]
 
-        # Check that changed parameters are logged
+        # Header and changed parameters are logged
+        self.assertIn("Job configuration UPDATED", log_message)
         self.assertIn("start_from_stage", log_message)
         self.assertIn("output_path", log_message)
         # Should show new values
@@ -247,7 +250,7 @@ class TestReportUpdates(unittest.TestCase):
 
         self.config.report_updates(old_params)
 
-        log_message = mock_logger.debug.call_args[0][0]
+        log_message = mock_logger.warning.call_args[0][0]
         self.assertIn("General calculations settings", log_message)
 
     @patch('transport_tools.libs.config.logger')
@@ -257,8 +260,8 @@ class TestReportUpdates(unittest.TestCase):
 
         self.config.report_updates(old_params)
 
-        mock_logger.debug.assert_called_once()
-        log_message = mock_logger.debug.call_args[0][0]
+        mock_logger.warning.assert_called_once()
+        log_message = mock_logger.warning.call_args[0][0]
 
         # All parameters should be logged as new
         self.assertIn("start_from_stage", log_message)
@@ -266,7 +269,7 @@ class TestReportUpdates(unittest.TestCase):
 
     @patch('transport_tools.libs.config.logger')
     def test_report_updates_advanced_settings_changed(self, mock_logger):
-        """Test reporting when advanced settings differ from defaults"""
+        """Test that advanced settings are reported when changed vs. previous run"""
         self.config.advanced_settings = {"random_seed": 99}
         self.config.advanced_settings_defaults = {"random_seed": 42}
 
@@ -274,7 +277,22 @@ class TestReportUpdates(unittest.TestCase):
 
         self.config.report_updates(old_params)
 
-        log_message = mock_logger.debug.call_args[0][0]
+        log_message = mock_logger.warning.call_args[0][0]
+        self.assertIn("Advanced settings", log_message)
+        self.assertIn("random_seed", log_message)
+
+    @patch('transport_tools.libs.config.logger')
+    def test_report_updates_advanced_setting_reverted_to_default(self, mock_logger):
+        """Advanced setting changed back to its default vs. previous run is still reported"""
+        self.config.advanced_settings = {"random_seed": 42}
+        self.config.advanced_settings_defaults = {"random_seed": 42}
+
+        old_params = {"random_seed": 99}  # previous run used a non-default value
+
+        self.config.report_updates(old_params)
+
+        mock_logger.warning.assert_called_once()
+        log_message = mock_logger.warning.call_args[0][0]
         self.assertIn("Advanced settings", log_message)
         self.assertIn("random_seed", log_message)
 

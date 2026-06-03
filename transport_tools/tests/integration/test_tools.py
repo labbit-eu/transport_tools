@@ -723,7 +723,7 @@ class TestTransportProcesses(unittest.TestCase):
             # HDBSCAN with the partition scale decoupled from the selection scale (Phase A) plus the
             # global orphan->core consolidation pass (Phase B) - exercises both multi-scale features
             ("hdbscan_consolidated", {"clustering_method": "hdbscan",
-                                      "clustering_partition_cutoff": 4.0,
+                                      "hdbscan_clustering_partition_cutoff": 4.0,
                                       "consolidate_orphan_superclusters": True,
                                       "supercluster_core_min_size": 3,
                                       "orphan_assignment_cutoff": 3.0}),
@@ -733,7 +733,7 @@ class TestTransportProcesses(unittest.TestCase):
 
         # restore the multi-scale knobs to their defaults so the 'average' chain (and the downstream
         # stage-5 checkpoint feeding test_05+) is unaffected by the consolidated variant above
-        for param, default in (("clustering_partition_cutoff", None),
+        for param, default in (("hdbscan_clustering_partition_cutoff", None),
                                ("hdbscan_cluster_selection_epsilon", None),
                                ("hdbscan_noise_merge_cutoff", None),
                                ("consolidate_orphan_superclusters", False),
