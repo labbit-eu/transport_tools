@@ -983,9 +983,9 @@ class TestAquaductNetworksShardStateRoundTrip(unittest.TestCase):
 
 class TestAquaductNetworksShardSideEffectPaths(unittest.TestCase):
     """derive_side_effect_paths reports the per-md_label outputs the worker is expected to
-    write. Without visualisation, only the `<md>_aqua.dump` files; with visualisation, also
-    the per-md visualisation folder contents (transformed PDB + view_network.py + every
-    `*_cgo.dump.gz`)."""
+    write. Without visualisation, only the `<md>_aqua.dump` files plus their `.event_ids`
+    enumeration sidecars; with visualisation, also the per-md visualisation folder contents
+    (transformed PDB + view_network.py + every `*_cgo.dump.gz`)."""
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -1001,10 +1001,12 @@ class TestAquaductNetworksShardSideEffectPaths(unittest.TestCase):
     def test_dump_only_when_visualization_disabled(self):
         params = self._params(visualize=False)
         paths = AquaductNetworksShardStage.derive_side_effect_paths(params, ["md1", "md2"])
-        # exactly one dump per md_label, no viz files
+        # one dump + its .event_ids enumeration sidecar per md_label, no viz files
         self.assertEqual([
             os.path.join(params["orig_aquaduct_network_data_path"], "md1_aqua.dump"),
+            os.path.join(params["orig_aquaduct_network_data_path"], "md1_aqua.dump.event_ids"),
             os.path.join(params["orig_aquaduct_network_data_path"], "md2_aqua.dump"),
+            os.path.join(params["orig_aquaduct_network_data_path"], "md2_aqua.dump.event_ids"),
         ], paths)
 
     def test_dump_plus_viz_files_when_visualization_enabled(self):

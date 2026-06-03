@@ -294,6 +294,39 @@ class TestAquaductNetwork(unittest.TestCase):
     def test_get_events4layering(self):
         self.assertEqual(5, len(self.network.get_events4layering()))
 
+    def test_get_events4layering_ids_matches_via_sidecar(self):
+        # The stage-8 SLURM launcher enumerates event labels via the .event_ids sidecar instead
+        # of loading the full orig_network; the labels (and their order) must match
+        # get_events4layering().
+        from transport_tools.libs.networks import AquaductNetwork
+
+        self.network.save_orig_network()  # writes the dump + the .event_ids sidecar
+        expected_ids = [str(event.entity_label) for event in self.network.get_events4layering()]
+
+        fresh = AquaductNetwork(self.parameters, "md1", load_only=True)
+        sidecar_path = fresh._orig_summary_path()
+        self.assertTrue(os.path.exists(sidecar_path))
+        ids = fresh.get_events4layering_ids()
+        self.assertEqual(expected_ids, ids)
+        # reading the sidecar must NOT pull the heavy paths into memory
+        self.assertEqual(0, len(fresh.orig_entities))
+
+    def test_get_events4layering_ids_fallback_when_sidecar_missing(self):
+        # Legacy checkpoint: no sidecar on disk -> full load, same result, sidecar regenerated.
+        from transport_tools.libs.networks import AquaductNetwork
+
+        self.network.save_orig_network()
+        expected_ids = [str(event.entity_label) for event in self.network.get_events4layering()]
+
+        fresh = AquaductNetwork(self.parameters, "md1", load_only=True)
+        sidecar_path = fresh._orig_summary_path()
+        if os.path.exists(sidecar_path):
+            os.remove(sidecar_path)
+        ids = fresh.get_events4layering_ids()
+        self.assertEqual(expected_ids, ids)
+        # the fallback rewrote the sidecar so the next launcher run is fast
+        self.assertTrue(os.path.exists(sidecar_path))
+
     def test_save_orig_network(self):
         from transport_tools.libs.networks import AquaductNetwork
 

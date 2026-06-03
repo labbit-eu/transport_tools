@@ -2033,8 +2033,15 @@ class AquaductNetworksShardStage(SlurmShardStage):
         paths: List[str] = []
         visualize = bool(parameters.get("visualize_transformed_transport_events", False))
         for md_label in processed_md_labels:
-            paths.append(os.path.join(parameters["orig_aquaduct_network_data_path"],
-                                      "{}_aqua.dump".format(md_label)))
+            dump_path = os.path.join(parameters["orig_aquaduct_network_data_path"],
+                                     "{}_aqua.dump".format(md_label))
+            paths.append(dump_path)
+            # event-id sidecar written by save_orig_network() next to the dump (suffix
+            # AquaductNetwork._orig_summary_suffix = ".event_ids"); the stage-8 layering
+            # launcher reads it to skip the full orig_network load, so it must be backed up /
+            # restored with the dump or a resume that wipes network_data would force the slow
+            # full-load fallback.
+            paths.append(dump_path + ".event_ids")
             if visualize:
                 md_vis_folder = os.path.join(parameters["orig_aquaduct_vis_path"], md_label)
                 paths.append(os.path.join(md_vis_folder,

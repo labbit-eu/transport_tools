@@ -2549,9 +2549,16 @@ def subcutoff_connected_components(condensed: np.ndarray, num_points: int, cutof
     else:
         rows = np.empty(0, dtype=np.int32)
         cols = np.empty(0, dtype=np.int32)
+    # the per-chunk edge arrays are now duplicated inside the concatenated rows/cols; drop them so
+    # the edge set is held once rather than twice (matters when the sub-cutoff graph is dense, i.e.
+    # many pairs <= cutoff, which is exactly the redundant-dataset regime that produces large E)
+    del row_indices, col_indices
 
     data = np.ones(rows.size, dtype=np.uint8)
     graph = coo_matrix((data, (rows, cols)), shape=(num_points, num_points)).tocsr()
+    # the CSR holds its own copies of the indices; release the COO inputs before the traversal so
+    # the edge arrays are not pinned while connected_components allocates its own O(V + E) structures
+    del rows, cols, data
     n_components, labels = connected_components(graph, directed=False, return_labels=True)
 
     return n_components, labels.astype(np.intp, copy=False)

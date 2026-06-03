@@ -78,10 +78,11 @@ class Network:
         self._layered_summary_suffix: str | None = None
 
         # Sidecar written next to orig_dump_file by save_orig_network() holding only the
-        # per-entity sizes needed to enumerate layering work (see _compute_orig_summary).
-        # The stage-3 SLURM tunnel-layering launcher reads it via get_clusters4layering_ids()
-        # so it can build the (md_label, cluster_id) enumeration without the heavy full-pickle
-        # load of every orig_network on a single node. None disables (e.g. aquaduct).
+        # per-entity summary needed to enumerate layering work (see _compute_orig_summary).
+        # The stage-3 / stage-8 SLURM layering launchers read it (via get_clusters4layering_ids
+        # / get_events4layering_ids) so they can build the (md_label, entity_id) enumeration
+        # without the heavy full-pickle load of every orig_network on a single node. Subclasses
+        # that set it must override _compute_orig_summary(); None disables emission.
         self._orig_summary_suffix: str | None = None
 
     def add_layered_entity(self, entity_id: int | str, layered_pathset: LayeredPathSet):
@@ -162,8 +163,8 @@ class Network:
 
     def _orig_summary_path(self) -> str | None:
         """
-        Path to the lightweight size sidecar written next to orig_dump_file, or None when the
-        subclass disables sidecar emission (_orig_summary_suffix unset, e.g. aquaduct).
+        Path to the lightweight summary sidecar written next to orig_dump_file, or None when
+        the subclass disables sidecar emission (_orig_summary_suffix unset).
         """
 
         if self._orig_summary_suffix is None:
@@ -1149,6 +1150,16 @@ class TunnelNetwork(Network):
             "counts": counts,
         }
 
+    def _orig_summary_is_current(self, summary: dict) -> bool:
+        """
+        Whether a loaded size-sidecar payload was built with the per-tunnel filter parameters
+        currently in effect. A mismatch means the sidecar's counts could no longer agree with a
+        fresh get_clusters4layering() and must be regenerated from the loaded network.
+        """
+
+        current = tuple(self.parameters[k] for k in self._ORIG_SUMMARY_FILTER_KEYS)
+        return summary.get("filter_params") == current
+
     def get_clusters4layering_ids(self) -> List[int]:
         """
         Enumerate the cluster_ids that get_clusters4layering() would return, reading the size
@@ -1169,8 +1180,7 @@ class TunnelNetwork(Network):
         if sidecar_path is not None and os.path.exists(sidecar_path):
             with open(sidecar_path, "rb") as in_stream:
                 summary = pickle.load(in_stream)
-            current_filter_params = tuple(self.parameters[k] for k in self._ORIG_SUMMARY_FILTER_KEYS)
-            if summary.get("filter_params") == current_filter_params:
+            if self._orig_summary_is_current(summary):
                 # mirror get_clusters4layering(): reversed orig order, keep clusters meeting the
                 # (live) cluster-size threshold
                 return [cls_id for cls_id, n_valid in reversed(summary["counts"])
@@ -1212,6 +1222,13 @@ class AquaductNetwork(Network):
         # full LayeredPathSet load on runs with millions of events.
         self._layered_summary_attr = "traced_event"
         self._layered_summary_suffix = ".traced_event"
+
+        # Stage 8's SLURM launcher only needs the per-event entity_labels (in
+        # get_events4layering order) to enumerate the (md_label, event_label) work; this orig
+        # sidecar lets it skip the heavy full orig_network load of every md on a single node,
+        # mirroring the tunnel side's .cluster_sizes sidecar consumed by
+        # get_clusters4layering_ids(). save_orig_network() emits it automatically at stage 7.
+        self._orig_summary_suffix = ".event_ids"
 
         # input paths
         if root_path is None:
@@ -1415,6 +1432,51 @@ class AquaductNetwork(Network):
             events += path.get_events4layering()
 
         return events
+
+    def _compute_orig_summary(self) -> dict:
+        """
+        Build the orig event-id sidecar payload: the entity_labels that get_events4layering()
+        would yield, in the same traversal order, so get_events4layering_ids() can reproduce
+        the stage-8 enumeration without loading the full orig_network. has_transition() (the
+        only filter get_events4layering applies) depends solely on the event type baked into
+        the orig_network at stage 7, so no parameter self-invalidation is needed here.
+        """
+
+        return {"event_ids": [str(event.entity_label) for event in self.get_events4layering()]}
+
+    def get_events4layering_ids(self) -> List[str]:
+        """
+        Enumerate the event entity_labels that get_events4layering() would return, reading the
+        orig event-id sidecar to avoid the heavy full orig_network load when possible. Used by
+        the stage-8 SLURM launcher to build the (md_label, event_label) work enumeration; the
+        returned order is identical to get_events4layering() so the SLURM and local backends
+        emit byte-identical items.
+
+        Falls back to a full load_orig_network() + get_events4layering() when the sidecar is
+        missing (legacy checkpoint) or malformed, rewriting the sidecar so subsequent runs are
+        fast, then drops orig_entities so the caller does not retain the heavy objects.
+        :return: event entity_labels in get_events4layering() order
+        """
+
+        sidecar_path = self._orig_summary_path()
+        if sidecar_path is not None and os.path.exists(sidecar_path):
+            with open(sidecar_path, "rb") as in_stream:
+                summary = pickle.load(in_stream)
+            if isinstance(summary, dict) and "event_ids" in summary:
+                return [str(eid) for eid in summary["event_ids"]]
+            logger.debug("Orig event-id sidecar '{}' is malformed; reloading the full "
+                         "network.".format(sidecar_path))
+
+        # Fallback: legacy checkpoint without sidecar, or malformed sidecar. Load the heavy
+        # pickle, rewrite the sidecar for subsequent runs, then drop orig_entities.
+        self.load_orig_network()
+        ids = [str(event.entity_label) for event in self.get_events4layering()]
+        try:
+            self._write_orig_summary_sidecar()
+        except OSError as exc:
+            logger.debug("Could not write orig event-id sidecar '{}': {}".format(sidecar_path, exc))
+        self.orig_entities = list()
+        return ids
 
 
 def process_raw_path_worker(task: Tuple[str, dict, Tuple[str, int, Tuple[int, int], Tuple[int, int]],

@@ -20,7 +20,6 @@ __version__ = '0.9.8'
 __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
-import gc
 import os
 import pickle
 import numpy as np
@@ -1207,19 +1206,17 @@ class TransportProcesses:
         progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
         # 'spawn' start method - this shard process is multi-threaded (numpy/BLAS), so forking
-        # the worker processes here would intermittently deadlock the children on inherited locks
+        # the worker processes here would intermittently deadlock the children on inherited locks.
+        # NB: the parent's path_sets + cluster_specifications cannot be freed while the pool runs -
+        # multiprocessing.Pool retains `initargs` (to re-spawn dead workers) for the pool's whole
+        # lifetime, so they stay resident until this `with` block exits no matter what is del'd here.
+        # Each worker also unpickles its own private copy, so the shard holds ~(1 + num_cpus) copies
+        # of the corpus; cutting that to ~1 needs the workers to share the corpus rather than copy it
+        # (shared memory / fork-COW), which is tracked separately.
         with get_context("spawn").Pool(processes=num_cpus, initializer=init_distance_worker,
                                        initargs=(path_sets, cluster_specifications,
                                                  precision, cutoff,
                                                  num_cpus, num_cpus)) as pool:
-            # The spawn Pool pickles a private copy of path_sets + cluster_specifications into
-            # every worker as its constructor starts them, so the parent's own copies are now
-            # dead weight held for the whole pool lifetime. Drop them: the workers read their
-            # copies via init_distance_worker / calc_distance_chunk, and the parent only needs
-            # num_clusters (a plain int) to enumerate this shard's pairs below. On a large study
-            # this removes one full path-set corpus from the shard's resident set.
-            del path_sets, cluster_specifications
-            gc.collect()
             timeout = self.parameters["worker_task_timeout_s"]
             imap_iter = pool.imap_unordered(calc_distance_chunk,
                                             iter_shard_pair_chunks(num_clusters, num_shards,
@@ -2850,19 +2847,19 @@ class TransportProcesses:
         with TimeProcess("Layering"):
             # 1) Enumerate (md_label, event_label) pairs in stable submission order.
             #    Mirrors the local path's enumeration so produced artifacts are byte-identical.
+            #    Enumerate via the per-md .event_ids sidecar (get_events4layering_ids) to avoid
+            #    loading every orig_network in full on this single launcher node (falls back to
+            #    a full load for legacy/missing sidecars); the per-md AquaductNetwork objects
+            #    are constructed lazily in the assembly loop below rather than held resident
+            #    across the whole array wait.
             items: List[Tuple[str, str]] = list()
             event_ids2process4md_label: Dict[str, List[str]] = dict()
-            aqua_networks: Dict[str, AquaductNetwork] = dict()
-            for md_label in self.aquaduct_input_folders:
-                aqua_networks[md_label] = AquaductNetwork(self.parameters, md_label, load_only=True)
-
             for md_label in self.aquaduct_input_folders:
                 aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
-                aquanet.load_orig_network()
                 event_ids2process4md_label[md_label] = list()
-                for event in aquanet.get_events4layering():
-                    items.append((md_label, str(event.entity_label)))
-                    event_ids2process4md_label[md_label].append(str(event.entity_label))
+                for event_id in aquanet.get_events4layering_ids():
+                    items.append((md_label, str(event_id)))
+                    event_ids2process4md_label[md_label].append(str(event_id))
 
             items2process = len(items)
             if not items2process > 0:
@@ -2921,15 +2918,16 @@ class TransportProcesses:
             num_md = len(self.aquaduct_input_folders)
             progressbar(0, num_md, self.parameters["log_level"])
             for i, md_label in enumerate(self.aquaduct_input_folders):
+                aquanet = AquaductNetwork(self.parameters, md_label, load_only=True)
                 for event_id in event_ids2process4md_label[md_label]:
-                    aqua_networks[md_label].add_layered_entity(
+                    aquanet.add_layered_entity(
                         event_id, buffered_layered_paths[md_label][event_id])
                 logger.debug("Finished layering of network for '{}'.".format(md_label))
                 # always saving layered visualizations to enable visualization of assigned events later
-                aqua_networks[md_label].get_pdb_file()
-                aqua_networks[md_label].save_layered_visualization(self.parameters["visualize_layered_events"])
-                aqua_networks[md_label].save_layered_network()
-                aqua_networks[md_label].clean_tempfile()
+                aquanet.get_pdb_file()
+                aquanet.save_layered_visualization(self.parameters["visualize_layered_events"])
+                aquanet.save_layered_network()
+                aquanet.clean_tempfile()
                 progressbar(i + 1, num_md, self.parameters["log_level"])
 
             # Assembly succeeded end-to-end (every md_label's aqua_layered_network.dump and
