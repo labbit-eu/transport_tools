@@ -140,6 +140,13 @@ class AnalysisConfig:
             "clustering_cutoff": 2.0,  # clustering of tunnel clusters to superclusters
             "calculate_exact_path_distances": True,  # request full calculation of distances even for very remote paths
 
+            # Global, method-agnostic orphan consolidation: reassign every supercluster smaller than
+            # supercluster_core_min_size to the nearest 'core' supercluster, stitching periphery the partition isolated
+            # back into the major branches. Off by default.
+            "consolidate_orphan_superclusters": False,  # enable the global orphan->core consolidation pass
+            "supercluster_core_min_size": 5,  # min tunnel clusters for a supercluster to count as a core / assignment target
+            "orphan_assignment_cutoff": None,  # max orphan-to-core distance allowed for absorption; None => uncapped
+
             #Agglomerative clustering settings:
             "clustering_linkage": "complete",  # linkage for agglomerative clustering (ignored when clustering_method='hdbscan')
 
@@ -154,12 +161,6 @@ class AnalysisConfig:
             "hdbscan_cluster_selection_epsilon": None,  # HDBSCAN cluster_selection_epsilon (branch-separation fineness). None => clustering_cutoff
             "hdbscan_noise_merge_cutoff": None,  # per-component floor for absorbing HDBSCAN noise into the nearest in-component cluster. None => clustering_cutoff
 
-            # Global, method-agnostic orphan consolidation: reassign every supercluster smaller than
-            # supercluster_core_min_size to the nearest 'core' supercluster, stitching periphery the partition isolated
-            # back into the major branches. Off by default.
-            "consolidate_orphan_superclusters": False,  # enable the global orphan->core consolidation pass
-            "supercluster_core_min_size": 5,  # min tunnel clusters for a supercluster to count as a core / assignment target
-            "orphan_assignment_cutoff": None,  # max orphan-to-core distance allowed for absorption; None => uncapped
 
             # SLURM execution backend (see SlurmShardStage framework in transport_tools.libs.slurm)
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
@@ -1347,7 +1348,8 @@ class AnalysisConfig:
         :param old_parameters: previous parameters to compare with
         """
 
-        msg = "\nJob configuration UPDATED from file: '{}'\n".format(self.source_file)
+        header = "\nJob configuration UPDATED from file: '{}'\n".format(self.source_file)
+        msg = ""
         section_head = "#=== General calculations settings ===\n"
         section_msg = ""
         for name, values in self.calculations_settings.items():
@@ -1384,19 +1386,17 @@ class AnalysisConfig:
         if section_msg:
             msg += section_head + section_msg
 
-        if self.advanced_settings != self.advanced_settings_defaults:
-            section_head = "\n#=== Advanced settings ===\n"
-            section_msg = ""
-            for name, values in self.advanced_settings.items():
-                if values != self.advanced_settings_defaults[name]:
-                    if name in old_parameters.keys() and values == old_parameters[name]:
-                        continue
-                    section_msg += " {} = {}\n".format(name, str(values))
+        section_head = "\n#=== Advanced settings ===\n"
+        section_msg = ""
+        for name, values in self.advanced_settings.items():
+            if name in old_parameters.keys() and values == old_parameters[name]:
+                continue
+            section_msg += " {} = {}\n".format(name, str(values))
+        if section_msg:
+            msg += section_head + section_msg
 
-            if section_msg:
-                msg += section_head + section_msg
-
-        logger.debug(msg)
+        if msg:  # only report when parameters actually changed on this (re)start
+            logger.warning(header + msg)
 
     def get_parameter(self, par_name: str):
         """
@@ -1540,7 +1540,9 @@ class AnalysisConfig:
             "aquaduct_results_path": "# AQUA-DUCT results",
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
-            "relevant_tunnel_cluster_min_size": "# Clustering of tunnel clusters into superclusters",
+            "relevant_tunnel_cluster_min_size": "# Filtreing of tunnels and clusters before layering",
+            "clustering_method": "# Clustering of tunnel clusters into superclusters - global and agglomerative settings",
+            "hdbscan_min_cluster_size": "# HDBscan clustering settings",
             "compute_backend": "# SLURM execution backend "
                                "(the 'slurm' backend requires the optional 'submitit' package)",
             "min_length": "# Filters applied on superclusters before event assignment (-1 => inactive filter)",
