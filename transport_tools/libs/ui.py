@@ -73,6 +73,11 @@ def progressbar(iteration: int, total: int, log_level: str = "info"):
                       muted to WARNING while the bar updates to keep it out of the log file)
     """
 
+    # nothing to draw for an empty workload; bail out before touching the handlers so we neither divide by
+    # zero below nor leave the console/log handlers in their muted progress-bar state
+    if total <= 0:
+        return
+
     if _CONSOLE_HANDLER is not None and _LOG_HANDLER is not None:
         _CONSOLE_HANDLER.setFormatter(logging.Formatter("\r%(asctime)s - %(name)s - %(levelname)s - %(message)s",
                                                         datefmt="%H:%M:%S"))

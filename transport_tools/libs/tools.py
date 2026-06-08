@@ -2101,9 +2101,12 @@ class TransportProcesses:
                                general_transform_mat.dot(reference_tunnel_transform_mat + transform_mat2starting_point))
 
             #for larger set of MDs, slower storage spaces takes quite long time, adding another progress bar here
-            logger.info("Saving {} transformation matrices.".format(num_folders2process))
+            # this loop visits each input folder once (unlike the alignment bar above, which processes caver
+            # folders in two batches), so it needs its own total or the bar never reaches 100%
+            num_folders2save = len(self.caver_input_folders) + len(self.aquaduct_input_folders)
+            logger.info("Saving {} transformation matrices.".format(num_folders2save))
             progress_counter = 0
-            progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
+            progressbar(progress_counter, num_folders2save, self.parameters["log_level"])
 
             # save transformation matrices
             for md_label in self.caver_input_folders:
@@ -2121,7 +2124,7 @@ class TransportProcesses:
                 sp_coords = read_starting_points(in_origin_file)
                 save_caver_starting_points(out_origin_file, sp_coords, tunnel_full_trans_mat)
                 progress_counter += 1
-                progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
+                progressbar(progress_counter, num_folders2save, self.parameters["log_level"])
 
             for md_label in self.aquaduct_input_folders:
                 aquaduct_full_trans_mat = general_transform_mat.dot(aquaduct_transform_mat[md_label] +
@@ -2131,7 +2134,7 @@ class TransportProcesses:
                     pickle.dump(aquaduct_full_trans_mat, out)
 
                 progress_counter += 1
-                progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
+                progressbar(progress_counter, num_folders2save, self.parameters["log_level"])
 
 
     def process_tunnel_networks(self):
