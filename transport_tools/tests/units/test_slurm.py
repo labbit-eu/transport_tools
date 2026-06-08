@@ -55,6 +55,7 @@ from transport_tools.libs.slurm import (
     cleanup_stage_folder,
     derive_num_shards,
     submitit_available,
+    _rebuild_mol_system,
 )
 
 
@@ -2274,6 +2275,47 @@ class TestExecutorParamsCpuBindGuard(unittest.TestCase):
         stage = DistanceShardStage(num_clusters=2)
         ep = stage.executor_params(self._params(slurm_additional_parameters={}))
         self.assertNotIn("slurm_additional_parameters", ep)
+
+
+class TestShardStageNumbers(unittest.TestCase):
+    """Each concrete shard stage declares its pipeline stage number, used to scope the rebuilt
+    config to that single stage (active_stages=(n, n))."""
+
+    def test_stage_numbers_match_pipeline(self):
+        self.assertEqual(2, TunnelNetworksShardStage.stage_number)
+        self.assertEqual(3, TunnelLayeringShardStage.stage_number)
+        self.assertEqual(4, DistanceShardStage.stage_number)
+        self.assertEqual(7, AquaductNetworksShardStage.stage_number)
+        self.assertEqual(8, AquaductLayeringShardStage.stage_number)
+        self.assertEqual(9, EventAssignmentShardStage.stage_number)
+
+    def test_base_class_stage_number_unset(self):
+        self.assertIsNone(SlurmShardStage.stage_number)
+
+
+class TestRebuildMolSystemScoping(unittest.TestCase):
+    """_rebuild_mol_system pins the rebuilt config to the shard's single stage and marks it a shard
+    so the launcher-only num_cpus validation and out-of-stage input sweeps are skipped."""
+
+    def _rebuild(self, stage_number):
+        from unittest.mock import patch
+        with patch("transport_tools.libs.utils.configure_multiprocessing_start_method"), \
+                patch("transport_tools.libs.config.AnalysisConfig") as cfg_cls, \
+                patch("transport_tools.libs.tools.TransportProcesses"):
+            _rebuild_mol_system("config.ini", stage_number)
+        return cfg_cls
+
+    def test_pins_active_stages_to_single_stage(self):
+        cfg_cls = self._rebuild(4)
+        _, kwargs = cfg_cls.call_args
+        self.assertEqual((4, 4), kwargs["active_stages"])
+        self.assertTrue(kwargs["context"].is_shard)
+
+    def test_none_stage_number_scopes_to_no_stage(self):
+        cfg_cls = self._rebuild(None)
+        _, kwargs = cfg_cls.call_args
+        self.assertIsNone(kwargs["active_stages"])
+        self.assertTrue(kwargs["context"].is_shard)
 
 
 if __name__ == "__main__":

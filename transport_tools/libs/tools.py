@@ -284,9 +284,23 @@ class TransportProcesses:
 
     def update_configuration(self, new_config: AnalysisConfig):
         """
-        Updates parameters based on new job parameters
+        Updates parameters based on new job parameters.
+
+        Auto-detected setup values are preserved from the previous run when the freshly loaded config
+        left them unset. On a resume the scoped config deliberately skips the expensive re-detection of
+        these values for stages it won't run (snapshot counts read every trajectory, the reference
+        structure globs the CAVER folders - see AnalysisConfig._autocomplete_parameters), so the value
+        resolved on the original run and carried in the checkpoint is kept rather than overwritten with
+        None. The new_config is patched to be self-consistent first, so the restored value is neither
+        lost downstream nor reported as a spurious change by report_updates. All three keys live in the
+        calculations_settings section.
         :param new_config: object with job parameters
         """
+
+        for key in ("snapshots_per_simulation", "pdb_reference_structure", "num_cpus"):
+            if new_config.parameters.get(key) is None and self.parameters.get(key) is not None:
+                new_config.parameters[key] = self.parameters[key]
+                new_config.calculations_settings[key] = self.parameters[key]
 
         new_config.report_updates(self.parameters)
         self.parameters = new_config.get_parameters()
@@ -2086,6 +2100,11 @@ class TransportProcesses:
             transform_pdb_file(self.reference_pdb_file, os.path.join(self.transformation_folder, "ref_transformed.pdb"),
                                general_transform_mat.dot(reference_tunnel_transform_mat + transform_mat2starting_point))
 
+            #for larger set of MDs, slower storage spaces takes quite long time, adding another progress bar here
+            logger.info("Saving {} transformation matrices.".format(num_folders2process))
+            progress_counter = 0
+            progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
+
             # save transformation matrices
             for md_label in self.caver_input_folders:
                 tunnel_full_trans_mat = general_transform_mat.dot(tunnel_transform_mat[md_label] +
@@ -2101,6 +2120,8 @@ class TransportProcesses:
                                                "v_origin-" + md_label + "-transformed.pdb")
                 sp_coords = read_starting_points(in_origin_file)
                 save_caver_starting_points(out_origin_file, sp_coords, tunnel_full_trans_mat)
+                progress_counter += 1
+                progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
 
             for md_label in self.aquaduct_input_folders:
                 aquaduct_full_trans_mat = general_transform_mat.dot(aquaduct_transform_mat[md_label] +
@@ -2108,6 +2129,10 @@ class TransportProcesses:
                 with open(os.path.join(self.transformation_folder, self.parameters["aquaduct_foldername"],
                                        md_label + "-transform_mat.dump"), "wb") as out:
                     pickle.dump(aquaduct_full_trans_mat, out)
+
+                progress_counter += 1
+                progressbar(progress_counter, num_folders2process, self.parameters["log_level"])
+
 
     def process_tunnel_networks(self):
         """

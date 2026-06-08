@@ -23,6 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import os
 import sys
 import numpy as np
+from dataclasses import dataclass
 from pathlib import Path
 from importlib.metadata import version, PackageNotFoundError
 from configparser import ConfigParser
@@ -34,22 +35,46 @@ from transport_tools.libs.utils import get_filepath
 logger = getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ShardContext:
+    """
+    Execution context for a config load. The launcher uses the default (is_shard=False);
+    a SLURM shard rebuild passes is_shard=True. It carries the on/off switches that depend on
+    *where* the config is being rebuilt rather than *which* parameters it holds - so validation
+    that is meaningful on the launcher but inert on a compute node can be skipped on shards.
+
+    :param is_shard: True when the config is rebuilt inside a SLURM array task (see
+        slurm._rebuild_mol_system). On a shard 'num_cpus' is inert - every compute_*_shard sizes
+        its inner pool from 'slurm_cpus_per_task', never 'num_cpus' - and the compute node's CPU
+        count is unrelated to the launcher's, so the whole num_cpus validation block is skipped to
+        avoid spuriously aborting the shard. Future shard-only switches belong here too.
+    """
+
+    is_shard: bool = False
+
+
 class AnalysisConfig:
     def __init__(self, file2load_from: str | None = None, logging: bool = True,
-                 validate_local_cpus: bool = True):
+                 context: ShardContext | None = None, active_stages: Tuple[int, int] | None = None):
         """
         Class storing the job configuration, also enables some parameter evaluation & completion
         :param file2load_from: INI file with configuration to load from
         :param logging: if logging should be set up
-        :param validate_local_cpus: whether to reject a 'num_cpus' larger than the CPU count
-            reported by this machine. True for a normal local/launcher run. SLURM shards set this
-            False: the config is rebuilt on a compute node whose CPU count is unrelated to the
-            launcher's, and 'num_cpus' is inert there anyway - every compute_*_shard sizes its
-            inner pool from 'slurm_cpus_per_task', never 'num_cpus' - so checking it against the
-            compute node's CPU count would spuriously abort the shard (see slurm._rebuild_mol_system).
+        :param context: execution context controlling where-dependent validation (see ShardContext).
+            None => a normal local/launcher run (ShardContext() with is_shard=False).
+        :param active_stages: inclusive (lo, hi) interval of pipeline stages this process will
+            actually run. Stage-scoped setups and input-existence checks whose owning stage falls
+            outside this interval are skipped (their state, when needed downstream on resume, comes
+            from the checkpoint instead - see TransportProcesses.update_configuration). None => derive
+            from 'start_from_stage'/'stop_after_stage' at config-load time (the normal launcher case,
+            i.e. validate everything the run will touch). A SLURM shard passes its single stage, e.g.
+            (4, 4), so only that stage's prerequisites are checked.
         """
 
-        self.validate_local_cpus = validate_local_cpus
+        self.context = context or ShardContext()
+        self._active_stages_override = active_stages
+        # resolved (lo, hi) interval; finalised in _load_configuration once start/stop are parsed
+        self._active_stages: Tuple[int, int] = active_stages if active_stages is not None else (1, 10)
         self.source_file = file2load_from
         self.calculations_settings = dict()
         self.output_settings = dict()
@@ -534,8 +559,38 @@ class AnalysisConfig:
 
                 config_dictionary[param_name] = param_value
 
+        self._resolve_active_stages()
         self._set_input_paths()
         self._autoactivate_functionalities(forbid_autoactivation)
+
+    def _resolve_active_stages(self):
+        """
+        Finalise the inclusive (lo, hi) interval of pipeline stages this process will run, used to
+        scope stage-specific setups and input-existence checks (see _runs_stage). An explicit
+        'active_stages' passed to __init__ wins (e.g. a SLURM shard pinning its single stage);
+        otherwise the interval is derived from the just-parsed 'start_from_stage'/'stop_after_stage'
+        so the launcher validates everything the run will actually touch.
+        """
+
+        if self._active_stages_override is not None:
+            self._active_stages = self._active_stages_override
+            return
+        lo = self.calculations_settings["start_from_stage"]
+        hi = self.calculations_settings["stop_after_stage"]
+        if hi is None:  # 'stop_after_stage' default (run to the end); 10 is the last pipeline stage
+            hi = 10
+        self._active_stages = (lo, hi)
+
+    def _runs_stage(self, *stages: int) -> bool:
+        """
+        :param stages: one or more pipeline stage numbers
+        :return: True if any of the given stages falls inside the active [lo, hi] interval, i.e. this
+                 process will actually run it. Stage-scoped work whose owning stage(s) are all outside
+                 the interval can be skipped.
+        """
+
+        lo, hi = self._active_stages
+        return any(lo <= stage <= hi for stage in stages)
 
     def _autoactivate_functionalities(self, overridden_parameters: List[str]):
         """
@@ -585,7 +640,15 @@ class AnalysisConfig:
                 p.strip() for p in self.input_paths["aquaduct_results_path"].split(",") if p.strip()
             ]
 
-        if self.input_paths["caver_relative_pdb_file"] is None:
+        # Autodetecting the CAVER PDB filename globs every CAVER data/ folder. caver_relative_pdb_file
+        # feeds the CAVER existence/parse path (stages 1-2) and the reference-structure detection, which
+        # on the launcher runs only on a fresh stage-1 run but on a shard runs for the sharded alignment
+        # stages (2 & 7, which have no checkpoint to restore the reference from). Resolve it whenever any
+        # of those will run; on a later launcher resume the live network objects already hold their pdb
+        # paths and the reference comes from the checkpoint, so the glob is skipped (see _runs_stage /
+        # update_configuration).
+        need_caver_pdb = self._runs_stage(1, 2) or (self.context.is_shard and self._runs_stage(7))
+        if self.input_paths["caver_relative_pdb_file"] is None and need_caver_pdb:
             if not self.input_paths["caver_results_path"]:
                 raise RuntimeError("\nParameter 'caver_results_path' must be defined and point to the folder with the"
                                    " data!")
@@ -675,10 +738,28 @@ class AnalysisConfig:
         if self.parameters["num_cpus"] is None:
             self._detect_set_num_cpu()
 
-        if self.parameters["pdb_reference_structure"] is None:
+        # Reference-structure autodetection globs the CAVER folders. The resolved reference is consumed
+        # by stages 1, 2 and 7 (transformations, tunnel-network and aquaduct-network alignment) and is
+        # baked into every checkpoint once resolved on the initial run. On the LAUNCHER we therefore
+        # re-derive it only on a fresh run that includes stage 1; a resume into a later stage inherits
+        # it from the checkpoint (preserved in update_configuration). A SHARD has no checkpoint, so it
+        # must self-derive the reference whenever its own stage consumes it (the sharded alignment
+        # stages 2 and 7).
+        if self.context.is_shard:
+            need_pdb_reference = self._runs_stage(2, 7)
+        else:
+            need_pdb_reference = self._runs_stage(1)
+        if self.parameters["pdb_reference_structure"] is None and need_pdb_reference:
             self._detect_set_pdb_reference_structure()
 
-        if self.parameters["snapshots_per_simulation"] is None:
+        # Snapshot autodetection opens every input trajectory - by far the most expensive setup. The
+        # value is consumed only by launcher-side stages (supercluster build/filtering and their
+        # visualisation); no sharded compute method reads it. On the LAUNCHER it is resolved on the
+        # initial run (stage 1 present) and inherited from the checkpoint on every later resume, so a
+        # resume never re-reads the trajectories. A SHARD never needs it. When the initial run does
+        # require it and it is neither given nor detectable, the original hard error still fires.
+        need_snapshots = (not self.context.is_shard) and self._runs_stage(1)
+        if self.parameters["snapshots_per_simulation"] is None and need_snapshots:
             if self.parameters["trajectory_path"] is not None:
                 self._detect_set_num_snapshots()
             else:
@@ -745,8 +826,11 @@ class AnalysisConfig:
         Tests proper values of input parameters
         """
 
-        if self.parameters["num_cpus"] is not None:
-            if self.validate_local_cpus and self.parameters["num_cpus"] > os.cpu_count():
+        # The whole num_cpus block is launcher-only: on a SLURM shard num_cpus is inert (the inner
+        # pool is sized from slurm_cpus_per_task) and this compute node's core count is unrelated to
+        # the launcher's, so none of the three checks are meaningful there (see ShardContext).
+        if not self.context.is_shard and self.parameters["num_cpus"] is not None:
+            if self.parameters["num_cpus"] > os.cpu_count():
                 raise ValueError("\nThe number of CPU({:d}) specified for parallel processing is larger than the number"
                                  " of CPU({:d}) reported as available on this computer.\n Decrease the value of "
                                  "parameter 'num_cpus'.".format(self.parameters["num_cpus"], os.cpu_count()))
@@ -931,30 +1015,17 @@ class AnalysisConfig:
         self._test_parameter_sanity("slurm_poll_wait_seconds", 1, sys.maxsize)
 
 
-        caver_paths, traj_paths, aquaduct_paths = self.get_input_folders()
-        if self.parameters["perform_comparative_analysis"] \
-                and self.parameters["comparative_groups_definition"] is not None:
-            membership = dict()
-            for group, md_labels in self.parameters["comparative_groups_definition"].items():
-                for md_label in md_labels:
-                    if md_label not in caver_paths:
-                        raise ValueError("\nFolder (pattern) '{}' specified in the group '{}' from "
-                                         "'comparative_groups_definition' parameter does not match any detected "
-                                         "input folder".format(md_label, group))
-
-                    if md_label in membership.keys() and group != membership[md_label]:
-                        raise ValueError("\nFolder (pattern) '{}' is assigned into multiple groups (at least to '{}' "
-                                         "and '{}') in 'comparative_groups_definition' "
-                                         "parameter but must be unique!".format(md_label, group, membership[md_label]))
-                    membership[md_label] = group
-
+        # The aquaduct_traced_residues_filter shape check needs no filesystem access - keep it always.
         if self.parameters["aquaduct_traced_residues_filter"] is not None:
             if not isinstance(self.parameters["aquaduct_traced_residues_filter"], list) \
                     or not self.parameters["aquaduct_traced_residues_filter"]:
                 raise ValueError("\nParameter 'aquaduct_traced_residues_filter' must be a non-empty "
                                  "comma-separated list of residue names (e.g. 'WAT, O2').")
 
-        if self.parameters["aquaduct_results_path"]:
+        # The cheap exact-matching config guards are meaningful only when event assignment (stage 9)
+        # will actually run; skip them otherwise so a tunnels-only rerun is not constrained by event
+        # parameters it never reaches.
+        if self._runs_stage(9) and self.parameters["aquaduct_results_path"]:
             if self.parameters["visualize_exact_matching_outcomes"] \
                     and not self.parameters["perform_exact_matching_analysis"]:
                 logger.warning("\nUse of 'visualize_exact_matching_outcomes = True' has no effect when "
@@ -967,30 +1038,59 @@ class AnalysisConfig:
                                  "trajectories specified by 'trajectory_path' parameter. PLEASE, consider consulting "
                                  "the user guide.")
 
-            # we need to have corresponding caver and trajectory data for each aquaduct data otherwise exact analyses/matching will not work!
-            all_aquaduct_md_labels = sorted({md for mds in aquaduct_paths.values() for md in mds})
-            exact_matching_data_mismatch = list()
-            for path2assign in all_aquaduct_md_labels:
-                if path2assign not in caver_paths or path2assign not in traj_paths:
-                    exact_matching_data_mismatch.append(path2assign)
-            exact_matching_data_coverage = int((len(all_aquaduct_md_labels) - len(exact_matching_data_mismatch)) * 100 /
-                                               len(all_aquaduct_md_labels))
+        # The comparative-group membership check and the exact-matching data-coverage warnings both
+        # walk the input folders via get_input_folders(); each is only meaningful for the stage(s)
+        # that consume that result - comparative output (5-6, 9-10) and event assignment / exact
+        # matching (9). Skip the glob entirely when neither will run for this invocation.
+        check_comparative = (self._runs_stage(5, 6, 9, 10)
+                             and self.parameters["perform_comparative_analysis"]
+                             and self.parameters["comparative_groups_definition"] is not None)
+        check_exact_matching = self._runs_stage(9) and bool(self.parameters["aquaduct_results_path"])
 
-            if self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching" \
-                    and exact_matching_data_coverage < 90:
-                logger.warning("\nUsing 'exact_matching' for 'ambiguous_event_assignment_resolution' with low coverage "
-                               "({:d}%) by matching tunnel data will result to a large number of events assigned among "
-                               "outliers. PLEASE, consider consulting "
-                               "the user guide.".format(exact_matching_data_coverage))
+        if check_comparative or check_exact_matching:
+            caver_paths, traj_paths, aquaduct_paths = self.get_input_folders()
 
-            if not self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching" \
-                    and self.parameters["stop_after_stage"] >= 8 \
-                    and exact_matching_data_coverage >= 90:
-                logger.warning("\nSince it seems that source MD trajectories as well as tunnel data (tunnel data "
-                               "coverage = {:d}%) are available,\n consider using 'exact_matching' for "
-                               "'ambiguous_event_assignment_resolution' parameter to provide the most reliable "
-                               "assignment of events to supercluster at a cost of only mild increase in "
-                               "computation time.".format(exact_matching_data_coverage))
+            if check_comparative:
+                membership = dict()
+                for group, md_labels in self.parameters["comparative_groups_definition"].items():
+                    for md_label in md_labels:
+                        if md_label not in caver_paths:
+                            raise ValueError("\nFolder (pattern) '{}' specified in the group '{}' from "
+                                             "'comparative_groups_definition' parameter does not match any detected "
+                                             "input folder".format(md_label, group))
+
+                        if md_label in membership.keys() and group != membership[md_label]:
+                            raise ValueError("\nFolder (pattern) '{}' is assigned into multiple groups (at least to "
+                                             "'{}' and '{}') in 'comparative_groups_definition' "
+                                             "parameter but must be unique!".format(md_label, group,
+                                                                                    membership[md_label]))
+                        membership[md_label] = group
+
+            if check_exact_matching:
+                # we need to have corresponding caver and trajectory data for each aquaduct data otherwise exact analyses/matching will not work!
+                all_aquaduct_md_labels = sorted({md for mds in aquaduct_paths.values() for md in mds})
+                exact_matching_data_mismatch = list()
+                for path2assign in all_aquaduct_md_labels:
+                    if path2assign not in caver_paths or path2assign not in traj_paths:
+                        exact_matching_data_mismatch.append(path2assign)
+                exact_matching_data_coverage = int((len(all_aquaduct_md_labels) - len(exact_matching_data_mismatch))
+                                                   * 100 / len(all_aquaduct_md_labels))
+
+                if self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching" \
+                        and exact_matching_data_coverage < 90:
+                    logger.warning("\nUsing 'exact_matching' for 'ambiguous_event_assignment_resolution' with low "
+                                   "coverage ({:d}%) by matching tunnel data will result to a large number of events "
+                                   "assigned among outliers. PLEASE, consider consulting "
+                                   "the user guide.".format(exact_matching_data_coverage))
+
+                if not self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching" \
+                        and self.parameters["stop_after_stage"] >= 8 \
+                        and exact_matching_data_coverage >= 90:
+                    logger.warning("\nSince it seems that source MD trajectories as well as tunnel data (tunnel data "
+                                   "coverage = {:d}%) are available,\n consider using 'exact_matching' for "
+                                   "'ambiguous_event_assignment_resolution' parameter to provide the most reliable "
+                                   "assignment of events to supercluster at a cost of only mild increase in "
+                                   "computation time.".format(exact_matching_data_coverage))
 
     def _test_input_data(self):
         """
@@ -1038,59 +1138,74 @@ class AnalysisConfig:
                                  "AQUA-DUCT summary file have to be specified through "
                                  "the 'aquaduct_results_relative_summaryfile' parameter")
 
-        caver_paths, traj_paths, aquaduct_paths = self.get_input_folders()
+        # Each filesystem-existence sweep is scoped to the stage(s) that consume that input: CAVER
+        # data is read by stages 1-2, MD trajectories by parsing/alignment (2) and exact matching (9),
+        # AQUA-DUCT archives by stage 7. On a resume past those stages the data is already parsed into
+        # the checkpoint, so the (often large) input trees are not re-walked here - and input archived
+        # or moved after parsing no longer spuriously fails a late-stage rerun. The cheap
+        # parameter-presence guards above stay unconditional; get_input_folders() (the actual glob) is
+        # only invoked when at least one sweep below will run.
+        test_caver = self._runs_stage(1, 2)
+        test_trajectory = self._runs_stage(2, 9) and bool(self.parameters["trajectory_path"])
+        test_aquaduct = self._runs_stage(7) and bool(self.parameters["aquaduct_results_path"])
 
-        # testing inputs of essential CAVER data
-        if not caver_paths:
-            parameters2check = ("caver_results_path", "caver_results_folder_pattern")
-            raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in {}! Please check if '{}' "
-                                    "parameters are defined "
-                                    "correctly".format(self.parameters["caver_results_folder_pattern"],
-                                                       self.parameters["caver_results_path"], parameters2check))
-        caver_keys2test = ["caver_relative_profile_file", "caver_relative_origin_file", "caver_relative_pdb_file"]
-        missing_file_reports = self._test_input_files(caver_paths, caver_keys2test,
-                                                      root_folder=self.parameters["caver_results_path"])
-        if missing_file_reports:
-            raise FileNotFoundError(missing_file_reports)
+        if test_caver or test_trajectory or test_aquaduct:
+            caver_paths, traj_paths, aquaduct_paths = self.get_input_folders()
 
-        if self.parameters["process_bottleneck_residues"]:
-            missing_file_reports = self._test_input_files(caver_paths, ["caver_relative_bottleneck_file"],
-                                                          root_folder=self.parameters["caver_results_path"])
-            if missing_file_reports:
-                missing_file_reports += "\n\nAlternatively, if the file(s) should not be processed, " \
-                                        "set 'process_bottleneck_residues' parameter to 'False'\n"
-                raise FileNotFoundError(missing_file_reports)
+            # testing inputs of essential CAVER data
+            if test_caver:
+                if not caver_paths:
+                    parameters2check = ("caver_results_path", "caver_results_folder_pattern")
+                    raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in {}! Please check if "
+                                            "'{}' parameters are defined "
+                                            "correctly".format(self.parameters["caver_results_folder_pattern"],
+                                                               self.parameters["caver_results_path"], parameters2check))
+                caver_keys2test = ["caver_relative_profile_file", "caver_relative_origin_file",
+                                   "caver_relative_pdb_file"]
+                missing_file_reports = self._test_input_files(caver_paths, caver_keys2test,
+                                                              root_folder=self.parameters["caver_results_path"])
+                if missing_file_reports:
+                    raise FileNotFoundError(missing_file_reports)
 
-        if self.parameters["trajectory_path"]:
-            # test presence of trajectory data
-            traj_keys2test = ["trajectory_relative_file", "topology_relative_file"]
-            if not traj_paths:
-                parameters2check = ("trajectory_path", "trajectory_folder_pattern")
-                raise FileNotFoundError("\nNo folders matching pattern '{}' were found in {}! Please check if '{}' "
-                                        "parameters are defined "
-                                        "correctly".format(self.parameters["trajectory_folder_pattern"],
-                                                           self.parameters["trajectory_path"], parameters2check))
+                if self.parameters["process_bottleneck_residues"]:
+                    missing_file_reports = self._test_input_files(caver_paths, ["caver_relative_bottleneck_file"],
+                                                                  root_folder=self.parameters["caver_results_path"])
+                    if missing_file_reports:
+                        missing_file_reports += "\n\nAlternatively, if the file(s) should not be processed, " \
+                                                "set 'process_bottleneck_residues' parameter to 'False'\n"
+                        raise FileNotFoundError(missing_file_reports)
 
-            missing_file_reports = self._test_input_files(traj_paths, traj_keys2test,
-                                                          root_folder=self.parameters["trajectory_path"])
-            if missing_file_reports:
-                raise FileNotFoundError(missing_file_reports)
+            if test_trajectory:
+                # test presence of trajectory data
+                traj_keys2test = ["trajectory_relative_file", "topology_relative_file"]
+                if not traj_paths:
+                    parameters2check = ("trajectory_path", "trajectory_folder_pattern")
+                    raise FileNotFoundError("\nNo folders matching pattern '{}' were found in {}! Please check if '{}' "
+                                            "parameters are defined "
+                                            "correctly".format(self.parameters["trajectory_folder_pattern"],
+                                                               self.parameters["trajectory_path"], parameters2check))
 
-        if self.parameters["aquaduct_results_path"]:
-            # test presence of AQUA-DUCT data
-            aquaduct_keys2test = ["aquaduct_results_relative_tarfile", "aquaduct_results_relative_summaryfile"]
-            if not any(aquaduct_paths.values()):
-                parameters2check = ("aquaduct_results_path", "aquaduct_results_folder_pattern")
-                raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in any of {}! Please check if"
-                                        " '{}' parameters are defined "
-                                        "correctly".format(self.parameters["aquaduct_results_folder_pattern"],
-                                                           self.parameters["aquaduct_results_path"], parameters2check))
+                missing_file_reports = self._test_input_files(traj_paths, traj_keys2test,
+                                                              root_folder=self.parameters["trajectory_path"])
+                if missing_file_reports:
+                    raise FileNotFoundError(missing_file_reports)
 
-            missing_file_reports = ""
-            for root_path, md_labels in aquaduct_paths.items():
-                missing_file_reports += self._test_input_files(md_labels, aquaduct_keys2test, root_folder=root_path)
-            if missing_file_reports:
-                raise FileNotFoundError(missing_file_reports)
+            if test_aquaduct:
+                # test presence of AQUA-DUCT data
+                aquaduct_keys2test = ["aquaduct_results_relative_tarfile", "aquaduct_results_relative_summaryfile"]
+                if not any(aquaduct_paths.values()):
+                    parameters2check = ("aquaduct_results_path", "aquaduct_results_folder_pattern")
+                    raise FileNotFoundError("\nNo folders matching pattern '{}' can be found in any of {}! Please check "
+                                            "if '{}' parameters are defined "
+                                            "correctly".format(self.parameters["aquaduct_results_folder_pattern"],
+                                                               self.parameters["aquaduct_results_path"],
+                                                               parameters2check))
+
+                missing_file_reports = ""
+                for root_path, md_labels in aquaduct_paths.items():
+                    missing_file_reports += self._test_input_files(md_labels, aquaduct_keys2test, root_folder=root_path)
+                if missing_file_reports:
+                    raise FileNotFoundError(missing_file_reports)
 
         if self.parameters["visualize_comparative_super_cluster_volumes"]:
             if not self.parameters["visualize_super_cluster_volumes"]:

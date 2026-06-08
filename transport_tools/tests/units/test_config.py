@@ -24,7 +24,7 @@ from configparser import ConfigParser
 from unittest.mock import patch, MagicMock
 from logging import getLogger
 
-from transport_tools.libs.config import AnalysisConfig
+from transport_tools.libs.config import AnalysisConfig, ShardContext
 
 from transport_tools.tests.units.data.data_config import (
     minimal_config_content,
@@ -946,22 +946,21 @@ class TestSlurmRootFolderDefault(unittest.TestCase):
 
 
 class TestNumCpusLocalValidation(unittest.TestCase):
-    """The num_cpus > os.cpu_count() check is guarded by the validate_local_cpus flag.
+    """The whole num_cpus validation block is gated by the execution context (ShardContext).
 
-    On a normal/launcher run (validate_local_cpus=True, the default) an over-subscribed
-    num_cpus is rejected. SLURM shards rebuild the config on a compute node whose CPU count
-    is unrelated to the launcher's - and where num_cpus is inert (the inner pool is sized
-    from slurm_cpus_per_task) - so they pass validate_local_cpus=False to skip the check
+    On a normal/launcher run (is_shard=False, the default) an over-subscribed num_cpus is
+    rejected. SLURM shards rebuild the config on a compute node whose CPU count is unrelated
+    to the launcher's - and where num_cpus is inert (the inner pool is sized from
+    slurm_cpus_per_task) - so they pass ShardContext(is_shard=True) to skip the block entirely
     and avoid spuriously aborting (see slurm._rebuild_mol_system)."""
 
-    def _make_config(self, validate_local_cpus):
+    def _make_config(self, context):
         """Assemble a fully-populated, otherwise-valid parameters dict from the shipped
         defaults, overriding only the handful that default to None, then set num_cpus well
         above this machine's reported core count. get_input_folders() (the filesystem-walking
         tail of _validate_parameter_values) is stubbed so the test stays hermetic."""
 
-        config = AnalysisConfig(file2load_from=None, logging=False,
-                                validate_local_cpus=validate_local_cpus)
+        config = AnalysisConfig(file2load_from=None, logging=False, context=context)
         config.parameters = {}
         for section in (config.calculations_settings, config.output_settings,
                         config.input_paths, config.output_paths,
@@ -973,21 +972,293 @@ class TestNumCpusLocalValidation(unittest.TestCase):
         return config
 
     def test_oversubscribed_num_cpus_rejected_by_default(self):
-        config = self._make_config(validate_local_cpus=True)
+        config = self._make_config(context=ShardContext(is_shard=False))
         with patch.object(config, "get_input_folders", return_value=({}, {}, {})):
             with self.assertRaises(ValueError) as cm:
                 config._validate_parameter_values()
         self.assertIn("num_cpus", str(cm.exception))
 
     def test_oversubscribed_num_cpus_allowed_in_shard_context(self):
-        config = self._make_config(validate_local_cpus=False)
+        config = self._make_config(context=ShardContext(is_shard=True))
         with patch.object(config, "get_input_folders", return_value=({}, {}, {})):
-            # must not raise: num_cpus is inert in a shard, so the local-CPU check is skipped
+            # must not raise: num_cpus is inert in a shard, so the whole block is skipped
             config._validate_parameter_values()
 
-    def test_flag_defaults_to_true(self):
+    def test_context_defaults_to_launcher(self):
         config = AnalysisConfig(file2load_from=None, logging=False)
-        self.assertTrue(config.validate_local_cpus)
+        self.assertFalse(config.context.is_shard)
+
+
+def _populated_config(active_stages=(1, 10), is_shard=False, **overrides):
+    """Build a fileless config with a fully-populated parameters dict (every section's defaults),
+    a pinned active-stage interval and execution context, then apply per-test overrides. Mirrors
+    the assembly used by TestNumCpusLocalValidation so the stage-scoped methods can be invoked in
+    isolation without touching the filesystem."""
+
+    config = AnalysisConfig(file2load_from=None, logging=False,
+                            context=ShardContext(is_shard=is_shard))
+    config._active_stages = active_stages
+    config.parameters = {}
+    for section in (config.calculations_settings, config.output_settings,
+                    config.input_paths, config.output_paths,
+                    config.advanced_settings, config.internal_settings):
+        config.parameters.update(section)
+    config.parameters.update(overrides)
+    return config
+
+
+class TestRunsStagePredicate(unittest.TestCase):
+    """_runs_stage(*stages) is True iff any given stage falls inside the active [lo, hi] interval."""
+
+    def _config(self, active_stages):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config._active_stages = active_stages
+        return config
+
+    def test_full_run_matches_every_stage(self):
+        config = self._config((1, 10))
+        for stage in range(1, 11):
+            self.assertTrue(config._runs_stage(stage))
+        self.assertTrue(config._runs_stage(1, 2))
+        self.assertTrue(config._runs_stage(7))
+
+    def test_resume_interval_excludes_earlier_stages(self):
+        config = self._config((5, 10))
+        self.assertFalse(config._runs_stage(1))
+        self.assertFalse(config._runs_stage(1, 2))
+        self.assertTrue(config._runs_stage(5))
+        self.assertTrue(config._runs_stage(2, 9))  # 9 is in range even though 2 is not
+
+    def test_single_stage_shard_interval(self):
+        config = self._config((4, 4))
+        self.assertTrue(config._runs_stage(4))
+        self.assertTrue(config._runs_stage(2, 4))
+        self.assertFalse(config._runs_stage(1))
+        self.assertFalse(config._runs_stage(2, 7))
+
+    def test_any_semantics(self):
+        config = self._config((3, 3))
+        self.assertTrue(config._runs_stage(1, 3, 9))
+        self.assertFalse(config._runs_stage(1, 2, 9))
+
+
+class TestResolveActiveStages(unittest.TestCase):
+    """_resolve_active_stages derives (lo, hi) from start/stop unless an explicit override is given."""
+
+    def test_derives_from_start_and_stop(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.calculations_settings["start_from_stage"] = 3
+        config.calculations_settings["stop_after_stage"] = 6
+        config._active_stages_override = None
+        config._resolve_active_stages()
+        self.assertEqual((3, 6), config._active_stages)
+
+    def test_unset_stop_defaults_to_last_stage(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.calculations_settings["start_from_stage"] = 1
+        config.calculations_settings["stop_after_stage"] = None
+        config._active_stages_override = None
+        config._resolve_active_stages()
+        self.assertEqual((1, 10), config._active_stages)
+
+    def test_explicit_override_wins(self):
+        config = AnalysisConfig(file2load_from=None, logging=False)
+        config.calculations_settings["start_from_stage"] = 1
+        config.calculations_settings["stop_after_stage"] = 10
+        config._active_stages_override = (4, 4)
+        config._resolve_active_stages()
+        self.assertEqual((4, 4), config._active_stages)
+
+
+class TestAutocompleteScoping(unittest.TestCase):
+    """The expensive autodetect setups are scoped: reference-structure detection (CAVER glob) and
+    snapshot detection (reads every trajectory) only fire when actually needed for the active
+    stages and execution context."""
+
+    def _run(self, active_stages, is_shard):
+        config = _populated_config(active_stages=active_stages, is_shard=is_shard,
+                                   num_cpus=2, pdb_reference_structure=None,
+                                   snapshots_per_simulation=None, trajectory_path="/traj")
+        with patch.object(config, "_detect_set_pdb_reference_structure") as pdb_mock, \
+                patch.object(config, "_detect_set_num_snapshots") as snap_mock:
+            config._autocomplete_parameters()
+        return pdb_mock.called, snap_mock.called
+
+    def test_launcher_full_run_detects_both(self):
+        pdb, snap = self._run((1, 10), is_shard=False)
+        self.assertTrue(pdb)
+        self.assertTrue(snap)
+
+    def test_launcher_resume_detects_neither(self):
+        pdb, snap = self._run((5, 10), is_shard=False)
+        self.assertFalse(pdb)
+        self.assertFalse(snap)
+
+    def test_launcher_initial_partial_run_still_detects(self):
+        # stage 1 present => initial fresh run => both values are resolved and baked into the checkpoint
+        pdb, snap = self._run((1, 4), is_shard=False)
+        self.assertTrue(pdb)
+        self.assertTrue(snap)
+
+    def test_shard_alignment_stage_detects_reference_only(self):
+        for stage in (2, 7):
+            pdb, snap = self._run((stage, stage), is_shard=True)
+            self.assertTrue(pdb, "stage %d shard should self-derive the reference" % stage)
+            self.assertFalse(snap, "no shard consumes snapshots_per_simulation")
+
+    def test_shard_non_alignment_stage_detects_neither(self):
+        for stage in (3, 4, 8, 9):
+            pdb, snap = self._run((stage, stage), is_shard=True)
+            self.assertFalse(pdb, "stage %d shard does not consume the reference" % stage)
+            self.assertFalse(snap)
+
+    def test_snapshot_detection_skipped_does_not_raise_without_trajectory(self):
+        # resume scope with neither snapshots nor trajectory access must not raise (value comes from
+        # the checkpoint), whereas the initial run would still demand it
+        config = _populated_config(active_stages=(5, 10), num_cpus=2,
+                                   pdb_reference_structure="/ref.pdb",
+                                   snapshots_per_simulation=None, trajectory_path=None)
+        config._autocomplete_parameters()  # must not raise
+
+    def test_initial_run_without_snapshots_or_trajectory_raises(self):
+        config = _populated_config(active_stages=(1, 10), num_cpus=2,
+                                   pdb_reference_structure="/ref.pdb",
+                                   snapshots_per_simulation=None, trajectory_path=None)
+        with self.assertRaises(RuntimeError):
+            config._autocomplete_parameters()
+
+
+class TestInputDataScoping(unittest.TestCase):
+    """_test_input_data only walks the input trees for stages that will actually run; the
+    get_input_folders() glob is not even invoked when no in-range stage consumes the data."""
+
+    def _config(self, active_stages, is_shard=False, **overrides):
+        params = dict(
+            caver_results_path="/caver", caver_results_folder_pattern="*",
+            caver_results_relative_subfolder_path="sub", pdb_reference_structure=None,
+            trajectory_path="/traj", trajectory_folder_pattern="*",
+            topology_relative_file="top.pdb", trajectory_relative_file="traj.xtc",
+            aquaduct_results_path=["/aq"], aquaduct_results_folder_pattern="*",
+            aquaduct_results_relative_tarfile="t.tar.gz", aquaduct_results_relative_summaryfile="s.txt",
+            process_bottleneck_residues=False, visualize_comparative_super_cluster_volumes=False,
+        )
+        params.update(overrides)
+        return _populated_config(active_stages=active_stages, is_shard=is_shard, **params)
+
+    def _run(self, config):
+        folders = (["md1"], ["md1"], {"/aq": ["md1"]})
+        with patch.object(config, "get_input_folders", return_value=folders) as gif, \
+                patch.object(config, "_test_input_files", return_value="") as tif:
+            config._test_input_data()
+        return gif, tif
+
+    def test_full_run_walks_all_trees(self):
+        gif, tif = self._run(self._config((1, 10)))
+        self.assertTrue(gif.called)
+        self.assertTrue(tif.called)
+
+    def test_resume_without_consuming_stage_skips_glob(self):
+        # stages 5-6 consume no input tree (CAVER 1-2, trajectory 2/9, AQUA-DUCT 7)
+        gif, tif = self._run(self._config((5, 6)))
+        self.assertFalse(gif.called)
+        self.assertFalse(tif.called)
+
+    def test_mid_pipeline_resume_skips_glob(self):
+        gif, tif = self._run(self._config((3, 4)))
+        self.assertFalse(gif.called)
+        self.assertFalse(tif.called)
+
+    def test_distance_shard_skips_glob(self):
+        gif, tif = self._run(self._config((4, 4), is_shard=True))
+        self.assertFalse(gif.called)
+        self.assertFalse(tif.called)
+
+    def test_tunnel_network_shard_walks_caver_and_trajectory(self):
+        gif, tif = self._run(self._config((2, 2), is_shard=True))
+        self.assertTrue(gif.called)
+        # caver (stage 1-2) and trajectory (stage 2) sweeps run; AQUA-DUCT (stage 7) does not
+        tested_roots = {call.kwargs.get("root_folder", call.args[2] if len(call.args) > 2 else None)
+                        for call in tif.call_args_list}
+        self.assertIn("/caver", tested_roots)
+        self.assertIn("/traj", tested_roots)
+        self.assertNotIn("/aq", tested_roots)
+
+    def test_aquaduct_shard_walks_only_aquaduct(self):
+        gif, tif = self._run(self._config((7, 7), is_shard=True))
+        self.assertTrue(gif.called)
+        tested_roots = {call.kwargs.get("root_folder", call.args[2] if len(call.args) > 2 else None)
+                        for call in tif.call_args_list}
+        self.assertIn("/aq", tested_roots)
+        self.assertNotIn("/caver", tested_roots)
+
+
+class TestValidateLazyInputFolders(unittest.TestCase):
+    """The comparative-group and exact-matching coverage checks in _validate_parameter_values walk
+    the input folders; get_input_folders() is only invoked when an in-range stage needs the result."""
+
+    def _config(self, active_stages, **overrides):
+        params = dict(num_cpus=2, snapshots_per_simulation=100, stop_after_stage=10,
+                      start_from_stage=active_stages[0])
+        params.update(overrides)
+        return _populated_config(active_stages=active_stages, **params)
+
+    def test_event_stage_in_range_triggers_glob(self):
+        config = self._config((1, 10), aquaduct_results_path=["/aq"])
+        with patch.object(config, "get_input_folders",
+                          return_value=(["md1"], ["md1"], {"/aq": ["md1"]})) as gif:
+            config._validate_parameter_values()
+        self.assertTrue(gif.called)
+
+    def test_tunnels_only_run_skips_glob(self):
+        config = self._config((1, 6), aquaduct_results_path=["/aq"])
+        with patch.object(config, "get_input_folders",
+                          return_value=(["md1"], ["md1"], {"/aq": ["md1"]})) as gif:
+            config._validate_parameter_values()
+        self.assertFalse(gif.called)
+
+    def test_no_aquaduct_no_comparative_skips_glob(self):
+        config = self._config((1, 10), aquaduct_results_path=None,
+                              perform_comparative_analysis=False)
+        with patch.object(config, "get_input_folders",
+                          return_value=([], [], {})) as gif:
+            config._validate_parameter_values()
+        self.assertFalse(gif.called)
+
+
+class TestPreserveAutodetectedOnResume(unittest.TestCase):
+    """TransportProcesses.update_configuration preserves auto-detected setup values from the previous
+    run when the freshly scoped config left them unset (a resume skips re-detecting them), and lets a
+    genuinely changed value win."""
+
+    def _apply(self, old_params, new_overrides):
+        from types import SimpleNamespace
+        from transport_tools.libs.tools import TransportProcesses
+
+        new_config = _populated_config()
+        new_config.parameters.update(new_overrides)
+        fake_self = SimpleNamespace(parameters=dict(old_params),
+                                    _outlier_transport_events=SimpleNamespace(parameters={}),
+                                    _super_clusters={})
+        with patch.object(new_config, "get_input_folders", return_value=([], [], {})):
+            TransportProcesses.update_configuration(fake_self, new_config)
+        return fake_self
+
+    def test_unset_values_are_preserved(self):
+        old = {"snapshots_per_simulation": 100, "pdb_reference_structure": "/ref.pdb", "num_cpus": 8}
+        fake_self = self._apply(old, {"snapshots_per_simulation": None,
+                                      "pdb_reference_structure": None, "num_cpus": None})
+        self.assertEqual(100, fake_self.parameters["snapshots_per_simulation"])
+        self.assertEqual("/ref.pdb", fake_self.parameters["pdb_reference_structure"])
+        self.assertEqual(8, fake_self.parameters["num_cpus"])
+        self.assertEqual("/ref.pdb", fake_self.reference_pdb_file)
+
+    def test_changed_value_wins(self):
+        old = {"snapshots_per_simulation": 100, "pdb_reference_structure": "/ref.pdb", "num_cpus": 8}
+        fake_self = self._apply(old, {"snapshots_per_simulation": 200,
+                                      "pdb_reference_structure": "/new.pdb", "num_cpus": None})
+        self.assertEqual(200, fake_self.parameters["snapshots_per_simulation"])
+        self.assertEqual("/new.pdb", fake_self.parameters["pdb_reference_structure"])
+        self.assertEqual(8, fake_self.parameters["num_cpus"])  # unset => preserved
 
 
 if __name__ == '__main__':

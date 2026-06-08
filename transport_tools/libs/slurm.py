@@ -293,6 +293,11 @@ class SlurmShardStage(ABC):
     stage_name: str = "stage"
     #: SLURM job name (also the prefix of submitit's per-task log files)
     job_name: str = "tt_stage"
+    #: pipeline stage number this shard executes (e.g. 4 for the distance stage). Passed to the
+    #: rebuilt config as active_stages=(stage_number, stage_number) so the shard only validates and
+    #: sets up the prerequisites of its own stage (see AnalysisConfig._runs_stage). Subclasses MUST
+    #: override; None means "unset" and would scope the rebuild to no stage.
+    stage_number: int | None = None
 
     items_filename: str = "items.json"
 
@@ -1439,7 +1444,7 @@ def cleanup_stage_folder(stage: SlurmShardStage, parameters: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _rebuild_mol_system(config_file: str):
+def _rebuild_mol_system(config_file: str, stage_number: int | None = None):
     """
     Boilerplate shared by every SLURM shard's `run_shard()` entry point: pin the multiprocessing
     start method to spawn (so the inner Pool the shard's compute_* method will construct does not
@@ -1448,6 +1453,11 @@ def _rebuild_mol_system(config_file: str):
     launched by srun and does not inherit the launcher's start-method choice, so the spawn pin
     must happen here even though the launcher already ran it.
     :param config_file: path to the INI configuration file of the analysis
+    :param stage_number: pipeline stage this shard executes (cls.stage_number). The config is rebuilt
+        with active_stages=(stage_number, stage_number) so only that stage's prerequisites are set up
+        and validated - the shard does not re-walk input trees or re-detect setup values for stages it
+        will not run (see AnalysisConfig._runs_stage). None scopes to no stage (used only by callers
+        with no stage-specific prerequisites).
     :return: (AnalysisConfig, TransportProcesses) - the config is returned alongside the
              TransportProcesses so callers can also read out the per-stage SLURM folder, etc.
     """
@@ -1455,14 +1465,17 @@ def _rebuild_mol_system(config_file: str):
     from transport_tools.libs.utils import configure_multiprocessing_start_method
     configure_multiprocessing_start_method()
 
-    from transport_tools.libs.config import AnalysisConfig
+    from transport_tools.libs.config import AnalysisConfig, ShardContext
     from transport_tools.libs.tools import TransportProcesses
 
-    # validate_local_cpus=False: this rebuild runs on a SLURM compute node whose CPU count is
-    # unrelated to the launcher's, and num_cpus is inert in a shard (the inner pool is sized from
-    # slurm_cpus_per_task). Validating num_cpus against this node's os.cpu_count() would otherwise
-    # abort the shard whenever num_cpus exceeds the compute node's core count.
-    config = AnalysisConfig(config_file, logging=False, validate_local_cpus=False)
+    # is_shard=True: this rebuild runs on a SLURM compute node whose CPU count is unrelated to the
+    # launcher's, and num_cpus is inert in a shard (the inner pool is sized from slurm_cpus_per_task).
+    # The shard context skips the launcher-only num_cpus validation block that would otherwise abort
+    # the shard whenever num_cpus exceeds the compute node's core count. active_stages pins the rebuild
+    # to this shard's single stage so its setup/validation is scoped to that stage alone.
+    active_stages = None if stage_number is None else (stage_number, stage_number)
+    config = AnalysisConfig(config_file, logging=False, context=ShardContext(is_shard=True),
+                            active_stages=active_stages)
     return config, TransportProcesses(config)
 
 
@@ -1500,6 +1513,7 @@ class TunnelNetworksShardStage(SlurmShardStage):
 
     folder_name = "stage02_tunnel_networks"
     stage_name = "tunnel-networks"
+    stage_number = 2
     job_name = "tt_tunnel_networks"
     # workers write `<md_label>_caver.dump` to `orig_caver_network_data_path` AND, when
     # visualize_transformed_tunnels=True, per-md_label visualisation files (transformed PDB +
@@ -1548,7 +1562,7 @@ class TunnelNetworksShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        _config, mol_system = _rebuild_mol_system(config_file)
+        _config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         return mol_system.compute_tunnel_networks_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
@@ -1690,6 +1704,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
 
     folder_name = "stage03_tunnel_layering"
     stage_name = "tunnel-layering"
+    stage_number = 3
     job_name = "tt_tunnel_layering"
     # workers write per-cluster .py + per-layer node PDBs into the visualisation folder when
     # visualize_layered_clusters=True; the SLURM helper backs these up to a sidecar tar.gz so
@@ -1740,7 +1755,7 @@ class TunnelLayeringShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        _config, mol_system = _rebuild_mol_system(config_file)
+        _config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         return mol_system.compute_tunnel_layering_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
@@ -1857,6 +1872,7 @@ class DistanceShardStage(SlurmShardStage):
 
     folder_name = "stage04_distances"
     stage_name = "distance"
+    stage_number = 4
     job_name = "tt_distances"
     # heuristic granularity when auto-deriving the shard count: aim for ~20000 cluster pairs
     # per shard (cluster-cluster comparisons are cheap individually but plentiful for large
@@ -1884,7 +1900,7 @@ class DistanceShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        config, mol_system = _rebuild_mol_system(config_file)
+        config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         results = mol_system.compute_distance_shard(num_shards, shard_id)
 
         # write the per-shard (K, 3) float64 array atomically (tmp + os.replace)
@@ -1951,6 +1967,7 @@ class AquaductNetworksShardStage(SlurmShardStage):
 
     folder_name = "stage07_aquaduct_networks"
     stage_name = "aquaduct-networks"
+    stage_number = 7
     job_name = "tt_aquaduct_networks"
     # workers write `<md_label>_aqua.dump` to `orig_aquaduct_network_data_path` AND, when
     # visualize_transformed_transport_events=True, per-md_label visualisation files (transformed
@@ -2003,7 +2020,7 @@ class AquaductNetworksShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        _config, mol_system = _rebuild_mol_system(config_file)
+        _config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         return mol_system.compute_aquaduct_networks_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
@@ -2149,6 +2166,7 @@ class AquaductLayeringShardStage(SlurmShardStage):
 
     folder_name = "stage08_aquaduct_layering"
     stage_name = "aquaduct-layering"
+    stage_number = 8
     job_name = "tt_aquaduct_layering"
     # workers write per-event .py + per-layer node PDBs into the visualisation folder
     # unconditionally; the SLURM helper backs these up to a sidecar tar.gz so they can be
@@ -2199,7 +2217,7 @@ class AquaductLayeringShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        _config, mol_system = _rebuild_mol_system(config_file)
+        _config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         return mol_system.compute_aquaduct_layering_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
@@ -2346,6 +2364,7 @@ class EventAssignmentShardStage(SlurmShardStage):
 
     folder_name = "stage09_event_assignment"
     stage_name = "event-assignment"
+    stage_number = 9
     job_name = "tt_event_assignment"
     # filename of the per-shard-state artifact that holds (super_clusters, active_filters);
     # written by the launcher in `prepare_state()`, read by every shard in `load_state()`
@@ -2392,7 +2411,7 @@ class EventAssignmentShardStage(SlurmShardStage):
 
     @classmethod
     def run_shard(cls, config_file: str, num_shards: int, shard_id: int) -> int:
-        _config, mol_system = _rebuild_mol_system(config_file)
+        _config, mol_system = _rebuild_mol_system(config_file, cls.stage_number)
         return mol_system.compute_event_assignment_shard(num_shards, shard_id)
 
     def fingerprint(self, parameters: dict, num_shards: int) -> dict:
