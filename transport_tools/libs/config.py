@@ -1563,7 +1563,7 @@ class AnalysisConfig:
                     if name in commentaries.keys():
                         out_stream.write("{}\n".format(commentaries[name]))
                     if not name.startswith("caver_relative_") and name not in self.legacy_params :  # these are autocompleted here or legacy => do not show to users
-                        if name in self.float_params:
+                        if name in self.float_params and value is not None:
                             out_stream.write("{} = {:.2f}\n".format(name, value))
                         else:
                             out_stream.write("{} = {}\n".format(name, value))

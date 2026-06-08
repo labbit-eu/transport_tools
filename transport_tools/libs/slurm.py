@@ -738,6 +738,64 @@ _SQUEUE_MISS_GRACE_S = 5.0
 #: submission-time backstop rather than false-abandoning anything.
 _SQUEUE_PROBE_TIMEOUT_S = 30.0
 
+#: Hard cap on the number of element ids a single bracketed squeue token may expand to. A
+#: well-formed `jobid_[a-b]` range is bounded by the cluster's MaxArraySize (typically <= a few
+#: thousand), but a corrupt squeue line must not make `_expand_squeue_array_ids` allocate an
+#: unbounded set; past the cap we keep the raw token only (still correct - it just won't match
+#: per-element ids, which degrades to the pre-expansion behaviour for that one pathological row).
+_SQUEUE_ARRAY_EXPANSION_CAP = 100000
+
+
+def _expand_squeue_array_ids(token: str) -> set:
+    """
+    Expand one `squeue -o %i` id token into the set of concrete job-id strings it represents.
+
+    SLURM collapses still-PENDING elements of an array job into a single bracketed row, e.g.
+    `347_[2-199]` (and on a throttled array, `347_[2-199%10]`, or a sparse `347_[1,3,5-9]`),
+    while elements that have already started show individually as `347_2`, `347_3`, ...
+    submitit's per-task `Job.job_id` is always the concrete element form (`347_2`), so a raw
+    string match against the collapsed row would miss every pending element and make `_poll_jobs`
+    false-abandon perfectly-queued shards. Expanding the bracket here lets both forms resolve to
+    the same `<parent>_<index>` ids the poll loop compares against.
+
+    Returns a set that always contains the raw token (so non-array ids like `12345` and any
+    form we don't recognise still match by identity) plus, for a bracketed array token, one
+    `<parent>_<index>` string per element in the range/list. The `%throttle` suffix inside the
+    bracket is stripped before parsing; malformed bracket bodies degrade to the raw token only.
+    """
+
+    ids = {token}
+    open_bracket = token.find("[")
+    if open_bracket == -1 or not token.endswith("]"):
+        return ids
+    prefix = token[:open_bracket]              # e.g. '347_'
+    body = token[open_bracket + 1:-1]          # e.g. '2-199%10' or '1,3,5-9'
+    body = body.split("%", 1)[0]               # drop the array-throttle suffix if present
+    indices: List[int] = []
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo_str, _, hi_str = part.partition("-")
+            try:
+                lo, hi = int(lo_str), int(hi_str)
+            except ValueError:
+                return ids                     # malformed range -> keep raw token only
+            if hi < lo or (hi - lo + 1) + len(indices) > _SQUEUE_ARRAY_EXPANSION_CAP:
+                return ids                     # nonsensical or oversized -> raw token only
+            indices.extend(range(lo, hi + 1))
+        else:
+            try:
+                indices.append(int(part))
+            except ValueError:
+                return ids
+            if len(indices) > _SQUEUE_ARRAY_EXPANSION_CAP:
+                return ids
+    for index in indices:
+        ids.add("{}{}".format(prefix, index))
+    return ids
+
 
 def _squeue_live_jobs(job_ids: List[str],
                       timeout_s: float = _SQUEUE_PROBE_TIMEOUT_S) -> Optional[set]:
@@ -793,7 +851,11 @@ def _squeue_live_jobs(job_ids: List[str],
     for line in stdout.splitlines():
         token = line.strip()
         if token:
-            live.add(token)
+            # Expand any bracketed array range (`347_[2-199]`, pending elements squeue
+            # collapses into one row) into its concrete `347_2`, `347_3`, ... element ids so
+            # the caller's per-element membership test matches still-pending shards. Non-array
+            # and individual ids pass through unchanged (the raw token is always retained).
+            live.update(_expand_squeue_array_ids(token))
     return live
 
 

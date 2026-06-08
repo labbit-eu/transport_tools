@@ -1815,6 +1815,46 @@ class TestSqueueLiveJobs(unittest.TestCase):
                     side_effect=_sp.TimeoutExpired(cmd="squeue", timeout=1.0)):
             self.assertIsNone(_squeue_live_jobs(["347_0"]))
 
+    def test_pending_array_collapsed_range_is_expanded(self):
+        # The real-HPC failure mode: most of a freshly-submitted array sits PENDING, and
+        # squeue collapses those elements into one bracketed row (`347_[2-4]`) while the
+        # started element shows individually (`347_0`). All queried element ids must resolve
+        # as live - without bracket expansion the pending ones would be false-abandoned.
+        from unittest.mock import patch
+        with patch("transport_tools.libs.slurm.subprocess.run",
+                    return_value=_FakeCompletedProcess(
+                        returncode=0,
+                        stdout=b"347_0\n347_[2-4%2]\n")):
+            self.assertEqual({"347_0", "347_2", "347_3", "347_4"},
+                             _squeue_live_jobs(["347_0", "347_2", "347_3", "347_4"])
+                             & {"347_0", "347_2", "347_3", "347_4"})
+
+
+class TestExpandSqueueArrayIds(unittest.TestCase):
+    """`_expand_squeue_array_ids()` turns a single `squeue -o %i` token into the set of
+    concrete job-id strings it represents, so collapsed pending-array rows match submitit's
+    per-element `Job.job_id`."""
+
+    def test_plain_and_element_ids_pass_through(self):
+        from transport_tools.libs.slurm import _expand_squeue_array_ids
+        self.assertEqual({"12345"}, _expand_squeue_array_ids("12345"))
+        self.assertEqual({"347_0"}, _expand_squeue_array_ids("347_0"))
+
+    def test_range_throttle_and_sparse_list(self):
+        from transport_tools.libs.slurm import _expand_squeue_array_ids
+        self.assertEqual({"347_[2-4]", "347_2", "347_3", "347_4"},
+                         _expand_squeue_array_ids("347_[2-4]"))
+        # the %throttle suffix slurm appends to a throttled array must be stripped
+        self.assertEqual({"347_[5-7%3]", "347_5", "347_6", "347_7"},
+                         _expand_squeue_array_ids("347_[5-7%3]"))
+        self.assertEqual({"347_[1,3,5-6]", "347_1", "347_3", "347_5", "347_6"},
+                         _expand_squeue_array_ids("347_[1,3,5-6]"))
+
+    def test_malformed_bracket_keeps_raw_token_only(self):
+        from transport_tools.libs.slurm import _expand_squeue_array_ids
+        self.assertEqual({"347_[abc]"}, _expand_squeue_array_ids("347_[abc]"))
+        self.assertEqual({"347_[5-"}, _expand_squeue_array_ids("347_[5-"))
+
 
 class _FakePollJob:
     """Stand-in for `submitit.Job` covering exactly the surface `_poll_jobs` reads:
