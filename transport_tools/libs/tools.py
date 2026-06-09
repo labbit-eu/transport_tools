@@ -294,6 +294,13 @@ class TransportProcesses:
         None. The new_config is patched to be self-consistent first, so the restored value is neither
         lost downstream nor reported as a spurious change by report_updates. All three keys live in the
         calculations_settings section.
+
+        The source-folder enumerations (caver/trajectory/AQUA-DUCT MD labels) are likewise re-derived
+        from disk only for the stages that actually re-read that input - CAVER by stages 1-2,
+        trajectories by stages 2/9, AQUA-DUCT by stage 7. On a resume into a later stage the processed
+        MD set is a fixed property of the checkpoint, and the source folders may have been moved or
+        renamed; re-globbing them would shrink the set to nothing (e.g. zeroing total_num_md_sims in
+        stage 5). So the checkpointed enumeration is kept unless an input-reading stage runs here.
         :param new_config: object with job parameters
         """
 
@@ -305,12 +312,22 @@ class TransportProcesses:
         new_config.report_updates(self.parameters)
         self.parameters = new_config.get_parameters()
         self.config_file = new_config.source_file
-        self.caver_input_folders, self.traj_input_folders, aquaduct_folders = new_config.get_input_folders()
-        self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
-        self.aquaduct_md_to_roots = {
-            md: [root for root, mds in aquaduct_folders.items() if md in mds]
-            for md in self.aquaduct_input_folders
-        }
+
+        refresh_caver = new_config._runs_stage(1, 2)
+        refresh_traj = new_config._runs_stage(2, 9)
+        refresh_aquaduct = new_config._runs_stage(7)
+        if refresh_caver or refresh_traj or refresh_aquaduct:
+            caver_folders, traj_folders, aquaduct_folders = new_config.get_input_folders()
+            if refresh_caver:
+                self.caver_input_folders = caver_folders
+            if refresh_traj:
+                self.traj_input_folders = traj_folders
+            if refresh_aquaduct:
+                self.aquaduct_input_folders = sorted({md for mds in aquaduct_folders.values() for md in mds})
+                self.aquaduct_md_to_roots = {
+                    md: [root for root, mds in aquaduct_folders.items() if md in mds]
+                    for md in self.aquaduct_input_folders
+                }
         self.reference_pdb_file = new_config.get_reference_pdb_file()
         self.transformation_folder = self.parameters["transformation_folder"]
 

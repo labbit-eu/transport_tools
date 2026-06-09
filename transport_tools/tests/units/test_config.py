@@ -1191,6 +1191,18 @@ class TestInputDataScoping(unittest.TestCase):
         self.assertIn("/aq", tested_roots)
         self.assertNotIn("/caver", tested_roots)
 
+    def test_resume_tolerates_missing_reference_structure(self):
+        # stage-5+ rerun after the input folder was moved/renamed: the reference is not read by the
+        # active stages, so its now-stale path must not abort the run
+        config = self._config((5, 10), aquaduct_results_path=None,
+                              pdb_reference_structure="/gone/ref.pdb")
+        self._run(config)  # must not raise
+
+    def test_alignment_stage_still_requires_reference_structure(self):
+        config = self._config((1, 10), pdb_reference_structure="/gone/ref.pdb")
+        with self.assertRaises(RuntimeError):
+            self._run(config)
+
 
 class TestValidateLazyInputFolders(unittest.TestCase):
     """The comparative-group and exact-matching coverage checks in _validate_parameter_values walk
@@ -1230,17 +1242,24 @@ class TestPreserveAutodetectedOnResume(unittest.TestCase):
     run when the freshly scoped config left them unset (a resume skips re-detecting them), and lets a
     genuinely changed value win."""
 
-    def _apply(self, old_params, new_overrides):
+    def _apply(self, old_params, new_overrides, active_stages=(1, 10),
+               input_folders=([], [], {}), preset=None):
         from types import SimpleNamespace
         from transport_tools.libs.tools import TransportProcesses
 
-        new_config = _populated_config()
+        new_config = _populated_config(active_stages=active_stages)
         new_config.parameters.update(new_overrides)
-        fake_self = SimpleNamespace(parameters=dict(old_params),
-                                    _outlier_transport_events=SimpleNamespace(parameters={}),
-                                    _super_clusters={})
-        with patch.object(new_config, "get_input_folders", return_value=([], [], {})):
+        attrs = dict(parameters=dict(old_params),
+                     _outlier_transport_events=SimpleNamespace(parameters={}),
+                     _super_clusters={},
+                     caver_input_folders=[], traj_input_folders=[],
+                     aquaduct_input_folders=[], aquaduct_md_to_roots={})
+        if preset:
+            attrs.update(preset)
+        fake_self = SimpleNamespace(**attrs)
+        with patch.object(new_config, "get_input_folders", return_value=input_folders) as gif:
             TransportProcesses.update_configuration(fake_self, new_config)
+        fake_self._get_input_folders_mock = gif
         return fake_self
 
     def test_unset_values_are_preserved(self):
@@ -1259,6 +1278,25 @@ class TestPreserveAutodetectedOnResume(unittest.TestCase):
         self.assertEqual(200, fake_self.parameters["snapshots_per_simulation"])
         self.assertEqual("/new.pdb", fake_self.parameters["pdb_reference_structure"])
         self.assertEqual(8, fake_self.parameters["num_cpus"])  # unset => preserved
+
+    def test_input_folders_kept_from_checkpoint_on_resume_scope(self):
+        # stages 5-6 re-read no input tree: the processed MD set stays as the checkpoint recorded it,
+        # even if the source folders have moved (get_input_folders is not even called)
+        old = {"snapshots_per_simulation": 100, "pdb_reference_structure": "/ref.pdb", "num_cpus": 8}
+        fake_self = self._apply(old, {}, active_stages=(5, 6),
+                                input_folders=(["new"], ["new"], {"/aq": ["new"]}),
+                                preset={"caver_input_folders": ["md1", "md2", "md3"]})
+        self.assertEqual(["md1", "md2", "md3"], fake_self.caver_input_folders)
+        self.assertFalse(fake_self._get_input_folders_mock.called)
+
+    def test_input_folders_refreshed_when_input_stage_runs(self):
+        # a run that includes CAVER parsing (stage 2) re-globs the CAVER folders, honouring a changed
+        # caver_results_path/pattern in the config
+        old = {"snapshots_per_simulation": 100, "pdb_reference_structure": "/ref.pdb", "num_cpus": 8}
+        fake_self = self._apply(old, {}, active_stages=(2, 10),
+                                input_folders=(["a", "b"], ["a"], {"/aq": ["a"]}),
+                                preset={"caver_input_folders": ["stale"]})
+        self.assertEqual(["a", "b"], fake_self.caver_input_folders)
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import unittest
 import numpy as np
 from sys import maxsize
+from unittest.mock import patch
 
 np.set_printoptions(threshold=maxsize)
 
@@ -582,6 +583,99 @@ class TestHelpers(unittest.TestCase):
         self.assertDictEqual(filter_out2, define_filters(min_bottleneck_radius=2, min_avg_snapshots_num=500,
                                                          max_length=20, min_length=10, max_curvature=5))
         self.assertRaises(ValueError, define_filters, min_curvature=5, max_curvature=2)
+
+
+class TestTunnelNetworkLazyInput(unittest.TestCase):
+    """TunnelNetwork resolves its raw CAVER input (PDB, tunnel profiles, bottlenecks, v_origins)
+    lazily, so a load-only rebuild (stage 5 clustering, filtering, a resume into a later stage)
+    does not require the original CAVER folders to still exist."""
+
+    def _params(self):
+        return {
+            "caver_results_path": "/caver", "caver_relative_pdb_file": "data/prot.pdb",
+            "caver_relative_profile_file": "an/profiles.csv",
+            "caver_relative_bottleneck_file": "an/bottlenecks.csv",
+            "caver_relative_origin_file": "data/v_origins.pdb",
+            "process_bottleneck_residues": False,
+            "transformation_folder": "/out/_internal/transformations", "caver_foldername": "caver",
+            "orig_caver_vis_path": "/out/vis/orig", "orig_caver_network_data_path": "/out/_internal/orig",
+            "layered_caver_vis_path": "/out/vis/layered",
+            "layered_caver_network_data_path": "/out/_internal/layered",
+        }
+
+    def _build(self):
+        from transport_tools.libs.networks import TunnelNetwork
+        # _load_transformations reads an internal dump (survives a raw-data move); stub it out
+        with patch.object(TunnelNetwork, "_load_transformations", return_value=None):
+            return TunnelNetwork(self._params(), "md1")
+
+    def test_construction_does_not_touch_raw_input(self):
+        with patch("transport_tools.libs.networks.utils.get_filepath") as gfp, \
+                patch("transport_tools.libs.networks.average_starting_point") as asp:
+            self._build()
+        self.assertFalse(gfp.called, "no raw CAVER file should be resolved during construction")
+        self.assertFalse(asp.called, "v_origins must not be read during construction")
+
+    def test_profile_resolved_on_access(self):
+        net = self._build()
+        with patch("transport_tools.libs.networks.utils.get_filepath",
+                   return_value="/caver/md1/an/profiles.csv") as gfp:
+            self.assertEqual("/caver/md1/an/profiles.csv", net.tunnel_profile_file)
+            self.assertEqual("/caver/md1/an/profiles.csv", net.tunnel_profile_file)  # cached
+        gfp.assert_called_once()  # resolved once, then cached
+
+    def test_starting_point_resolved_on_access(self):
+        net = self._build()
+        coords = np.zeros((4, 1))  # average_starting_point()[0][0:3, :] reshapes to (1, 3)
+        with patch("transport_tools.libs.networks.utils.get_filepath", return_value="/caver/md1/o.pdb"), \
+                patch("transport_tools.libs.networks.average_starting_point",
+                      return_value=(coords, None)) as asp:
+            _ = net.starting_point_coords
+        self.assertTrue(asp.called)
+
+    def test_bottleneck_none_without_resolution_when_disabled(self):
+        net = self._build()
+        with patch("transport_tools.libs.networks.utils.get_filepath") as gfp:
+            self.assertIsNone(net.bottleneck_file)
+        self.assertFalse(gfp.called)  # disabled => no glob
+
+
+class TestAquaductNetworkLazyInput(unittest.TestCase):
+    """A load-only AquaductNetwork resolves the source AQUA-DUCT folder, results tarball and summary
+    file lazily, so event layering/assignment/filtering (stages 8-10) and resumes into them do not
+    require the original AQUA-DUCT folders to still exist."""
+
+    def _params(self):
+        return {
+            "aquaduct_results_path": ["/aq"], "aquaduct_results_relative_tarfile": "6_vis.tar.gz",
+            "aquaduct_results_relative_summaryfile": "5_analysis.txt",
+            "aquaduct_results_pdb_filename": "molecule0_1.pdb",
+            "transformation_folder": "/out/_internal/transformations", "aquaduct_foldername": "aquaduct",
+            "orig_aquaduct_vis_path": "/out/vis/orig", "orig_aquaduct_network_data_path": "/out/_internal/orig",
+            "layered_aquaduct_vis_path": "/out/vis/layered",
+            "layered_aquaduct_network_data_path": "/out/_internal/layered",
+        }
+
+    def _build_load_only(self):
+        from transport_tools.libs.networks import AquaductNetwork
+        with patch.object(AquaductNetwork, "_load_transformations", return_value=None):
+            return AquaductNetwork(self._params(), "md1", load_only=True)
+
+    def test_load_only_construction_does_not_touch_source_folder(self):
+        with patch("transport_tools.libs.networks.utils.get_filepath") as gfp, \
+                patch("transport_tools.libs.networks.os.path.isdir") as isdir:
+            self._build_load_only()
+        self.assertFalse(gfp.called, "no AQUA-DUCT file resolved during load-only construction")
+        self.assertFalse(isdir.called, "source folder must not be probed during load-only construction")
+
+    def test_tarfile_resolved_on_access(self):
+        net = self._build_load_only()
+        with patch("transport_tools.libs.networks.os.path.isdir", return_value=True), \
+                patch("transport_tools.libs.networks.utils.get_filepath",
+                      return_value="/aq/md1/6_vis.tar.gz") as gfp:
+            self.assertEqual("/aq/md1/6_vis.tar.gz", net.tar_file)
+            self.assertEqual("/aq/md1/6_vis.tar.gz", net.tar_file)  # cached
+        gfp.assert_called_once()
 
 
 if __name__ == "__main__":

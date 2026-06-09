@@ -991,15 +991,17 @@ class TunnelNetwork(Network):
         # load (see get_clusters4layering_ids).
         self._orig_summary_suffix = ".cluster_sizes"
 
-        # input paths
-        root_folder = os.path.join(self.parameters["caver_results_path"], self.md_label)
-        self.pdb_file = utils.get_filepath(root_folder, self.parameters["caver_relative_pdb_file"])
-        self.tunnel_profile_file = utils.get_filepath(root_folder, self.parameters["caver_relative_profile_file"])
+        # input paths - the raw CAVER files (PDB, tunnel profiles, bottlenecks, v_origins) are read
+        # only when the network actually (re)parses tunnels (stage 2) or renders the structure (the
+        # optional visualisations). They are resolved lazily on first access (see the pdb_file,
+        # tunnel_profile_file, bottleneck_file and starting_point_coords properties below), so a
+        # load-only rebuild from the layered/orig dump - clustering at stage 5, filtering, a resume
+        # into a later stage - does not require the original CAVER folders to still be present.
+        self.caver_root_folder = os.path.join(self.parameters["caver_results_path"], self.md_label)
+        self._tunnel_profile_file: str | None = None
+        self._bottleneck_file: str | None = None
+        self._bottleneck_resolved: bool = False
 
-        if self.parameters["process_bottleneck_residues"]:
-            self.bottleneck_file = utils.get_filepath(root_folder, self.parameters["caver_relative_bottleneck_file"])
-        else:
-            self.bottleneck_file = None
         # output paths
         self.transformation_folder = os.path.join(self.parameters["transformation_folder"],
                                                   self.parameters["caver_foldername"])
@@ -1011,11 +1013,68 @@ class TunnelNetwork(Network):
         self.layered_dump_file = os.path.join(self.parameters["layered_caver_network_data_path"],
                                               self.md_label + "_layered_paths.dump")
 
-        origin_file = utils.get_filepath(root_folder, self.parameters["caver_relative_origin_file"])
-        self.starting_point_coords = average_starting_point(origin_file)[0][0:3, :].reshape(1, 3)
-
         # initiation methods
         self._load_transformations()
+
+    @property
+    def pdb_file(self) -> str | None:
+        """Path to the CAVER protein PDB, resolved on first access (used by structure visualisation
+        in stages 1-2 and the layered-cluster visualisation). None until then so a load-only rebuild
+        never touches the raw CAVER folder."""
+        if self._pdb_file is None:
+            self._pdb_file = utils.get_filepath(self.caver_root_folder,
+                                                self.parameters["caver_relative_pdb_file"])
+        return self._pdb_file
+
+    @pdb_file.setter
+    def pdb_file(self, value: str | None):
+        self._pdb_file = value
+
+    @property
+    def tunnel_profile_file(self) -> str:
+        """Path to the CAVER tunnel_profiles.csv, resolved on first access (used by read_tunnels_data
+        at stage 2)."""
+        if self._tunnel_profile_file is None:
+            self._tunnel_profile_file = utils.get_filepath(self.caver_root_folder,
+                                                           self.parameters["caver_relative_profile_file"])
+        return self._tunnel_profile_file
+
+    @tunnel_profile_file.setter
+    def tunnel_profile_file(self, value: str | None):
+        self._tunnel_profile_file = value
+
+    @property
+    def bottleneck_file(self) -> str | None:
+        """Path to the CAVER bottlenecks.csv when process_bottleneck_residues is set, else None;
+        resolved on first access (used by _read_bottleneck_data at stage 2)."""
+        if not self._bottleneck_resolved:
+            if self.parameters["process_bottleneck_residues"]:
+                self._bottleneck_file = utils.get_filepath(
+                    self.caver_root_folder, self.parameters["caver_relative_bottleneck_file"])
+            else:
+                self._bottleneck_file = None
+            self._bottleneck_resolved = True
+        return self._bottleneck_file
+
+    @bottleneck_file.setter
+    def bottleneck_file(self, value: str | None):
+        self._bottleneck_file = value
+        self._bottleneck_resolved = True
+
+    @property
+    def starting_point_coords(self) -> np.ndarray | None:
+        """Starting-point coordinates read from the CAVER v_origins.pdb, resolved on first access
+        (used by read_tunnels_data at stage 2). None until then so a load-only rebuild never reads
+        the raw CAVER folder."""
+        if self._starting_point_coords is None:
+            origin_file = utils.get_filepath(self.caver_root_folder,
+                                             self.parameters["caver_relative_origin_file"])
+            self._starting_point_coords = average_starting_point(origin_file)[0][0:3, :].reshape(1, 3)
+        return self._starting_point_coords
+
+    @starting_point_coords.setter
+    def starting_point_coords(self, value: "np.ndarray | None"):
+        self._starting_point_coords = value
 
     def read_tunnels_data(self):
         """
@@ -1231,14 +1290,16 @@ class AquaductNetwork(Network):
         # get_clusters4layering_ids(). save_orig_network() emits it automatically at stage 7.
         self._orig_summary_suffix = ".event_ids"
 
-        # input paths
-        if root_path is None:
-            root_path = next(p for p in parameters["aquaduct_results_path"]
-                             if os.path.isdir(os.path.join(p, md_label)))
-        assert isinstance(root_path, str), "Must be string given the above if block"
-        root_folder = os.path.join(root_path, md_label)
-        self.tar_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_tarfile"])
-        self.summary_file = utils.get_filepath(root_folder, self.parameters["aquaduct_results_relative_summaryfile"])
+        # input paths - the raw AQUA-DUCT files (results tarball, summary) and the source-folder
+        # location are read only when the network (re)parses events or extracts the protein PDB
+        # (stage 7). They are resolved lazily on first access (see the tar_file and summary_file
+        # properties below, which detect the root folder on demand), so a load-only rebuild from the
+        # orig/layered dump - event layering at stage 8, assignment at stage 9, filtering at stage 10,
+        # or a resume into any of them - does not require the original AQUA-DUCT folders to still exist.
+        self._root_path = root_path
+        self._root_folder: str | None = None
+        self._tar_file: str | None = None
+        self._summary_file: str | None = None
         self.fd = None
 
         # output paths
@@ -1256,6 +1317,45 @@ class AquaductNetwork(Network):
 
         if not load_only:
             self.get_pdb_file()
+
+    def _resolve_aquaduct_root_folder(self) -> str:
+        """Locate the source AQUA-DUCT folder for this md_label, detecting it among
+        aquaduct_results_path on demand when no explicit root_path was given. Called only when the
+        raw tarball/summary are actually accessed (stage-7 parsing), so a load-only rebuild never
+        touches the source folders."""
+        if self._root_folder is None:
+            root_path = self._root_path
+            if root_path is None:
+                root_path = next(p for p in self.parameters["aquaduct_results_path"]
+                                 if os.path.isdir(os.path.join(p, self.md_label)))
+            assert isinstance(root_path, str), "Must be string given the above if block"
+            self._root_folder = os.path.join(root_path, self.md_label)
+        return self._root_folder
+
+    @property
+    def tar_file(self) -> str:
+        """Path to the AQUA-DUCT results tarball, resolved on first access (stage-7 parsing /
+        PDB extraction)."""
+        if self._tar_file is None:
+            self._tar_file = utils.get_filepath(self._resolve_aquaduct_root_folder(),
+                                                self.parameters["aquaduct_results_relative_tarfile"])
+        return self._tar_file
+
+    @tar_file.setter
+    def tar_file(self, value: str | None):
+        self._tar_file = value
+
+    @property
+    def summary_file(self) -> str:
+        """Path to the AQUA-DUCT summary file, resolved on first access (stage-7 parsing)."""
+        if self._summary_file is None:
+            self._summary_file = utils.get_filepath(self._resolve_aquaduct_root_folder(),
+                                                    self.parameters["aquaduct_results_relative_summaryfile"])
+        return self._summary_file
+
+    @summary_file.setter
+    def summary_file(self, value: str | None):
+        self._summary_file = value
 
     def __enter__(self):
         return self

@@ -1107,7 +1107,13 @@ class AnalysisConfig:
         if not self.parameters["caver_results_relative_subfolder_path"]:
             raise RuntimeError("\nParameter 'caver_results_relative_subfolder_path' must be defined")
 
-        if self.parameters["pdb_reference_structure"] is not None \
+        # The reference structure is only read by stages 1, 2 (caver alignment) and 7 (aquaduct
+        # alignment, which only runs when AQUA-DUCT data is present). On a resume into a later stage it
+        # is not opened, so do not require its file to still exist - this is what lets a stage-5+ rerun
+        # proceed after the input data folder has been moved or renamed.
+        reference_is_read = self._runs_stage(1, 2) \
+            or (self._runs_stage(7) and bool(self.parameters["aquaduct_results_path"]))
+        if reference_is_read and self.parameters["pdb_reference_structure"] is not None \
                 and not os.path.exists(self.parameters["pdb_reference_structure"]):
             raise RuntimeError("\nParameter 'pdb_reference_structure' must point to existing file!.")
 
