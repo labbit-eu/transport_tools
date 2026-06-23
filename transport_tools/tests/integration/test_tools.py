@@ -25,6 +25,8 @@ import os
 import pytest
 from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_folders, compare_test_files
 from transport_tools.libs.tools import load_checkpoint, define_filters, TransportProcesses, save_checkpoint
+from transport_tools.tests.integration.generate_event_assignment_fixtures import (
+    EVENT_ASSIGNMENT_VARIANTS, variant_artifacts, trace_analysis_dir)
 
 class TestTransportProcesses(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -58,7 +60,7 @@ class TestTransportProcesses(unittest.TestCase):
             return
 
         # Config file is now in the output directory, so it's removed with rmtree
-        rmtree(cls.out_path)
+        #rmtree(cls.out_path)
 
     def tearDown(self):
         """
@@ -1542,12 +1544,40 @@ class TestTransportProcesses(unittest.TestCase):
                                 "wiping the vis folder should force a SLURM resubmission, "
                                 "but the submitit log-file set did not grow")
 
+    def _check_event_assignment_variant(self, variant: str, param_overrides: dict):
+        """Assign transport events with the given non-default ambiguous-assignment-resolution configuration,
+        generate the initial events summary + supercluster events details, golden-compare them against the
+        per-variant fixtures, and (for trace_matching) the per-event analysis output. Each variant runs on a
+        freshly loaded stage-8 checkpoint so the assignment mutations do not leak between variants or into the
+        default exact_matching chain. The artifact set is shared with the fixture generator (variant_artifacts)
+        so producer and consumer cannot drift. Mirrors _check_super_cluster_clustering_variant for stage 5."""
+        mol_system = load_checkpoint(self._get_dumpfile(10))
+        for key, value in param_overrides.items():
+            mol_system.parameters[key] = value
+        mol_system.assign_transport_events()
+        mol_system.generate_super_cluster_summary(out_filename="3-initial_events_summary.txt")
+
+        fixtures = os.path.join(self.saved_data, "event_assignment_variants", variant)
+        for produced, relpath in variant_artifacts(self.out_path):
+            compare_test_files(os.path.join(fixtures, relpath), produced, self)
+        if param_overrides.get("perform_trace_matching_analysis"):
+            compare_test_folders(os.path.join(fixtures, "trace_matching_analysis", "md1"),
+                                 trace_analysis_dir(self.out_path), self)
+
     def test_11assign_transport_events(self):
         try:
             mol_system = load_checkpoint(self._get_dumpfile(10))
         except FileNotFoundError:
             self.skipTest("previous test not finished")
 
+        # cover the non-default ambiguous-assignment-resolution variants against per-variant fixtures; the
+        # default exact_matching chain below (which feeds the stage-9 checkpoint for test_12) is left intact.
+        # trace_matching is the trajectory-free counterpart of exact_matching, so its analysis output is also
+        # golden-compared. The variant set is shared with the fixture generator so the two cannot drift.
+        for variant, param_overrides in EVENT_ASSIGNMENT_VARIANTS:
+            self._check_event_assignment_variant(variant, param_overrides)
+
+        # default chain: exact_matching (matches the shared test config) - historical golden checks + checkpoint
         mol_system.assign_transport_events()
         mol_system.save_super_clusters_visualization(script_name="visualize_events.py")
         mol_system.generate_super_cluster_summary(out_filename="3-initial_events_summary.txt")

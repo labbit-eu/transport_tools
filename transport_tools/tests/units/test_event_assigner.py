@@ -28,7 +28,7 @@ import numpy as np
 from unittest.mock import Mock, MagicMock, patch
 from transport_tools.libs.tools import EventAssigner
 from transport_tools.tests.units.data.data_event_assigner import (
-    test_parameters_minimal, test_parameters_exact_matching,
+    test_parameters_minimal, test_parameters_exact_matching, test_parameters_trace_matching,
     sample_event_specification_1, sample_event_specification_2,
     test_active_filters, sample_nodes_data_entry, sample_nodes_data_release,
     sample_nodes_data_no_terminal, expected_direction_entry,
@@ -520,6 +520,84 @@ class TestEventAssignerExactMatching(unittest.TestCase):
 
             # _exact_event_tunnel_matching should have been called
             mock_exact.assert_called_once()
+
+
+class TestEventAssignerTraceMatching(unittest.TestCase):
+    """
+    Test trajectory-free trace matching functionality of EventAssigner
+    Note: These tests mock the per-snapshot tunnel lookup; the trajectory-free trace itself is exercised
+    end-to-end by the integration tests.
+    """
+
+    def setUp(self):
+        """
+        Set up test fixtures with two equally buried superclusters (an ambiguous assignment)
+        """
+        self.test_params = test_parameters_trace_matching.copy()
+
+        self.mock_event = Mock()
+        self.mock_event.entity_label = "1_entry"
+        self.mock_event.nodes_data = sample_nodes_data_entry
+
+        self.mock_sc1 = Mock()
+        self.mock_sc1.sc_id = 1
+        self.mock_sc1.has_passed_filter.return_value = True
+        self.mock_sc1.is_directionally_aligned.return_value = True
+        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high)
+
+        self.mock_sc2 = Mock()
+        self.mock_sc2.sc_id = 2
+        self.mock_sc2.has_passed_filter.return_value = True
+        self.mock_sc2.is_directionally_aligned.return_value = True
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium)
+
+        self.mock_superclusters = {1: self.mock_sc1, 2: self.mock_sc2}
+
+    def test_trace_matching_resolution_invoked_and_picks_best(self):
+        """
+        Verify trace_matching resolution runs _trace_event_tunnel_matching on an ambiguous event and keeps
+        the supercluster with the highest matched buriedness
+        """
+        with patch.object(EventAssigner, '_trace_event_tunnel_matching') as mock_trace:
+            mock_trace.return_value = sample_exact_matching_buriedness  # SC1 0.75 > SC2 0.50
+
+            assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                     self.mock_superclusters, test_active_filters)
+            _, assigned_ids, _, _ = assigner.perform_assignment()
+
+            mock_trace.assert_called_once()
+            self.assertIsNotNone(assigned_ids)
+            self.assertEqual(list(assigned_ids), [1])
+
+    def test_trace_matching_resolution_no_tunnels_unassigned(self):
+        """
+        Verify an ambiguous event whose trace matches no tunnels is left unassigned under trace_matching
+        """
+        with patch.object(EventAssigner, '_trace_event_tunnel_matching') as mock_trace:
+            mock_trace.return_value = sample_exact_matching_no_tunnels
+
+            assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                     self.mock_superclusters, test_active_filters)
+            _, assigned_ids, _, _ = assigner.perform_assignment()
+
+            mock_trace.assert_called_once()
+            self.assertIsNone(assigned_ids)
+
+    def test_trace_matching_analysis_runs_for_single_sc(self):
+        """
+        Verify perform_trace_matching_analysis triggers trace matching even for an unambiguous (single-SC)
+        event, mirroring perform_exact_matching_analysis
+        """
+        single_sc = {1: self.mock_sc1}
+        with patch.object(EventAssigner, '_trace_event_tunnel_matching') as mock_trace:
+            mock_trace.return_value = sample_exact_matching_buriedness
+
+            assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                     single_sc, test_active_filters)
+            assigner.perform_assignment()
+
+            # analysis pass runs the matching for the assigned event regardless of ambiguity
+            mock_trace.assert_called_once()
 
 
 class TestEventAssignerEdgeCases(unittest.TestCase):

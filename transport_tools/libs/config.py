@@ -259,6 +259,8 @@ class AnalysisConfig:
             # 'penetration_depth' - how deep the event penetrates the supercluster
             # 'exact_matching' - matching of actual ligand transport event (all atoms from MD simulation) and real
             # tunnels existing in a given simulation during the event occurrence
+            # 'trace_matching' - like 'exact_matching' but uses the AQUA-DUCT per-frame trace of the event instead of
+            # the MD trajectory, so it needs no source trajectories (only the per-snapshot CAVER tunnels)
             # 'assign2all' - assign event to all superclusters in which it is buried
 
             # Additional filters applied on superclusters after event assignment (-1 => inactive filter)
@@ -286,6 +288,8 @@ class AnalysisConfig:
             "perform_exact_matching_analysis": False,
             "folder_pattern4exact_matching_analysis": "*",  # exact_matching_analysis is performed only for folders
             # matching this pattern
+            "perform_trace_matching_analysis": False,  # like perform_exact_matching_analysis but trajectory-free,
+            # using the AQUA-DUCT per-frame trace; runs for all assigned events and writes per-event detail output
             "perform_comparative_analysis": False,
             "visualize_comparative_super_cluster_volumes": False,
             "comparative_groups_definition": None,
@@ -375,6 +379,7 @@ class AnalysisConfig:
             "calculate_exact_path_distances",
             "use_cluster_spread",
             "perform_exact_matching_analysis",
+            "perform_trace_matching_analysis",
             "verbose_logging",
             "overwrite",
             "perform_comparative_analysis",
@@ -711,6 +716,7 @@ class AnalysisConfig:
             "super_cluster_details_folder": os.path.join(data_folder, "super_clusters", "details"),
             "super_cluster_bottleneck_folder": os.path.join(data_folder, "super_clusters", "bottlenecks"),
             "exact_matching_details_folder": os.path.join(data_folder, "exact_matching_analysis"),
+            "trace_matching_details_folder": os.path.join(data_folder, "trace_matching_analysis"),
 
             # folder structure for visualization
             "orig_caver_vis_path": os.path.join(vis_folder, "sources", network_data_foldername, caver_foldername),
@@ -988,7 +994,8 @@ class AnalysisConfig:
                                      "them from slurm_additional_parameters and use the "
                                      "dedicated knob instead.".format(lines))
 
-        ambiguous_assignment_resolution_methods = ["exact_matching", "penetration_depth", "assign2all"]
+        ambiguous_assignment_resolution_methods = ["exact_matching", "trace_matching", "penetration_depth",
+                                                   "assign2all"]
         if self.parameters["ambiguous_event_assignment_resolution"] not in ambiguous_assignment_resolution_methods:
             raise ValueError("\nUnsupported method for resolution of ambiguous assignments '{}' specified in "
                              "'ambiguous_event_assignment_resolution' parameter.\n Valid options are "

@@ -31,10 +31,12 @@ test_parameters_minimal = {
     "event_assignment_cutoff": 0.5,
     "ambiguous_event_assignment_resolution": "penetration_depth",
     "perform_exact_matching_analysis": False,
+    "perform_trace_matching_analysis": False,
     "caver_traj_offset": 1,
     "trajectory_path": "/tmp/test_traj",
     "folder_pattern4exact_matching_analysis": "md*",
     "exact_matching_details_folder": "/tmp/test_exact",
+    "trace_matching_details_folder": "/tmp/test_trace",
     "trajectory_engine": "mdtraj",
     "aqauduct_ligand_effective_radius": 1.5
 }
@@ -42,6 +44,10 @@ test_parameters_minimal = {
 test_parameters_exact_matching = test_parameters_minimal.copy()
 test_parameters_exact_matching["perform_exact_matching_analysis"] = True
 test_parameters_exact_matching["ambiguous_event_assignment_resolution"] = "exact_matching"
+
+test_parameters_trace_matching = test_parameters_minimal.copy()
+test_parameters_trace_matching["perform_trace_matching_analysis"] = True
+test_parameters_trace_matching["ambiguous_event_assignment_resolution"] = "trace_matching"
 
 # Event specification format: (md_label, event_label, (resname:resid, (start_frame, end_frame)))
 sample_event_specification_1 = ("md1", "1_entry", ("WAT:123", (10, 50)))

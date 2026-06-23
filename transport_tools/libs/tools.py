@@ -32,7 +32,7 @@ from logging import getLogger
 from transport_tools.libs.ui import progressbar, TimeProcess, process_count
 from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
-    TransportEvent, subsample_events, get_md_membership4groups
+    TransportEvent, AquaductPath, subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
     iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix, \
@@ -3557,6 +3557,9 @@ class EventAssigner:
         if self.parameters["perform_exact_matching_analysis"]:
             buriedness = self._exact_event_tunnel_matching(buried_sc_ids)
 
+        if self.parameters["perform_trace_matching_analysis"]:
+            buriedness = self._trace_event_tunnel_matching(buried_sc_ids)
+
         # event is buried in more than one SC and we do want to perform assignment based on penetration depth
         if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "penetration_depth":
 
@@ -3572,21 +3575,28 @@ class EventAssigner:
             # find the SC in which the event reaches max_depth
             buried_sc_ids = buried_sc_ids[max_depths == max_depth]
 
-        # event is buried in more than one SC and we do want to perform assignment based on exact matching to tunnels
-        if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "exact_matching":
-            msg = "Using Exact matching to identify the best supercluster for transport event '{:s}' buried inside " \
-                  "{:d} superclusters (buriedness = {:.2f})\n".format(str(self.event_specification),
+        # event is buried in more than one SC and we resolve it by matching to the actual tunnels - either from the
+        # MD trajectory (exact_matching) or from the trajectory-free AQUA-DUCT trace (trace_matching); both produce
+        # the same buriedness dict, so the downstream filtering of candidate SCs is shared
+        resolution = self.parameters["ambiguous_event_assignment_resolution"]
+        if buried_sc_ids.size > 1 and resolution in ("exact_matching", "trace_matching"):
+            kind = "Trace" if resolution == "trace_matching" else "Exact"
+            msg = "Using {:s} matching to identify the best supercluster for transport event '{:s}' buried inside " \
+                  "{:d} superclusters (buriedness = {:.2f})\n".format(kind, str(self.event_specification),
                                                                       buried_sc_ids.size, max_buriedness)
 
-            if not self.parameters["perform_exact_matching_analysis"]:  # not to run this twice
+            # recompute with the resolution's own method unless that method's analysis pass already filled buriedness
+            if resolution == "trace_matching" and not self.parameters["perform_trace_matching_analysis"]:
+                buriedness = self._trace_event_tunnel_matching(buried_sc_ids)
+            elif resolution == "exact_matching" and not self.parameters["perform_exact_matching_analysis"]:
                 buriedness = self._exact_event_tunnel_matching(buried_sc_ids)
 
             if buriedness is None:
-                raise RuntimeError("Variable 'buriedness' should be set by exact matching analysis")
+                raise RuntimeError("Variable 'buriedness' should be set by {:s} matching analysis".format(kind.lower()))
 
             for sc_id in buried_sc_ids:
-                msg += "Exact matching of transport event '{:s}' to " \
-                      "tunnels from SC {:d}:\n".format(str(self.event_specification), sc_id)
+                msg += "{:s} matching of transport event '{:s}' to " \
+                      "tunnels from SC {:d}:\n".format(kind, str(self.event_specification), sc_id)
                 if sc_id in buriedness["4all_frames"].keys():
                     msg += "fraction of frames in which ligand is " \
                            "inside SC tunnels {:.2f}\n".format(buriedness["4all_frames"][sc_id])
@@ -3598,14 +3608,14 @@ class EventAssigner:
                            "event!\n"
             logger.debug(msg)
 
-            # use exact matching results to verify and filter event assignment to multiple clusters
+            # use the matching results to verify and filter event assignment to multiple clusters
             buried_sc_ids = np.array([*buriedness["4all_frames"].keys()])
 
             if buried_sc_ids.size:
                 # some tunnels matched for some of evaluated SCs
-                exact_buriedness = np.array([*buriedness["4all_frames"].values()])
-                max_exact_buriedness = np.max(exact_buriedness)
-                buried_sc_ids = buried_sc_ids[exact_buriedness == max_exact_buriedness]
+                matched_buriedness = np.array([*buriedness["4all_frames"].values()])
+                max_matched_buriedness = np.max(matched_buriedness)
+                buried_sc_ids = buried_sc_ids[matched_buriedness == max_matched_buriedness]
             else:
                 # no tunnels matched -> cannot assign event to any SC
                 buried_sc_ids = None
@@ -3741,11 +3751,145 @@ class EventAssigner:
 
         return buriedness
 
+    def _trace_event_tunnel_matching(self, considered_sc_ids: np.ndarray) -> Dict[str, Dict[int, float]]:
+        """
+        Trajectory-free analogue of _exact_event_tunnel_matching: matches the AQUA-DUCT per-frame trace of the
+        event (the traced positions of the molecule, one per frame, recovered from the original AQUA-DUCT
+        network) against the actual CAVER tunnels present in the corresponding snapshots of the source
+        simulation, for each considered supercluster. Unlike exact matching it needs no MD trajectory - only the
+        per-snapshot CAVER tunnel data that is always available. Used when 'trace_matching' is requested either
+        as the ambiguous-assignment resolution or as a standalone analysis (perform_trace_matching_analysis).
+        :param considered_sc_ids: superclusters considered for the matching with the investigated event
+        :return: details on buriedness of the event in the actual tunnels of the considered superclusters
+        """
+
+        md_label = self.event_specification[0]
+        event_label = self.event_specification[1]
+        start_frame, end_frame = self.event_specification[2][1]
+        start_frame = int(start_frame)
+        end_frame = int(end_frame)
+
+        buriedness: Dict[str, Dict[int, float]] = {"4all_frames": {}, "4existing_tunnels": {}}
+
+        # recover this event's per-frame trace (cached per md_label per worker) and restrict it to the event's
+        # reported frames; events with no usable trace (e.g. pruned to a singleton) cannot be matched. The trace
+        # cache keys on the trailing "<path_id>_<event_type>", so strip any residue-name prefix from the label
+        trace_key = "_".join(event_label.split("_")[-2:])
+        frame_trace = get_event_frame_traces(self.parameters, md_label).get(trace_key)
+        if frame_trace is None or frame_trace.shape[0] == 0:
+            return buriedness
+        frame_trace = frame_trace[(frame_trace[:, 0] >= start_frame) & (frame_trace[:, 0] <= end_frame)]
+        if frame_trace.shape[0] == 0:
+            return buriedness
+
+        write_details = self.parameters["perform_trace_matching_analysis"]
+        if write_details:
+            details_path = os.path.join(self.parameters["trace_matching_details_folder"], md_label)
+            os.makedirs(details_path, exist_ok=True)
+
+        snap_ids = [int(frame) + self.parameters["caver_traj_offset"] for frame in frame_trace[:, 0]]
+
+        for sc_id in considered_sc_ids:
+            super_cluster = self.super_clusters[sc_id]
+            closest_tunnels_data = None
+            subclusters = super_cluster.get_caver_clusters(md_labels=[md_label], snap_ids=snap_ids)
+            clusters2proc = subclusters.get(md_label, [])
+
+            for (frame, x, y, z), snap_id in zip(frame_trace, snap_ids):
+                # find the tunnel sphere from this SC's caver clusters closest to the traced position in this frame
+                min_dist2sphere = 9999999
+                closest_sphere = None
+                cluster_id = None
+                trace_xyz = np.array([x, y, z])
+
+                for cluster in clusters2proc:
+                    tmp_dist2sphere, tmp_sphere = cluster.get_closest_tunnel_sphere_in_frame2coords(trace_xyz, snap_id)
+                    if tmp_dist2sphere is not None and (tmp_dist2sphere <= min_dist2sphere):
+                        min_dist2sphere = tmp_dist2sphere
+                        closest_sphere = tmp_sphere
+                        cluster_id = cluster.cluster_id
+                if closest_sphere is not None:
+                    new_data = np.append(np.array([int(frame), min_dist2sphere, cluster_id]), closest_sphere)
+                    new_data = np.insert(new_data, 1, trace_xyz).reshape(1, 12)
+                    if closest_tunnels_data is None:
+                        closest_tunnels_data = new_data
+                    else:
+                        closest_tunnels_data = np.concatenate((closest_tunnels_data, new_data))
+
+            if closest_tunnels_data is None:
+                # No tunnels from this SC exist in any snapshot/frame corresponding to the event
+                continue
+
+            # compute buriedness descriptors for event in the closest tunnels from the given SC
+            surface_distances = closest_tunnels_data[:, 4]
+            buried_dist_cutoff = 0 + self.parameters["aqauduct_ligand_effective_radius"]
+            num_buried_nodes = closest_tunnels_data[surface_distances <= buried_dist_cutoff].shape[0]
+            buriedness["4all_frames"][sc_id] = num_buried_nodes / (end_frame - start_frame + 1)
+            buriedness["4existing_tunnels"][sc_id] = num_buried_nodes / surface_distances.shape[0]
+
+            if write_details:
+                details_file = os.path.join(details_path, "{}_sc{}.txt".format(event_label, sc_id))
+                with open(details_file, "w") as out_stream:
+                    out_stream.write("Trace matching of transport event '{:s}' to tunnels from "
+                                     "Supercluster {:d} \n".format(str(self.event_specification), sc_id))
+                    out_stream.write("fraction of frames in which ligand is inside "
+                                     "SC tunnels {:.2f}\n".format(buriedness["4all_frames"][sc_id]))
+                    out_stream.write("fraction of frames in which SC tunnels exist and the ligand is "
+                                     "inside of them {:.2f}\n".format(buriedness["4existing_tunnels"][sc_id]))
+                    out_stream.write("Data on the tunnel spheres closest to the traced ligand position:\n")
+                    out_stream.write("-------------------------------------------------\n")
+                    out_stream.write("{:>10s},{:>10s},{:>10s},{:>10s},"
+                                     "{:>10s},{:>10s},{:>10s},{:>10s},"
+                                     "{:>10s},{:>10s},{:>10s},{:>10s},"
+                                     "\n".format("Frame", "X-coordLig", "Y-coordLig", "Z-coordLig", "Dist2lig",
+                                                 "CaverClsID", "X-coordSph", "Y-coordSph", "Z-coordSph", "Dist2SP",
+                                                 "Radius", "TunLength"))
+                    np.savetxt(out_stream, closest_tunnels_data, delimiter=',',
+                               fmt=["%10d", "%10.3f", "%10.3f", "%10.3f", "%10.3f", "%10d", "%10.3f", "%10.3f",
+                                    "%10.3f", "%10.3f", "%10.3f", "%10.3f"])
+
+        return buriedness
+
 
 # Shared state for the event-assigner worker processes; populated once per worker by
 # init_event_assigner_worker() so that individual tasks need to carry only the per-event data
 # instead of re-pickling the (potentially hundreds of MB) supercluster dict for every event.
 _EVENT_WORKER_STATE: dict = {}
+
+# Per-process cache of AQUA-DUCT per-frame event traces, keyed by md_label. Populated lazily by
+# get_event_frame_traces() the first time trace_matching needs an event from a given md_label (analysis runs
+# it for every assigned event, resolution only for ambiguous ones). Caching here keeps the trace off the
+# individual LayeredPathSet events (which would balloon RSS for long traces) while still loading each md's
+# aqua network at most once per worker rather than once per event.
+_AQUA_TRACE_CACHE: dict = {}
+
+
+def get_event_frame_traces(parameters: dict, md_label: str) -> Dict[str, np.ndarray]:
+    """
+    Return a mapping of event entity_label -> per-frame trace (frame, x, y, z) for all transition events of the
+    given md_label, loading the original (pre-layering) AQUA-DUCT network once and caching the result per
+    process. Used by EventAssigner._trace_event_tunnel_matching for trajectory-free matching.
+    :param parameters: job configuration parameters
+    :param md_label: name of folder with the source MD simulation data
+    :return: dict mapping each transition event's entity_label to its (n, 4) frame-trace array
+    """
+
+    if md_label not in _AQUA_TRACE_CACHE:
+        aquanet = AquaductNetwork(parameters, md_label, load_only=True)
+        aquanet.load_orig_network()
+        traces: Dict[str, np.ndarray] = {}
+        for path in aquanet.orig_entities:
+            if not isinstance(path, AquaductPath):
+                continue
+            for event in path.events.values():
+                if event.has_transition():
+                    # key by the trailing "<path_id>_<event_type>"; the layered event label assigned at stage 8
+                    # carries a residue-name prefix (e.g. "wat_1_release") absent from the network entity_label
+                    # ("1_release"), so normalising both sides to the last two segments keeps the lookup robust
+                    trace_key = "_".join(event.entity_label.split("_")[-2:])
+                    traces[trace_key] = event.get_frame_trace()
+        _AQUA_TRACE_CACHE[md_label] = traces
+    return _AQUA_TRACE_CACHE[md_label]
 
 
 def init_event_assigner_worker(parameters: dict,

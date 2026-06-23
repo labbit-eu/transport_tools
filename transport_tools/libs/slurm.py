@@ -2381,6 +2381,7 @@ class EventAssignmentShardStage(SlurmShardStage):
         "event_assignment_cutoff",
         "ambiguous_event_assignment_resolution",
         "perform_exact_matching_analysis",
+        "perform_trace_matching_analysis",
     )
 
     def __init__(self, items: List[Tuple[str, str]], super_clusters: dict,

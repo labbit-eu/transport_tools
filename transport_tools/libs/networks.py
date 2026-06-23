@@ -1786,6 +1786,35 @@ class TransportEvent:
         self.extend_points_front(other_event.points)
         self.modified = True
 
+    def get_frame_trace(self) -> np.ndarray:
+        """
+        Reconstruct the per-frame AQUA-DUCT trace (the traced positions of the molecule, one per simulation
+        frame) for this transition event, in the unified reference frame. Used by trace_matching to test the
+        event against the actual per-snapshot CAVER tunnels without needing the source MD trajectory.
+
+        The points are anchored to the frame range reported by AQUA-DUCT for this event type (entry events
+        forward from their first frame, release events backward from their last frame) and then clipped to that
+        range. The clipping drops the inside-point extensions appended toward the starting point during
+        process_path() - those fall outside the reported transition frames - so only the genuine per-frame trace
+        remains. The +-1 frame slips from duplicate-point removal in the source CGO stay within the range.
+        :return: array of shape (n, 4) with columns (frame, x, y, z); empty for non-transition/empty events
+        """
+
+        if not self.has_transition() or not self.points:
+            return np.empty((0, 4))
+
+        coords = np.array([point.data[0, :3] for point in self.points])
+        num_points = coords.shape[0]
+        if self.type == "entry":
+            first_frame, last_frame = self.traced_residue[2]
+            frames = first_frame + np.arange(num_points)
+        else:  # release: anchor the last point to the last reported frame
+            first_frame, last_frame = self.traced_residue[3]
+            frames = last_frame - (num_points - 1) + np.arange(num_points)
+
+        within_range = (frames >= first_frame) & (frames <= last_frame)
+        return np.column_stack((frames[within_range], coords[within_range]))
+
     def get_visualization_cgo(self) -> List[float]:
         """
         Converts event points to Pymol compiled graphics object(CGO) for visualization

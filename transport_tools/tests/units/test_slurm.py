@@ -1335,6 +1335,7 @@ class TestEventAssignmentShardStageFingerprint(unittest.TestCase):
             "event_assignment_cutoff": 0.85,
             "ambiguous_event_assignment_resolution": "penetration_depth",
             "perform_exact_matching_analysis": False,
+            "perform_trace_matching_analysis": False,
         }
         params.update(overrides)
         return params
