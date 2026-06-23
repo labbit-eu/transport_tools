@@ -34,6 +34,7 @@ from transport_tools.libs import utils
 from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperCluster, define_filters, TunnelCluster, \
     TransportEvent, AquaductPath, subsample_events, get_md_membership4groups
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
+    vector_angle, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
     iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix, \
     gather_condensed_subvector
@@ -3597,6 +3598,37 @@ class EventAssigner:
             # (events spanning several SCs to a similar extent) remain assigned to all of them
             buried_sc_ids = buried_sc_ids[spans >= max_span - 0.05]
 
+        # event is buried in more than one SC and we resolve it by how closely the event's exit bearing (direction
+        # from the buried starting point to its terminal node) matches each SC's overall direction; unlike the binary
+        # directional gate this keeps the continuous angle, so a supercluster the event merely crosses perpendicularly
+        # (large angle) loses to the one it actually runs along. Ties within 10 degrees are then broken by the
+        # penetration span, which is safe here because it only compares similarly aligned superclusters
+        if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "directionality":
+            event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
+            angles = np.array([vector_angle(self.super_clusters[sc_id].avg_direction, event_direction)
+                               for sc_id in buried_sc_ids])
+            min_angle = np.min(angles)
+
+            msg = "Using directional alignment to identify the best supercluster for "
+            msg += "transport event '{:s}' buried inside {:d} superclusters " \
+                   "(buriedness = {:.2f}), ".format(str(self.event_specification), buried_sc_ids.size, max_buriedness)
+            for sc_id, angle in zip(buried_sc_ids, angles):
+                msg += "\n sc{:d} - direction angle = {:.1f} deg".format(sc_id, np.degrees(angle))
+            logger.debug(msg)
+
+            # primary: keep the best-aligned SC(s) within a 10 degree tie tolerance
+            aligned = angles <= min_angle + np.radians(10)
+            buried_sc_ids = buried_sc_ids[aligned]
+            max_depths = max_depths[aligned]
+            min_depths = min_depths[aligned]
+
+            # secondary: among directionally tied SCs prefer the wider penetration span (genuine traversal),
+            # keeping all within the 0.05 span tolerance of the best
+            if buried_sc_ids.size > 1:
+                spans = max_depths - min_depths
+                max_span = np.max(spans)
+                buried_sc_ids = buried_sc_ids[spans >= max_span - 0.05]
+
         # event is buried in more than one SC and we resolve it by matching to the actual tunnels - either from the
         # MD trajectory (exact_matching) or from the trajectory-free AQUA-DUCT trace (trace_matching); both produce
         # the same buriedness dict, so the downstream filtering of candidate SCs is shared
@@ -3933,6 +3965,10 @@ def init_event_assigner_worker(parameters: dict,
     """
 
     utils.cap_blas_threads_for_worker(allocated_cpus, pool_size)
+    # spawn workers start without the driver's logging handlers, so route their per-event resolution
+    # debug messages to the same logfile (file only, no console handler) at the configured level
+    from transport_tools.libs.ui import init_worker_logging
+    init_worker_logging(parameters["log_level"], parameters["verbose_logging"], parameters["logfile_path"])
     _EVENT_WORKER_STATE["parameters"] = parameters
     _EVENT_WORKER_STATE["superclusters"] = superclusters
     _EVENT_WORKER_STATE["active_filters"] = active_filters

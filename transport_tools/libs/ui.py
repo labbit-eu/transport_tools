@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _CONSOLE_HANDLER = None
 _LOG_HANDLER = None
+_WORKER_LOGFILE = None  # set per spawned-worker process by init_worker_logging() to avoid duplicate handlers
 START_TIME = time()
 DIVIDER_LINE = "======== ********************************************* ========"
 
@@ -138,6 +139,55 @@ def license_printer():
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.""")
 
 
+class _VerboseFilter(logging.Filter):
+    """Drops the high-volume per-step DEBUG chatter from the logfile unless verbose logging was requested."""
+
+    def filter(self, record):
+        if record.levelno == logging.DEBUG:
+            msg = record.getMessage()
+            if msg.startswith("Optimizing assignment"):
+                return False
+            if msg.startswith("Distance matrix"):
+                return False
+            if msg.startswith("Using point") or msg.startswith("No points") or \
+                    msg.startswith("Using starting point"):
+                return False
+            if "alignment_length" in msg or "Using CA atoms" in msg or "General rotation matrix" in msg:
+                return False
+            if "max_dist = " in msg and "layer_thickness =" in msg:
+                return False
+            if msg.startswith("Transport event") or msg.startswith("Optimized distance"):
+                return False
+        return True
+
+
+class _DefaultFilter(logging.Filter):
+    """Always-on noise filter for the logfile (e.g. matplotlib font probing)."""
+
+    def filter(self, record):
+        if "findfont: " in record.getMessage():
+            return False
+        return True
+
+
+def _build_logfile_handler(verbose_logging: bool, logfile: str) -> logging.FileHandler:
+    """
+    Build the logfile handler shared by the driver and the spawned workers: identical formatter, DEBUG
+    ceiling and noise filters, opened in append mode so several processes can write to the same file.
+    :param verbose_logging: if more details should be provided on debug level
+    :param logfile: file to log into
+    """
+
+    fh = logging.FileHandler(logfile)
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                                      datefmt="%Y-%m-%d %H:%M:%S"))
+    fh.setLevel(logging.DEBUG)
+    if not verbose_logging:
+        fh.addFilter(_VerboseFilter())
+    fh.addFilter(_DefaultFilter())
+    return fh
+
+
 def init_logging(verbose_logging: bool = False, logfile: str = "transport_tools.log"):
     """
     Initiates and sets logging, also defines logging filtering
@@ -147,54 +197,41 @@ def init_logging(verbose_logging: bool = False, logfile: str = "transport_tools.
 
     global _CONSOLE_HANDLER
     global _LOG_HANDLER
-    fh = logging.FileHandler(logfile)
+    fh = _build_logfile_handler(verbose_logging, logfile)
     ch = logging.StreamHandler()
-
-    ch_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S")
-    fh_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                                     datefmt="%Y-%m-%d %H:%M:%S")
-    fh.setFormatter(fh_formatter)
-    ch.setFormatter(ch_formatter)
-
-    fh.setLevel(logging.DEBUG)
+    ch.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%H:%M:%S"))
     ch.setLevel(logging.INFO)
-
-    if not verbose_logging:
-        class VerboseFilter(logging.Filter):
-            def filter(self, record):
-                if record.levelno == logging.DEBUG:
-                    if record.getMessage().startswith("Optimizing assignment"):
-                        return False
-                    if record.getMessage().startswith("Distance matrix"):
-                        return False
-                    if record.getMessage().startswith("Using point") or record.getMessage().startswith("No points") or \
-                            record.getMessage().startswith("Using starting point"):
-                        return False
-                    if "alignment_length" in record.getMessage() or "Using CA atoms" in record.getMessage() or \
-                            "General rotation matrix" in record.getMessage():
-                        return False
-                    if "max_dist = " in record.getMessage() and "layer_thickness =" in record.getMessage():
-                        return False
-                    if record.getMessage().startswith("Transport event") or \
-                            record.getMessage().startswith("Optimized distance"):
-                        return False
-                return True
-
-        fh.addFilter(VerboseFilter())
-
-    class DefaultFilter(logging.Filter):
-        def filter(self, record):
-            if "findfont: " in record.getMessage():
-                return False
-            return True
-
-    fh.addFilter(DefaultFilter())
 
     logging.getLogger().addHandler(ch)
     logging.getLogger().setLevel(logging.NOTSET)
     logging.getLogger().addHandler(fh)
     _CONSOLE_HANDLER = ch
     _LOG_HANDLER = fh
+
+
+def init_worker_logging(log_level: str, verbose_logging: bool, logfile: str):
+    """
+    Route logging from a spawned worker process to the driver's logfile.
+
+    Workers started under the 'spawn' start method inherit none of the parent's logging handlers, so any
+    logger.debug()/info() they emit (e.g. the per-event ambiguous-assignment resolution decisions) would
+    otherwise be discarded. This attaches a logfile-only handler (no console handler, so workers do not each
+    duplicate stdout) identical to the driver's and raises the root level so records reach it. The logfile is
+    opened in append mode; each record is written by a single write, so records stay intact across processes
+    and only their relative ordering is non-deterministic. Idempotent per worker process.
+    :param log_level: logging level to be used for the logfile
+    :param verbose_logging: if more details should be provided on debug level
+    :param logfile: file to log into (the same logfile as the driver)
+    """
+
+    global _WORKER_LOGFILE
+    if _WORKER_LOGFILE == logfile:
+        return
+    fh = _build_logfile_handler(verbose_logging, logfile)
+    set_logging_level(log_level, fh)
+    logging.getLogger().addHandler(fh)
+    logging.getLogger().setLevel(logging.NOTSET)
+    _WORKER_LOGFILE = logfile
 
 
 def set_logging_level(level: str, handler):

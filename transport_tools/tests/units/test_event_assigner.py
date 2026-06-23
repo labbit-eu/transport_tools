@@ -29,14 +29,15 @@ from unittest.mock import Mock, MagicMock, patch
 from transport_tools.libs.tools import EventAssigner
 from transport_tools.tests.units.data.data_event_assigner import (
     test_parameters_minimal, test_parameters_exact_matching, test_parameters_trace_matching,
-    test_parameters_penetration_span,
+    test_parameters_penetration_span, test_parameters_directionality,
     sample_event_specification_1, sample_event_specification_2,
     test_active_filters, sample_nodes_data_entry, sample_nodes_data_release,
     sample_nodes_data_no_terminal, expected_direction_entry,
     sample_buriedness_high, sample_buriedness_medium, sample_buriedness_low,
     sample_buriedness_below_cutoff, sample_depth_high, sample_depth_medium,
     sample_depth_low, sample_exact_matching_buriedness, sample_exact_matching_no_tunnels,
-    sample_min_depth, sample_min_depth_narrow, sample_min_depth_wide
+    sample_min_depth, sample_min_depth_narrow, sample_min_depth_wide,
+    sample_direction_aligned, sample_direction_offaxis
 )
 
 
@@ -671,6 +672,103 @@ class TestEventAssignerPenetrationSpan(unittest.TestCase):
         """
         # SC1 span = 15.0 - 14.0 = 1.00; SC2 span = 11.0 - 10.02 = 0.98 -> within 0.05, both kept
         self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, 11.0, 10.02)
+
+        assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(sorted(assigned_ids), [1, 2])
+
+
+class TestEventAssignerDirectionality(unittest.TestCase):
+    """
+    Test directionality resolution of EventAssigner.
+    directionality resolves ambiguity by how closely the event's exit bearing matches each supercluster's overall
+    direction, rejecting superclusters the event merely crosses perpendicularly, and breaks ties within 10 degrees
+    by penetration span.
+    """
+
+    def setUp(self):
+        """
+        Set up two equally buried superclusters for the entry event (terminal direction [2, 2, 2]): SC1 is aligned
+        (0 deg) but has a narrow span, SC2 is well off-axis (~70 deg) but has a wide span - so span alone would
+        prefer SC2 while directionality must prefer the aligned SC1.
+        """
+        self.test_params = test_parameters_directionality.copy()
+
+        self.mock_event = Mock()
+        self.mock_event.entity_label = "1_entry"
+        self.mock_event.nodes_data = sample_nodes_data_entry
+
+        self.mock_sc1 = Mock()  # aligned (0 deg), narrow span (15.0 - 14.0 = 1.0)
+        self.mock_sc1.sc_id = 1
+        self.mock_sc1.has_passed_filter.return_value = True
+        self.mock_sc1.is_directionally_aligned.return_value = True
+        self.mock_sc1.avg_direction = sample_direction_aligned
+        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high,
+                                                                       sample_min_depth_narrow)
+
+        self.mock_sc2 = Mock()  # off-axis (~70 deg), wide span (10.0 - 2.0 = 8.0)
+        self.mock_sc2.sc_id = 2
+        self.mock_sc2.has_passed_filter.return_value = True
+        self.mock_sc2.is_directionally_aligned.return_value = True
+        self.mock_sc2.avg_direction = sample_direction_offaxis
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium,
+                                                                       sample_min_depth_wide)
+
+        self.mock_superclusters = {1: self.mock_sc1, 2: self.mock_sc2}
+
+    def test_directionality_picks_aligned_over_wider_span(self):
+        """
+        Verify directionality assigns the event to the aligned SC (SC1), rejecting the off-axis SC2 even though
+        SC2 has the wider penetration span
+        """
+        assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(list(assigned_ids), [1])
+
+    def test_penetration_span_diverges_on_same_data(self):
+        """
+        Verify penetration_span diverges from directionality on the same event: it keeps the wider-span but
+        off-axis SC2, confirming directionality's rejection of the perpendicular crossing is what differs
+        """
+        params = self.test_params.copy()
+        params["ambiguous_event_assignment_resolution"] = "penetration_span"
+
+        assigner = EventAssigner(params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(list(assigned_ids), [2])
+
+    def test_directionality_breaks_ties_by_span(self):
+        """
+        Verify that among superclusters aligned within the 10 degree tolerance, directionality falls back to the
+        wider penetration span: with both SCs aligned, the wider-span SC2 wins
+        """
+        self.mock_sc2.avg_direction = sample_direction_aligned  # now both within the 10 deg tie band
+
+        assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(list(assigned_ids), [2])
+
+    def test_directionality_keeps_full_ties(self):
+        """
+        Verify directionality keeps all SCs that tie on both direction (within 10 deg) and span (within 0.05),
+        so a genuine multi-SC traversal stays assigned to all of them
+        """
+        self.mock_sc2.avg_direction = sample_direction_aligned  # same direction as SC1
+        # same span as SC1 (15.0 - 14.0 = 1.0) -> tie on both criteria
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high,
+                                                                       sample_min_depth_narrow)
 
         assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
                                  self.mock_superclusters, test_active_filters)

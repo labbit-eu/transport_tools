@@ -51,6 +51,8 @@ EVENT_ASSIGNMENT_VARIANTS = (
                            "perform_exact_matching_analysis": False}),
     ("penetration_span", {"ambiguous_event_assignment_resolution": "penetration_span",
                           "perform_exact_matching_analysis": False}),
+    ("directionality", {"ambiguous_event_assignment_resolution": "directionality",
+                        "perform_exact_matching_analysis": False}),
     ("trace_matching", {"ambiguous_event_assignment_resolution": "trace_matching",
                         "perform_exact_matching_analysis": False,
                         "perform_trace_matching_analysis": True}),

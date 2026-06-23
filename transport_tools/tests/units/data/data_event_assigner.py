@@ -52,6 +52,9 @@ test_parameters_trace_matching["ambiguous_event_assignment_resolution"] = "trace
 test_parameters_penetration_span = test_parameters_minimal.copy()
 test_parameters_penetration_span["ambiguous_event_assignment_resolution"] = "penetration_span"
 
+test_parameters_directionality = test_parameters_minimal.copy()
+test_parameters_directionality["ambiguous_event_assignment_resolution"] = "directionality"
+
 # Event specification format: (md_label, event_label, (resname:resid, (start_frame, end_frame)))
 sample_event_specification_1 = ("md1", "1_entry", ("WAT:123", (10, 50)))
 sample_event_specification_2 = ("md1", "2_release", ("WAT:456", (20, 60)))
@@ -116,6 +119,11 @@ sample_min_depth = 0.0
 #   SC2 span = sample_depth_medium - sample_min_depth_wide   = 10.0 -  2.0 = 8.0
 sample_min_depth_narrow = 14.0
 sample_min_depth_wide = 2.0
+
+# Supercluster avg_direction vectors for directionality resolution tests, compared against the entry event's
+# terminal-node direction [2, 2, 2] (sample_nodes_data_entry): one aligned (0 deg), one well off-axis (~70 deg).
+sample_direction_aligned = np.array([2.0, 2.0, 2.0])
+sample_direction_offaxis = np.array([2.0, 2.0, -2.0])
 
 # Expected return format from perform_assignment
 # (event_specification, assigned_sc_ids, max_buriedness, max_depth)
