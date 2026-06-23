@@ -49,6 +49,8 @@ from transport_tools.libs.tools import load_checkpoint
 EVENT_ASSIGNMENT_VARIANTS = (
     ("penetration_depth", {"ambiguous_event_assignment_resolution": "penetration_depth",
                            "perform_exact_matching_analysis": False}),
+    ("penetration_span", {"ambiguous_event_assignment_resolution": "penetration_span",
+                          "perform_exact_matching_analysis": False}),
     ("trace_matching", {"ambiguous_event_assignment_resolution": "trace_matching",
                         "perform_exact_matching_analysis": False,
                         "perform_trace_matching_analysis": True}),

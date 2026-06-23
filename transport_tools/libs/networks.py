@@ -2727,12 +2727,12 @@ class SuperCluster:
         else:
             return False
 
-    def compute_distance2transport_event(self, transport_event: LayeredPathSet) -> Tuple[float, float]:
+    def compute_distance2transport_event(self, transport_event: LayeredPathSet) -> Tuple[float, float, float]:
         """
-        Computes the fraction of nodes from Layered path that are buried inside the supercluster, and their maximal
-        depth (counted towards starting point (SP) along shortest path)
+        Computes the fraction of nodes from Layered path that are buried inside the supercluster, their maximal
+        depth (counted towards starting point (SP) along shortest path), and the minimal depth among buried nodes
         :param transport_event: Layered path representing the transport event
-        :return: path buriedness, max depth towards SP
+        :return: path buriedness, max depth towards SP, min depth towards SP among buried nodes
         """
 
         self.load_path_sets()

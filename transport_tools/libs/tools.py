@@ -3520,6 +3520,7 @@ class EventAssigner:
 
         inside_ratios = list()
         max_depths = list()
+        min_depths = list()
         max_buriedness = -999
         max_depth = -999
 
@@ -3531,14 +3532,16 @@ class EventAssigner:
         # evaluated suitable SC for event buriedness and penetration depth
         for sc_id in directionally_fitting_super_cluster_ids:
             super_cluster = self.super_clusters[sc_id]
-            inside_ratio, depth = super_cluster.compute_distance2transport_event(self.event)
+            inside_ratio, depth, min_depth = super_cluster.compute_distance2transport_event(self.event)
             inside_ratios.append(inside_ratio)
             max_depths.append(depth)
+            min_depths.append(min_depth)
 
         # convert to numpy array for better processing
         directionally_fitting_super_clusters = np.array(directionally_fitting_super_cluster_ids)
         inside_ratios = np.array(inside_ratios)
         max_depths = np.array(max_depths)
+        min_depths = np.array(min_depths)
         max_buriedness = np.max(inside_ratios)
 
         if max_buriedness < self.parameters["event_assignment_cutoff"]:  # not buried enough in the best SC
@@ -3551,6 +3554,7 @@ class EventAssigner:
         max_buriedness_ids = np.nonzero(inside_ratios >= max_buriedness - 0.05)[0]
         buried_sc_ids = directionally_fitting_super_clusters[max_buriedness_ids]
         max_depths = max_depths[max_buriedness_ids]
+        min_depths = min_depths[max_buriedness_ids]
         max_depth = np.max(max_depths)
         buriedness = None
 
@@ -3574,6 +3578,24 @@ class EventAssigner:
 
             # find the SC in which the event reaches max_depth
             buried_sc_ids = buried_sc_ids[max_depths == max_depth]
+
+        # event is buried in more than one SC and we resolve it by the depth span the event traverses inside each SC
+        # (max_depth - shallowest buried depth) rather than by its single deepest point; this avoids assigning events
+        # that merely cross a SC volume perpendicularly (large max_depth but a narrow span)
+        if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "penetration_span":
+            spans = max_depths - min_depths
+            max_span = np.max(spans)
+
+            msg = "Using penetration span to identify the best supercluster for "
+            msg += "transport event '{:s}' buried inside {:d} superclusters " \
+                   "(buriedness = {:.2f}), ".format(str(self.event_specification), buried_sc_ids.size, max_buriedness)
+            for sc_id, span in zip(buried_sc_ids, spans):
+                msg += "\n sc{:d} - penetration span = {:.2f}".format(sc_id, span)
+            logger.debug(msg)
+
+            # keep all SCs whose span is within the 0.05 tolerance of the best, so genuine multi-SC traversals
+            # (events spanning several SCs to a similar extent) remain assigned to all of them
+            buried_sc_ids = buried_sc_ids[spans >= max_span - 0.05]
 
         # event is buried in more than one SC and we resolve it by matching to the actual tunnels - either from the
         # MD trajectory (exact_matching) or from the trajectory-free AQUA-DUCT trace (trace_matching); both produce

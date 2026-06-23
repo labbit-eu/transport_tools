@@ -327,18 +327,20 @@ class TestLayeredPathSet(unittest.TestCase):
         from transport_tools.tests.units.data.data_geometry import test_layers_event
         from transport_tools.libs.geometry import LayeredPathSet
 
-        buriedness, max_depth = self.pathset_event.how_much_is_inside(self.merged_pathset)
+        buriedness, max_depth, min_buried_depth = self.pathset_event.how_much_is_inside(self.merged_pathset)
         self.assertAlmostEqual(0.4, buriedness)
         self.assertAlmostEqual(0.5, max_depth)
+        self.assertAlmostEqual(0.2, min_buried_depth)
 
         tmp_parms = self.params.copy()
         tmp_parms["use_cluster_spread"] = True
         pathset_event = LayeredPathSet("2_release", "e10s1_e9s3p0f1600", tmp_parms, starting_point_coords=None)
         pathset_event.add_node_path(self.node_path_event, test_layers_event)
         pathset_event.set_traced_event(('WAT', 1769, (908, 914), (2594, 2595)))
-        buriedness, max_depth = pathset_event.how_much_is_inside(self.merged_pathset)
+        buriedness, max_depth, min_buried_depth = pathset_event.how_much_is_inside(self.merged_pathset)
         self.assertAlmostEqual(0.6, buriedness)
         self.assertAlmostEqual(0.5, max_depth)
+        self.assertAlmostEqual(0.2, min_buried_depth)
 
     def test_avg_distance2path_set(self):
         from transport_tools.libs.geometry import LayeredPathSet

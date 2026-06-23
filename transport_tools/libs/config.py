@@ -257,6 +257,9 @@ class AnalysisConfig:
             # ambiguous_event_assignment_resolution decides how we assign events to multiple potential superclusters,
             # possible values:
             # 'penetration_depth' - how deep the event penetrates the supercluster
+            # 'penetration_span' - how much of the surface-to-core depth range the event traverses inside the
+            # supercluster (deepest minus shallowest buried point); favours genuine traversals over events that
+            # merely cross a supercluster volume perpendicularly, without needing MD trajectories or AQUA-DUCT traces
             # 'exact_matching' - matching of actual ligand transport event (all atoms from MD simulation) and real
             # tunnels existing in a given simulation during the event occurrence
             # 'trace_matching' - like 'exact_matching' but uses the AQUA-DUCT per-frame trace of the event instead of
@@ -995,7 +998,7 @@ class AnalysisConfig:
                                      "dedicated knob instead.".format(lines))
 
         ambiguous_assignment_resolution_methods = ["exact_matching", "trace_matching", "penetration_depth",
-                                                   "assign2all"]
+                                                   "penetration_span", "assign2all"]
         if self.parameters["ambiguous_event_assignment_resolution"] not in ambiguous_assignment_resolution_methods:
             raise ValueError("\nUnsupported method for resolution of ambiguous assignments '{}' specified in "
                              "'ambiguous_event_assignment_resolution' parameter.\n Valid options are "

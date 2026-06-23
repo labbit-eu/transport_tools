@@ -1093,12 +1093,12 @@ class LayeredPathSet:
 
         return fragmented_path
 
-    def how_much_is_inside(self, other_set: LayeredPathSet) -> Tuple[float, float]:
+    def how_much_is_inside(self, other_set: LayeredPathSet) -> Tuple[float, float, float]:
         """
-        Computes the fraction of nodes from this set buried inside the nodes of the other set, and maximal depth
-        (counted towards starting point (SP) along shortest path)
+        Computes the fraction of nodes from this set buried inside the nodes of the other set, the maximal depth
+        (counted towards starting point (SP) along shortest path), and the minimal depth among the buried nodes
         :param other_set: other set in which the buriedness is calculated
-        :return: buriedness, and maximal depth towards SP
+        :return: buriedness, maximal depth towards SP, and minimal depth towards SP among buried nodes
         """
         if self.nodes_data is None:
             raise ValueError(f"Empty pathset {self} should not be processed")
@@ -1107,6 +1107,9 @@ class LayeredPathSet:
                                                                           self.parameters["use_cluster_spread"])
 
         max_depth = -99999999
+        # shallowest layer reached while buried; only buried nodes define the shallow end of the penetration span,
+        # since an event's peripheral (non-buried) nodes always map to surface (~0) depth and would erase any span
+        min_buried_depth = 99999999
         surface_distances = list()
 
         for node in self.node_labels:
@@ -1117,12 +1120,17 @@ class LayeredPathSet:
                 # only surface
                 surface_dist, surface_node = self._get_dist2closest_node(node, dist_mat, dist_type=1)
             surface_distances.append(surface_dist)
-            max_depth = max(max_depth, other_set.node_depths[surface_node])
+            depth = other_set.node_depths[surface_node]
+            max_depth = max(max_depth, depth)
+            if surface_dist == 0:  # node is buried inside the other set
+                min_buried_depth = min(min_buried_depth, depth)
 
         num_buried_nodes = np.count_nonzero(np.array(surface_distances) == 0)
         buriedness = num_buried_nodes / self.nodes_data.shape[0]
+        if num_buried_nodes == 0:  # nothing buried -> no span; fall back to max_depth so the span evaluates to zero
+            min_buried_depth = max_depth
 
-        return buriedness, max_depth
+        return buriedness, max_depth, min_buried_depth
 
     def get_fragmented_paths(self) -> Tuple[int, List[List[List[str]]]]:
         """

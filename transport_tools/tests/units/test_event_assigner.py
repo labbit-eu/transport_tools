@@ -29,12 +29,14 @@ from unittest.mock import Mock, MagicMock, patch
 from transport_tools.libs.tools import EventAssigner
 from transport_tools.tests.units.data.data_event_assigner import (
     test_parameters_minimal, test_parameters_exact_matching, test_parameters_trace_matching,
+    test_parameters_penetration_span,
     sample_event_specification_1, sample_event_specification_2,
     test_active_filters, sample_nodes_data_entry, sample_nodes_data_release,
     sample_nodes_data_no_terminal, expected_direction_entry,
     sample_buriedness_high, sample_buriedness_medium, sample_buriedness_low,
     sample_buriedness_below_cutoff, sample_depth_high, sample_depth_medium,
-    sample_depth_low, sample_exact_matching_buriedness, sample_exact_matching_no_tunnels
+    sample_depth_low, sample_exact_matching_buriedness, sample_exact_matching_no_tunnels,
+    sample_min_depth, sample_min_depth_narrow, sample_min_depth_wide
 )
 
 
@@ -66,7 +68,7 @@ class TestEventAssigner(unittest.TestCase):
         self.mock_sc1.sc_id = 1
         self.mock_sc1.has_passed_filter.return_value = True
         self.mock_sc1.is_directionally_aligned.return_value = True
-        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high)
+        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high, sample_min_depth)
 
         self.mock_superclusters = {1: self.mock_sc1}
 
@@ -241,7 +243,7 @@ class TestEventAssigner(unittest.TestCase):
         Verify perform_assignment() returns None when buriedness below cutoff
         """
         self.mock_sc1.compute_distance2transport_event.return_value = (
-            sample_buriedness_below_cutoff, sample_depth_high
+            sample_buriedness_below_cutoff, sample_depth_high, sample_min_depth
         )
 
         assigner = EventAssigner(
@@ -270,7 +272,7 @@ class TestEventAssigner(unittest.TestCase):
         mock_sc2.has_passed_filter.return_value = True
         mock_sc2.is_directionally_aligned.return_value = True
         mock_sc2.compute_distance2transport_event.return_value = (
-            sample_buriedness_high, sample_depth_medium
+            sample_buriedness_high, sample_depth_medium, sample_min_depth
         )
 
         self.mock_superclusters[2] = mock_sc2
@@ -303,7 +305,7 @@ class TestEventAssigner(unittest.TestCase):
         mock_sc2.has_passed_filter.return_value = True
         mock_sc2.is_directionally_aligned.return_value = True
         mock_sc2.compute_distance2transport_event.return_value = (
-            sample_buriedness_high, sample_depth_low
+            sample_buriedness_high, sample_depth_low, sample_min_depth
         )
 
         self.mock_superclusters[2] = mock_sc2
@@ -339,7 +341,7 @@ class TestEventAssigner(unittest.TestCase):
         mock_sc2.has_passed_filter.return_value = True
         mock_sc2.is_directionally_aligned.return_value = True
         mock_sc2.compute_distance2transport_event.return_value = (
-            sample_buriedness_medium, sample_depth_high
+            sample_buriedness_medium, sample_depth_high, sample_min_depth
         )
 
         self.mock_superclusters[2] = mock_sc2
@@ -373,7 +375,7 @@ class TestEventAssigner(unittest.TestCase):
         mock_sc2.is_directionally_aligned.return_value = True
         mock_sc2.compute_distance2transport_event.return_value = (
             sample_buriedness_high - 0.03,  # Within 0.05 tolerance
-            sample_depth_medium
+            sample_depth_medium, sample_min_depth
         )
 
         self.mock_superclusters[2] = mock_sc2
@@ -445,7 +447,7 @@ class TestEventAssignerExactMatching(unittest.TestCase):
         self.mock_sc1.has_passed_filter.return_value = True
         self.mock_sc1.is_directionally_aligned.return_value = True
         self.mock_sc1.compute_distance2transport_event.return_value = (
-            sample_buriedness_high, sample_depth_high
+            sample_buriedness_high, sample_depth_high, sample_min_depth
         )
 
         self.mock_superclusters = {1: self.mock_sc1}
@@ -494,7 +496,7 @@ class TestEventAssignerExactMatching(unittest.TestCase):
         mock_sc2.has_passed_filter.return_value = True
         mock_sc2.is_directionally_aligned.return_value = True
         mock_sc2.compute_distance2transport_event.return_value = (
-            sample_buriedness_high, sample_depth_medium
+            sample_buriedness_high, sample_depth_medium, sample_min_depth
         )
 
         self.mock_superclusters[2] = mock_sc2
@@ -543,13 +545,14 @@ class TestEventAssignerTraceMatching(unittest.TestCase):
         self.mock_sc1.sc_id = 1
         self.mock_sc1.has_passed_filter.return_value = True
         self.mock_sc1.is_directionally_aligned.return_value = True
-        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high)
+        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high, sample_min_depth)
 
         self.mock_sc2 = Mock()
         self.mock_sc2.sc_id = 2
         self.mock_sc2.has_passed_filter.return_value = True
         self.mock_sc2.is_directionally_aligned.return_value = True
-        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium)
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium,
+                                                                       sample_min_depth)
 
         self.mock_superclusters = {1: self.mock_sc1, 2: self.mock_sc2}
 
@@ -598,6 +601,83 @@ class TestEventAssignerTraceMatching(unittest.TestCase):
 
             # analysis pass runs the matching for the assigned event regardless of ambiguity
             mock_trace.assert_called_once()
+
+
+class TestEventAssignerPenetrationSpan(unittest.TestCase):
+    """
+    Test penetration_span resolution of EventAssigner.
+    penetration_span resolves ambiguity by the depth range an event traverses inside each supercluster
+    (max_depth - shallowest buried depth) rather than by its single deepest point, so it favours genuine
+    surface-to-core traversals over perpendicular crossings, without trajectories or AQUA-DUCT traces.
+    """
+
+    def setUp(self):
+        """
+        Set up two equally buried superclusters: SC1 reaches deeper (larger max_depth) but over a narrow span
+        (perpendicular-like), SC2 is shallower yet spans a wide depth range (a genuine traversal).
+        """
+        self.test_params = test_parameters_penetration_span.copy()
+
+        self.mock_event = Mock()
+        self.mock_event.entity_label = "1_entry"
+        self.mock_event.nodes_data = sample_nodes_data_entry
+
+        self.mock_sc1 = Mock()  # deep but narrow span (15.0 - 14.0 = 1.0)
+        self.mock_sc1.sc_id = 1
+        self.mock_sc1.has_passed_filter.return_value = True
+        self.mock_sc1.is_directionally_aligned.return_value = True
+        self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high,
+                                                                       sample_min_depth_narrow)
+
+        self.mock_sc2 = Mock()  # shallower but wide span (10.0 - 2.0 = 8.0)
+        self.mock_sc2.sc_id = 2
+        self.mock_sc2.has_passed_filter.return_value = True
+        self.mock_sc2.is_directionally_aligned.return_value = True
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium,
+                                                                       sample_min_depth_wide)
+
+        self.mock_superclusters = {1: self.mock_sc1, 2: self.mock_sc2}
+
+    def test_penetration_span_picks_wider_span_over_deeper(self):
+        """
+        Verify penetration_span assigns the event to the wider-span SC (SC2), not the deeper one (SC1)
+        """
+        assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(list(assigned_ids), [2])
+
+    def test_penetration_depth_picks_deeper_on_same_data(self):
+        """
+        Verify penetration_depth diverges from penetration_span on the same event: it keeps the deeper SC (SC1),
+        confirming the two methods resolve the same ambiguity differently
+        """
+        params = self.test_params.copy()
+        params["ambiguous_event_assignment_resolution"] = "penetration_depth"
+
+        assigner = EventAssigner(params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(list(assigned_ids), [1])
+
+    def test_penetration_span_keeps_ties(self):
+        """
+        Verify penetration_span keeps all SCs whose span is within the 0.05 tolerance of the best, so a genuine
+        multi-SC traversal stays assigned to all of them
+        """
+        # SC1 span = 15.0 - 14.0 = 1.00; SC2 span = 11.0 - 10.02 = 0.98 -> within 0.05, both kept
+        self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, 11.0, 10.02)
+
+        assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                 self.mock_superclusters, test_active_filters)
+        _, assigned_ids, _, _ = assigner.perform_assignment()
+
+        self.assertIsNotNone(assigned_ids)
+        self.assertEqual(sorted(assigned_ids), [1, 2])
 
 
 class TestEventAssignerEdgeCases(unittest.TestCase):
@@ -651,7 +731,7 @@ class TestEventAssignerEdgeCases(unittest.TestCase):
         mock_sc.sc_id = 1
         mock_sc.has_passed_filter.return_value = True
         mock_sc.is_directionally_aligned.return_value = True
-        mock_sc.compute_distance2transport_event.return_value = (0.0, sample_depth_high)
+        mock_sc.compute_distance2transport_event.return_value = (0.0, sample_depth_high, sample_min_depth)
 
         assigner = EventAssigner(
             self.test_params,
@@ -679,7 +759,7 @@ class TestEventAssignerEdgeCases(unittest.TestCase):
         mock_sc.sc_id = 1
         mock_sc.has_passed_filter.return_value = True
         mock_sc.is_directionally_aligned.return_value = True
-        mock_sc.compute_distance2transport_event.return_value = (cutoff, sample_depth_high)
+        mock_sc.compute_distance2transport_event.return_value = (cutoff, sample_depth_high, sample_min_depth)
 
         assigner = EventAssigner(
             params,

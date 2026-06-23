@@ -49,6 +49,9 @@ test_parameters_trace_matching = test_parameters_minimal.copy()
 test_parameters_trace_matching["perform_trace_matching_analysis"] = True
 test_parameters_trace_matching["ambiguous_event_assignment_resolution"] = "trace_matching"
 
+test_parameters_penetration_span = test_parameters_minimal.copy()
+test_parameters_penetration_span["ambiguous_event_assignment_resolution"] = "penetration_span"
+
 # Event specification format: (md_label, event_label, (resname:resid, (start_frame, end_frame)))
 sample_event_specification_1 = ("md1", "1_entry", ("WAT:123", (10, 50)))
 sample_event_specification_2 = ("md1", "2_release", ("WAT:456", (20, 60)))
@@ -103,6 +106,16 @@ sample_buriedness_below_cutoff = 0.4
 sample_depth_high = 15.0
 sample_depth_medium = 10.0
 sample_depth_low = 5.0
+
+# Minimal (shallow-end) depth among buried nodes, used by penetration_span to compute the traversed span
+# (max_depth - min_buried_depth). Default value for tests where the span is irrelevant (other resolutions ignore it).
+sample_min_depth = 0.0
+# penetration_span fixtures: SC1 reaches deeper (larger max_depth) but over a narrow span (perpendicular-like),
+# SC2 is shallower overall yet spans a wide depth range (a genuine surface->core traversal):
+#   SC1 span = sample_depth_high  - sample_min_depth_narrow = 15.0 - 14.0 = 1.0
+#   SC2 span = sample_depth_medium - sample_min_depth_wide   = 10.0 -  2.0 = 8.0
+sample_min_depth_narrow = 14.0
+sample_min_depth_wide = 2.0
 
 # Expected return format from perform_assignment
 # (event_specification, assigned_sc_ids, max_buriedness, max_depth)
