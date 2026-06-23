@@ -60,7 +60,7 @@ class TestTransportProcesses(unittest.TestCase):
             return
 
         # Config file is now in the output directory, so it's removed with rmtree
-        #rmtree(cls.out_path)
+        rmtree(cls.out_path)
 
     def tearDown(self):
         """
