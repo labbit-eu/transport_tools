@@ -312,7 +312,11 @@ class AnalysisConfig:
             "log_level": "info",
             "std_level": "info",
             "msms": None,  # path to binary of  https://ccsb.scripps.edu/msms/ program for faster volume visulaization
-            "max_events_per_cluster4visualization": 1000
+            "max_events_per_cluster4visualization": 1000,
+            # When on (default), transport-event paths are written as one bundled CGO per (supercluster, scope)
+            # holding only the subsampled events, instead of one CGO file per event. Set False for the legacy
+            # one-file-per-event layout.
+            "bundle_events_visualization": True
         }
         self.advanced_settings_defaults = self.advanced_settings.copy()
 
@@ -397,6 +401,7 @@ class AnalysisConfig:
             "visualize_transformed_transport_events",
             "visualize_layered_clusters",
             "visualize_layered_events",
+            "bundle_events_visualization",
             "visualize_exact_matching_outcomes",
             "legacy_pymol_support",
             "aquaduct_allow_empty_folders",

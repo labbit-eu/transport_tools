@@ -405,11 +405,13 @@ def get_residue_color(residue_rank: int) -> List[float]:
     return colors[color_id]
 
 
-def convert_coords2cgo(coords: np.ndarray, color_id: int | None) -> List[float]:
+def convert_coords2cgo(coords: np.ndarray, color_id: int | None, rgb: List[float] | None = None) -> List[float]:
     """
     Converts xyz-coordinates of sequence of points such as trace and tunnel to Pymol compiled graphics object(CGO)
     :param coords: xyz-coordinates of points
     :param color_id: Pymol color id
+    :param rgb: explicit RGB color to bake into the CGO; overrides color_id when given (used to bake the
+                residue-event colors from get_residue_color directly into bundled event CGOs)
     :return: CGO of the points
     """
 
@@ -420,7 +422,7 @@ def convert_coords2cgo(coords: np.ndarray, color_id: int | None) -> List[float]:
     vertex = 4.0
     color = 6.0
 
-    cgo = [begin, line_strip, color, *get_caver_color(color_id)]
+    cgo = [begin, line_strip, color, *(rgb if rgb is not None else get_caver_color(color_id))]
     for xyz in coords:
         cgo.extend([vertex, xyz[0], xyz[1], xyz[2]])
 

@@ -337,29 +337,35 @@ class Network:
 
                 view_out.write("cmd.disable('{}*')\n\n".format(self.orig_entities[0].entity_pymol_label[0:3]))
 
-    def save_layered_visualization(self, save_pdb_files: bool = False):
+    def save_layered_visualization(self, save_pdb_files: bool = False, save_cgo_files: bool = True):
         """
         Saves CGO files with layered entities (LayeredPathSet representing transport events or tunnel clusters)
         and optionally also PDBs of transformed protein structure and tunnel starting point
         :param save_pdb_files: if the PDB files are to be saved
+        :param save_cgo_files: if a per-entity CGO file is to be written; disabled for transport events when
+                               bundle_events_visualization is on, since stage 9 then builds bundled CGOs from
+                               the layered_network.dump instead of one file per event
         """
 
         if self.layered_viz_path is None:
             raise ValueError("Output folder for layered_visualization not correctly specified in variable "
                              "'self.layered_viz_path'")
 
-        os.makedirs(self.layered_viz_path, exist_ok=True)
+        if save_pdb_files:
+            os.makedirs(self.layered_viz_path, exist_ok=True)
+            if self.transformed_pdb_file_name is None:
+                raise ValueError("Variable 'self.transformed_pdb_file_name' is not specified")
+            Point([0, 0, 0]).save_point(os.path.join(self.layered_viz_path, "origin.pdb"))
+            self._save_transformed_pdb_file(os.path.join(self.layered_viz_path, self.transformed_pdb_file_name))
+
+        if not save_cgo_files:
+            # Nothing per-entity to write (e.g. bundled event visualization); do not create empty viz folders.
+            return
 
         if self.entity_pymol_abbreviation is None:
             raise ValueError("Variable 'self.entity_pymol_abbreviation' is not specified")
 
         os.makedirs(os.path.join(self.layered_viz_path, "paths"), exist_ok=True)
-
-        if save_pdb_files:
-            if self.transformed_pdb_file_name is None:
-                raise ValueError("Variable 'self.transformed_pdb_file_name' is not specified")
-            Point([0, 0, 0]).save_point(os.path.join(self.layered_viz_path, "origin.pdb"))
-            self._save_transformed_pdb_file(os.path.join(self.layered_viz_path, self.transformed_pdb_file_name))
 
         for entity_id, layered_path_set in self.layered_entities.items():
             # Use per-entity visualization_prefix if available (e.g. for mixed-residue aqueduct networks)
@@ -2739,22 +2745,26 @@ class SuperCluster:
         return transport_event.how_much_is_inside(self.path_sets["overall"])
 
     # === methods for data reporting ===
-    def prepare_visualization(self,  md_label: str = "overall", flag: str = "") -> Tuple[List[str], Tuple[LayeredPathSet, Tuple[str, str, int, bool, str]] | None]:
+    def prepare_visualization(self,  md_label: str = "overall", flag: str = "") -> Tuple[List[str], Tuple[LayeredPathSet, Tuple[str, str, int, bool, str]] | None, Tuple[str, List[Tuple[str, str, Tuple[str, str], List[float]]]] | None]:
         """
         Prepare overall CGO files for visualization of paths representing this supercluster (SC) and generate lines
         for Pymol visualization script
         :param md_label: visualization of which simulations to prepare; by default 'overall' visualization
         :param flag: additional description enabling differentiation of cgo files among various results after filtering
-        :return: lines to load visualization of this SC into Pymol, LayeredPathSet and parameters to generate CGO file
+        :return: lines to load visualization of this SC into Pymol; LayeredPathSet and parameters to generate the
+                 SC tunnel CGO file; and (when bundling events) the event-bundle request as (bundle_basename,
+                 selection) where selection is a list of (md_label, entity_key, (event_type, resname), rgb) for the
+                 caller to materialise into the bundle - None when bundling is off or the SC has no events to show
         """
 
         plines = list()
         viz_data = None
+        bundle_request = None
 
         if md_label not in self.path_sets.keys() or md_label not in self.properties.keys() \
                 or not self.properties[md_label]:
             # pathset not created or invalid supercluster
-            return plines, viz_data
+            return plines, viz_data, bundle_request
 
         # dump CGO files for visualization of paths representing this SC
         os.makedirs(self.parameters["super_cluster_vis_path"], exist_ok=True)
@@ -2768,10 +2778,10 @@ class SuperCluster:
         if "overall" not in md_label:
             root_folder = os.path.join(root_folder, "comparative_analysis", md_label)
 
-        vis_folder = os.path.relpath(self.parameters["super_cluster_vis_path"], root_folder)
+        sc_vis_folder = os.path.relpath(self.parameters["super_cluster_vis_path"], root_folder)
         # CGO filepath for loading to Pymol
-        filename = os.path.join(vis_folder, "SC{:02d}_{}_pathset{}.dump.gz".format(self.sc_id, md_label, flag))
-        filename_vol = os.path.join(vis_folder, "SC{:02d}_{}_volume{}.dump.gz".format(self.sc_id, md_label, flag))
+        filename = os.path.join(sc_vis_folder, "SC{:02d}_{}_pathset{}.dump.gz".format(self.sc_id, md_label, flag))
+        filename_vol = os.path.join(sc_vis_folder, "SC{:02d}_{}_volume{}.dump.gz".format(self.sc_id, md_label, flag))
 
         # generate Pymol script of this SC
         plines.append("with gzip.open({}, 'rb') as in_stream:\n".format(utils.path_loader_string(filename)))
@@ -2784,7 +2794,6 @@ class SuperCluster:
             plines.append("    volume = pickle.load(in_stream)\n")
             plines.append("cmd.load_cgo(volume, 'cluster_{:03d}_vol')\n\n".format(self.sc_id))
 
-        vis_folder = os.path.relpath(self.parameters["layered_aquaduct_vis_path"], root_folder)
         comparative_groups_definition = {}
         if self.parameters["perform_comparative_analysis"] \
                 and self.parameters["comparative_groups_definition"] is not None:
@@ -2798,32 +2807,58 @@ class SuperCluster:
             for path in paths
         })
 
-        # generate Pymol script of events assigned to this SC, grouped by (event_type, residue)
-        for event_type in sorted(self.transport_events.keys()):
-            events_by_residue: Dict[str, List[str]] = {}
-            for _md_label, path_id, resname in subsample_events(self.transport_events[event_type],
-                                                                self.parameters["random_seed"],
-                                                                self.parameters["max_events_per_cluster4visualization"],
-                                                                md_label, comparative_groups_definition):
-                filename = os.path.join(vis_folder, _md_label, "paths",
-                                        "{}_{}_pathset.dump.gz".format(resname.lower() + "_" + path_id, event_type))
-                if resname not in events_by_residue:
-                    events_by_residue[resname] = []
-                events_by_residue[resname].append("{}".format(utils.path_loader_string(filename)))
+        if self.parameters["bundle_events_visualization"]:
+            # Bundle mode: emit a single per-(SC, scope) load referencing a bundle file the caller writes,
+            # holding {(event_type, resname): merged CGO} with residue colors already baked in. The selection
+            # over event identities is computed here (no geometry) and returned for the caller to materialise.
+            selection: List[Tuple[str, str, Tuple[str, str], List[float]]] = list()
+            for event_type in sorted(self.transport_events.keys()):
+                for _md_label, path_id, resname in subsample_events(self.transport_events[event_type],
+                                                                    self.parameters["random_seed"],
+                                                                    self.parameters["max_events_per_cluster4visualization"],
+                                                                    md_label, comparative_groups_definition):
+                    entity_key = "{}_{}_{}".format(resname.lower(), path_id, event_type)
+                    rgb = utils.get_residue_color(all_residues.index(resname))
+                    selection.append((_md_label, entity_key, (event_type, resname), rgb))
 
-            for resname in sorted(events_by_residue.keys()):
-                color = utils.get_residue_color(all_residues.index(resname))
-                obj_name = "{}_{:03d}".format(resname.lower() + "_" + event_type, self.sc_id)
-                plines.append("events = [{}]\n".format(",\n".join(events_by_residue[resname])))
-                plines.append("for event in events:\n")
-                plines.append("    with gzip.open(event, 'rb') as in_stream:\n")
-                plines.append("        pathset = pickle.load(in_stream)\n")
-                plines.append("        for path in pathset:\n")
-                plines.append("            path[3:6] = {}\n".format(color))
-                plines.append("            cmd.load_cgo(path, '{}')\n".format(obj_name))
-                plines.append("cmd.set('cgo_line_width', {}, '{}')\n\n".format(2, obj_name))
+            if selection:
+                bundle_basename = "SC{:02d}_{}_events{}.dump.gz".format(self.sc_id, md_label, flag)
+                bundle_relpath = os.path.join(sc_vis_folder, bundle_basename)
+                plines.append("with gzip.open({}, 'rb') as in_stream:\n".format(utils.path_loader_string(bundle_relpath)))
+                plines.append("    sc_events = pickle.load(in_stream)\n")
+                plines.append("for (event_type, resname), event_cgo in sc_events.items():\n")
+                plines.append('    obj_name = "{{}}_{{}}_{:03d}".format(resname.lower(), event_type)\n'.format(self.sc_id))
+                plines.append("    cmd.load_cgo(event_cgo, obj_name)\n")
+                plines.append("    cmd.set('cgo_line_width', 2, obj_name)\n\n")
+                bundle_request = (bundle_basename, selection)
+        else:
+            # Legacy mode: one CGO file per event (written at stage 8); recolor per residue at load time.
+            vis_folder = os.path.relpath(self.parameters["layered_aquaduct_vis_path"], root_folder)
+            for event_type in sorted(self.transport_events.keys()):
+                events_by_residue: Dict[str, List[str]] = {}
+                for _md_label, path_id, resname in subsample_events(self.transport_events[event_type],
+                                                                    self.parameters["random_seed"],
+                                                                    self.parameters["max_events_per_cluster4visualization"],
+                                                                    md_label, comparative_groups_definition):
+                    filename = os.path.join(vis_folder, _md_label, "paths",
+                                            "{}_{}_pathset.dump.gz".format(resname.lower() + "_" + path_id, event_type))
+                    if resname not in events_by_residue:
+                        events_by_residue[resname] = []
+                    events_by_residue[resname].append("{}".format(utils.path_loader_string(filename)))
 
-        return plines, viz_data
+                for resname in sorted(events_by_residue.keys()):
+                    color = utils.get_residue_color(all_residues.index(resname))
+                    obj_name = "{}_{:03d}".format(resname.lower() + "_" + event_type, self.sc_id)
+                    plines.append("events = [{}]\n".format(",\n".join(events_by_residue[resname])))
+                    plines.append("for event in events:\n")
+                    plines.append("    with gzip.open(event, 'rb') as in_stream:\n")
+                    plines.append("        pathset = pickle.load(in_stream)\n")
+                    plines.append("        for path in pathset:\n")
+                    plines.append("            path[3:6] = {}\n".format(color))
+                    plines.append("            cmd.load_cgo(path, '{}')\n".format(obj_name))
+                    plines.append("cmd.set('cgo_line_width', {}, '{}')\n\n".format(2, obj_name))
+
+        return plines, viz_data, bundle_request
 
     def get_summary_line_data(self, print_transport_events: bool = False, md_label: str = "overall",
                               residue_names: List[str] | None = None) -> List[str]:

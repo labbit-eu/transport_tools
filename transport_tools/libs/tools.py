@@ -21,6 +21,7 @@ __author__ = 'Jan Brezovsky'
 __mail__ = 'janbre@amu.edu.pl'
 
 import os
+import gzip
 import pickle
 import numpy as np
 import fastcluster
@@ -190,19 +191,21 @@ class OutlierTransportEvents:
                     line += ", {:{we}s}, {:{wr}s}".format("-", "-", we=w_e, wr=w_r)
         return line + "\n"
 
-    def prepare_visualization(self, md_label: str = "overall") -> List[str]:
+    def prepare_visualization(self, md_label: str = "overall", flag: str = "") \
+            -> Tuple[List[str], Tuple[str, List[Tuple[str, str, Tuple[str, str], List[float]]]] | None]:
         """
         Generates lines for Pymol visualization script
         :param md_label: visualization of which simulations to prepare; by default 'overall' visualization
-        :return: lines to load visualization of this SC into Pymol
+        :param flag: additional description enabling differentiation of bundle files after re-filtering
+        :return: lines to load visualization of the outlier events into Pymol, and (when bundling events) the
+                 event-bundle request as (bundle_basename, selection) where selection is a list of
+                 (md_label, entity_key, (event_type, resname), rgb) for the caller to materialise - None when
+                 bundling is off or there are no outlier events to show
         """
 
         root_folder = self.parameters["visualization_folder"]
         if "overall" not in md_label:
             root_folder = os.path.join(root_folder, "comparative_analysis", md_label)
-
-        vis_folder = os.path.relpath(self.parameters["layered_aquaduct_vis_path"],
-                                     root_folder)
 
         comparative_groups_definition = {}
         if self.parameters["perform_comparative_analysis"] \
@@ -210,6 +213,7 @@ class OutlierTransportEvents:
             comparative_groups_definition = self.parameters["comparative_groups_definition"]
 
         plines = list()
+        bundle_request = None
         if "overall" not in md_label:
             events2process = self.transport_events
         else:
@@ -223,6 +227,34 @@ class OutlierTransportEvents:
             for path in paths
         })
 
+        if self.parameters["bundle_events_visualization"]:
+            # Bundle mode: a single outlier bundle per scope, holding {(event_type, resname): merged CGO}
+            # with residue colors baked in; selection over identities returned for the caller to materialise.
+            sc_vis_folder = os.path.relpath(self.parameters["super_cluster_vis_path"], root_folder)
+            selection: List[Tuple[str, str, Tuple[str, str], List[float]]] = list()
+            for event_type in sorted(events2process.keys()):
+                for _md_label, path_id, resname in subsample_events(events2process[event_type],
+                                                                    self.parameters["random_seed"],
+                                                                    self.parameters["max_events_per_cluster4visualization"],
+                                                                    md_label, comparative_groups_definition):
+                    entity_key = "{}_{}_{}".format(resname.lower(), path_id, event_type)
+                    rgb = utils.get_residue_color(all_residues.index(resname))
+                    selection.append((_md_label, entity_key, (event_type, resname), rgb))
+
+            if selection:
+                bundle_basename = "outliers_{}_events{}.dump.gz".format(md_label, flag)
+                bundle_relpath = os.path.join(sc_vis_folder, bundle_basename)
+                plines.append("with gzip.open({}, 'rb') as in_stream:\n".format(utils.path_loader_string(bundle_relpath)))
+                plines.append("    outlier_events = pickle.load(in_stream)\n")
+                plines.append("for (event_type, resname), event_cgo in outlier_events.items():\n")
+                plines.append('    obj_name = "{}_{}_outlier".format(resname.lower(), event_type)\n')
+                plines.append("    cmd.load_cgo(event_cgo, obj_name)\n")
+                plines.append("    cmd.set('cgo_line_width', 2, obj_name)\n\n")
+                bundle_request = (bundle_basename, selection)
+            return plines, bundle_request
+
+        # Legacy mode: one CGO file per event (written at stage 8); recolor per residue at load time.
+        vis_folder = os.path.relpath(self.parameters["layered_aquaduct_vis_path"], root_folder)
         for event_type in sorted(events2process.keys()):
             events_by_residue: Dict[str, List[str]] = {}
             for _md_label, path_id, resname in subsample_events(events2process[event_type],
@@ -247,7 +279,7 @@ class OutlierTransportEvents:
                 plines.append("            cmd.load_cgo(path, '{}')\n".format(obj_name))
                 plines.append("cmd.set('cgo_line_width', {}, '{}')\n\n".format(2, obj_name))
 
-        return plines
+        return plines, bundle_request
 
 
 class TransportProcesses:
@@ -2863,7 +2895,10 @@ class TransportProcesses:
                         logger.debug("Finished layering of network for '{}'.".format(md_label))
                         # always saving layered visualizations to enable visualization of assigned events later
                         aqua_networks[md_label].get_pdb_file()
-                        aqua_networks[md_label].save_layered_visualization(self.parameters["visualize_layered_events"])
+                        aqua_networks[md_label].save_layered_visualization(
+                            self.parameters["visualize_layered_events"],
+                            save_cgo_files=not self.parameters["bundle_events_visualization"]
+                            or self.parameters["visualize_layered_events"])
                         aqua_networks[md_label].save_layered_network()
                         aqua_networks[md_label].clean_tempfile()
                         del aqua_networks[md_label]
@@ -2971,7 +3006,10 @@ class TransportProcesses:
                 logger.debug("Finished layering of network for '{}'.".format(md_label))
                 # always saving layered visualizations to enable visualization of assigned events later
                 aquanet.get_pdb_file()
-                aquanet.save_layered_visualization(self.parameters["visualize_layered_events"])
+                aquanet.save_layered_visualization(
+                    self.parameters["visualize_layered_events"],
+                    save_cgo_files=not self.parameters["bundle_events_visualization"]
+                    or self.parameters["visualize_layered_events"])
                 aquanet.save_layered_network()
                 aquanet.clean_tempfile()
                 progressbar(i + 1, num_md, self.parameters["log_level"])
@@ -3293,6 +3331,22 @@ class TransportProcesses:
                     labels2process -= set(md_labels_in_groups)
                     labels2process.update(self.parameters["comparative_groups_definition"].keys())
 
+            # Event-bundle accumulators (populated only when bundle_events_visualization is on): the per-scope
+            # scripts reference one bundle file per (SC, scope); their geometry is materialised once after all
+            # scripts are written, loading each md_label's layered network at most once. Keyed by bundle basename
+            # (unique per scope+target), so the referenced and written filenames cannot diverge.
+            event_bundles: Dict[str, Dict[Tuple[str, str], list]] = dict()
+            needed_by_md: Dict[str, List[Tuple[str, str, Tuple[str, str], List[float]]]] = dict()
+
+            def _collect_bundle_request(_request):
+                if _request is None:
+                    return
+                _bundle_basename, _selection = _request
+                event_bundles.setdefault(_bundle_basename, dict())
+                for _ev_md, _entity_key, _group_key, _rgb in _selection:
+                    needed_by_md.setdefault(_ev_md, list()).append(
+                        (_entity_key, _bundle_basename, _group_key, _rgb))
+
             for md_label in labels2process:
                 viz_folder = self.parameters["visualization_folder"]
 
@@ -3316,15 +3370,20 @@ class TransportProcesses:
                     for prio_sc_id in sorted(self._prioritized_clusters.keys()):
                         prio_super_cluster = self._super_clusters[self._prioritized_clusters[prio_sc_id]]
                         prio_super_cluster.load_path_sets()
-                        script_lines, vis_data = prio_super_cluster.prepare_visualization(md_label, str(self.vis_flag))
+                        script_lines, vis_data, bundle_request = \
+                            prio_super_cluster.prepare_visualization(md_label, str(self.vis_flag))
                         if vis_data is None:
                             continue
                         out_stream.writelines(script_lines)
                         data4vis.append((prio_sc_id, vis_data))
+                        _collect_bundle_request(bundle_request)
 
                     # visualize unassigned transport events
                     if self._outlier_transport_events.exist():
-                        out_stream.writelines(self._outlier_transport_events.prepare_visualization(md_label))
+                        outlier_lines, outlier_bundle_request = \
+                            self._outlier_transport_events.prepare_visualization(md_label, str(self.vis_flag))
+                        out_stream.writelines(outlier_lines)
+                        _collect_bundle_request(outlier_bundle_request)
 
                     out_stream.write("cmd.do('set all_states, 1')\n")
                     out_stream.write("cmd.show('cgo')\n")
@@ -3352,6 +3411,35 @@ class TransportProcesses:
                         timeout = self.parameters["worker_task_timeout_s"]
                         for i, _ in enumerate(utils.iter_pool_results(processing, timeout=timeout, pool=pool)):
                             progressbar(i + 1, items2process, self.parameters["log_level"])
+
+            # Materialise the event bundles referenced by the scripts above. Load each md_label's layered
+            # network at most once, extract only the subsampled events, bake the residue colour into a single
+            # merged CGO per (event_type, residue), and write one bundle file per (SC, scope).
+            if needed_by_md:
+                logger.info("Building bundled transport-event visualization ({:d} bundle(s)).".format(
+                    len(event_bundles)))
+                # Iterate md_labels in a stable order so the within-group CGO concatenation is reproducible
+                # (the per-scope script files are written independently of this order).
+                for ev_md in sorted(needed_by_md.keys()):
+                    aquanet = AquaductNetwork(self.parameters, ev_md, load_only=True)
+                    aquanet.load_layered_network()
+                    for entity_key, bundle_basename, group_key, rgb in needed_by_md[ev_md]:
+                        layered_path_set = aquanet.layered_entities.get(entity_key)
+                        if layered_path_set is None:
+                            raise RuntimeError("Transport event '{}' selected for visualization bundle '{}' was "
+                                               "not found in the layered network of '{}'.".format(
+                                                   entity_key, bundle_basename, ev_md))
+                        event_bundles[bundle_basename].setdefault(group_key, list()).extend(
+                            layered_path_set.build_cgo(merged=True, rgb=rgb))
+                    del aquanet
+
+                for bundle_basename, grouped in event_bundles.items():
+                    # Write groups in sorted (event_type, residue) order so the Pymol load order is consistent
+                    # across superclusters (e.g. entries always before releases) and the bytes are reproducible.
+                    ordered = {group_key: grouped[group_key] for group_key in sorted(grouped.keys())}
+                    with gzip.open(os.path.join(self.parameters["super_cluster_vis_path"], bundle_basename),
+                                   "wb") as out_stream:
+                        pickle.dump(ordered, out_stream, self.parameters["pickle_protocol"])
 
     def get_property_time_evolution_data(self, property_name: str, active_filters: dict, sc_id: int | None = None,
                                          missing_value_default: float = 0) -> Dict[int, Dict[str, np.ndarray]]:

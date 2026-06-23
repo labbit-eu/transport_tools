@@ -31,8 +31,10 @@ test_parameters_minimal = {
     "super_cluster_details_folder": "/tmp/test_details",
     "visualization_folder": "/tmp/test_viz",
     "layered_aquaduct_vis_path": "/tmp/test_layered",
+    "super_cluster_vis_path": "/tmp/test_sc_vis",
     "random_seed": 42,
-    "max_events_per_cluster4visualization": 10
+    "max_events_per_cluster4visualization": 10,
+    "bundle_events_visualization": True
 }
 
 test_parameters_with_comparative = {
@@ -44,8 +46,10 @@ test_parameters_with_comparative = {
     "super_cluster_details_folder": "/tmp/test_details",
     "visualization_folder": "/tmp/test_viz",
     "layered_aquaduct_vis_path": "/tmp/test_layered",
+    "super_cluster_vis_path": "/tmp/test_sc_vis",
     "random_seed": 42,
-    "max_events_per_cluster4visualization": 10
+    "max_events_per_cluster4visualization": 10,
+    "bundle_events_visualization": True
 }
 
 # Mock transport event data

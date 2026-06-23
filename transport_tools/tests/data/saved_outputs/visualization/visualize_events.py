@@ -14,23 +14,12 @@ with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC02_overall_paths
 cmd.load_cgo(pathset, 'cluster_002')
 cmd.set('cgo_line_width', 5, 'cluster_002')
 
-events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_1_entry_pathset.dump.gz')]
-for event in events:
-    with gzip.open(event, 'rb') as in_stream:
-        pathset = pickle.load(in_stream)
-        for path in pathset:
-            path[3:6] = [0.0, 1.0, 1.0]
-            cmd.load_cgo(path, 'wat_entry_002')
-cmd.set('cgo_line_width', 2, 'wat_entry_002')
-
-events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_1_release_pathset.dump.gz')]
-for event in events:
-    with gzip.open(event, 'rb') as in_stream:
-        pathset = pickle.load(in_stream)
-        for path in pathset:
-            path[3:6] = [0.0, 1.0, 1.0]
-            cmd.load_cgo(path, 'wat_release_002')
-cmd.set('cgo_line_width', 2, 'wat_release_002')
+with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC02_overall_events3.dump.gz'), 'rb') as in_stream:
+    sc_events = pickle.load(in_stream)
+for (event_type, resname), event_cgo in sc_events.items():
+    obj_name = "{}_{}_002".format(resname.lower(), event_type)
+    cmd.load_cgo(event_cgo, obj_name)
+    cmd.set('cgo_line_width', 2, obj_name)
 
 with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC03_overall_pathset3.dump.gz'), 'rb') as in_stream:
     pathset = pickle.load(in_stream)
@@ -52,24 +41,12 @@ with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC07_overall_paths
 cmd.load_cgo(pathset, 'cluster_007')
 cmd.set('cgo_line_width', 5, 'cluster_007')
 
-events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_4_entry_pathset.dump.gz'),
-os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_6_entry_pathset.dump.gz')]
-for event in events:
-    with gzip.open(event, 'rb') as in_stream:
-        pathset = pickle.load(in_stream)
-        for path in pathset:
-            path[3:6] = [0.0, 1.0, 1.0]
-            cmd.load_cgo(path, 'wat_entry_outlier')
-cmd.set('cgo_line_width', 2, 'wat_entry_outlier')
-
-events = [os.path.join('sources', 'layered_data', 'aquaduct', 'md1', 'paths', 'wat_4_release_pathset.dump.gz')]
-for event in events:
-    with gzip.open(event, 'rb') as in_stream:
-        pathset = pickle.load(in_stream)
-        for path in pathset:
-            path[3:6] = [0.0, 1.0, 1.0]
-            cmd.load_cgo(path, 'wat_release_outlier')
-cmd.set('cgo_line_width', 2, 'wat_release_outlier')
+with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'outliers_overall_events3.dump.gz'), 'rb') as in_stream:
+    outlier_events = pickle.load(in_stream)
+for (event_type, resname), event_cgo in outlier_events.items():
+    obj_name = "{}_{}_outlier".format(resname.lower(), event_type)
+    cmd.load_cgo(event_cgo, obj_name)
+    cmd.set('cgo_line_width', 2, obj_name)
 
 cmd.do('set all_states, 1')
 cmd.show('cgo')

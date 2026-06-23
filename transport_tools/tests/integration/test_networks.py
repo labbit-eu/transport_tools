@@ -654,6 +654,31 @@ Number of release events = 0
         self._prioritize()
         self.super_clusters[1].compute_space_descriptors()
         self.super_clusters[1].load_path_sets()
+        script_lines, _, bundle_request = self.super_clusters[1].prepare_visualization()
+        self.assertListEqual(["with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC01_overall_pathset.dump.gz'), 'rb') as in_stream:\n",
+                              "    pathset = pickle.load(in_stream)\n",
+                              "cmd.load_cgo(pathset, 'cluster_001')\n",
+                              "cmd.set('cgo_line_width', 5, 'cluster_001')\n\n",
+                              "with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC01_overall_events.dump.gz'), 'rb') as in_stream:\n",
+                              "    sc_events = pickle.load(in_stream)\n",
+                              "for (event_type, resname), event_cgo in sc_events.items():\n",
+                              '    obj_name = "{}_{}_001".format(resname.lower(), event_type)\n',
+                              "    cmd.load_cgo(event_cgo, obj_name)\n",
+                              "    cmd.set('cgo_line_width', 2, obj_name)\n\n"],
+                             script_lines)
+        # the bundle request carries the subsampled events for the caller to materialise
+        self.assertIsNotNone(bundle_request)
+        bundle_basename, selection = bundle_request
+        self.assertEqual(bundle_basename, "SC01_overall_events.dump.gz")
+        self.assertEqual({entry[1] for entry in selection},
+                         {"wat_1_entry", "wat_4_entry", "wat_1_release"})
+
+    def test_prepare_visualization_legacy_per_event_files(self):
+        self._prioritize()
+        self.super_clusters[1].compute_space_descriptors()
+        self.super_clusters[1].load_path_sets()
+        self.super_clusters[1].parameters = dict(self.parameters)
+        self.super_clusters[1].parameters["bundle_events_visualization"] = False
         self.assertListEqual(["with gzip.open(os.path.join('sources', 'super_cluster_CGOs', 'SC01_overall_pathset.dump.gz'), 'rb') as in_stream:\n",
                               "    pathset = pickle.load(in_stream)\n",
                               "cmd.load_cgo(pathset, 'cluster_001')\n",
