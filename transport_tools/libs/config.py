@@ -30,7 +30,7 @@ from configparser import ConfigParser
 from typing import List, Any, Tuple
 from logging import getLogger
 from transport_tools.libs.ui import initiate_tools
-from transport_tools.libs.utils import get_filepath
+from transport_tools.libs.utils import get_filepath, parse_aquaduct_frames_window
 
 logger = getLogger(__name__)
 
@@ -144,8 +144,9 @@ class AnalysisConfig:
             "layer_thickness": 1.5,  # thickness of concentric layered grid
 
             # Parsing of tunnel clusters from CAVER results
-            "snapshots_per_simulation": None,  # number of snapshots used for CAVER calculation
+            "snapshots_per_simulation": None,  # number of CAVER snapshots (analyzed frames) per simulation
             "caver_traj_offset": 1,  # difference in IDs of MD frames (from 0) and caver snapshots (often from 1)
+            "caver_snapshot_stride": 1,  # source-trajectory frames per CAVER snapshot when CAVER sampled sparsely (e.g. a 20000-frame trajectory thinned to 1000 snapshots => 20); 1 = every frame analyzed
             "snapshot_id_position": 1,  # location of IDs in snapshot filenames from CAVER split by snapshot_delimiter
             "snapshot_delimiter": ".",  # delimiter used for splitting snapshot filenames from CAVER to get IDs
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
@@ -297,6 +298,7 @@ class AnalysisConfig:
             "perform_trace_matching_analysis": False,  # like perform_exact_matching_analysis but trajectory-free,
             # using the AQUA-DUCT per-frame trace; runs for all assigned events and writes per-event detail output
             "perform_comparative_analysis": False,
+            "interpolate_missing_snapshots4matching": False, # enables matching to ligand/trace nearest existing snapshot analyzed by Caver
             "visualize_comparative_super_cluster_volumes": False,
             "comparative_groups_definition": None,
             # Format of group definition: group_name1: [folder1, folder2, ...]; group_name2: [folder1, folder2, ...]...
@@ -393,6 +395,7 @@ class AnalysisConfig:
             "verbose_logging",
             "overwrite",
             "perform_comparative_analysis",
+            "interpolate_missing_snapshots4matching",
             "save_super_cluster_profiles_csvs",
             "save_distance_matrix_csv",
             "visualize_super_cluster_volumes",
@@ -415,6 +418,7 @@ class AnalysisConfig:
             "worker_task_timeout_s",
             "snapshots_per_simulation",
             "caver_traj_offset",
+            "caver_snapshot_stride",
             "snapshot_id_position",
             "relevant_tunnel_cluster_min_size",
             "min_sims_num",
@@ -1020,6 +1024,7 @@ class AnalysisConfig:
         self._test_parameter_sanity("layer_thickness", 0.9, sys.maxsize)
         self._test_parameter_sanity("snapshots_per_simulation", 1, sys.maxsize)
         self._test_parameter_sanity("caver_traj_offset", 0, 1)
+        self._test_parameter_sanity("caver_snapshot_stride", 1, sys.maxsize)
         self._test_parameter_sanity("snapshot_id_position", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_cluster_min_size", 1, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_radius", 0, sys.maxsize)
@@ -1231,10 +1236,70 @@ class AnalysisConfig:
                 if missing_file_reports:
                     raise FileNotFoundError(missing_file_reports)
 
+                self._validate_caver_snapshot_stride(aquaduct_paths)
+
         if self.parameters["visualize_comparative_super_cluster_volumes"]:
             if not self.parameters["visualize_super_cluster_volumes"]:
                 raise ValueError("\nWhen 'visualize_comparative_super_cluster_volumes' parameter is enabled, "
                                  "'visualize_super_cluster_volumes' must be enabled too.")
+
+    def _validate_caver_snapshot_stride(self, aquaduct_paths: dict):
+        """
+        Cross-check caver_snapshot_stride against the AQUA-DUCT analyzed frame window. The N CAVER
+        snapshots (snapshots_per_simulation) sampled at the configured stride should span roughly the
+        analyzed frame window (num * stride ~ window length); if they do not, the event<->snapshot mapping
+        used by exact/trace matching would be wrong. Raises when a stride-dependent role is active
+        (matching, or matching-based ambiguous resolution), otherwise only warns so a dormant mismatch
+        never blocks a run that does not use the mapping. Cheap: reads the small summary of a single
+        simulation (the window is uniform across them).
+        :param aquaduct_paths: mapping of root path -> list of AQUA-DUCT md_labels found under it
+        """
+
+        num = self.parameters.get("snapshots_per_simulation")
+        if not num:  # not known yet (relies on later auto-detection); the stage-2 check is the backstop
+            return
+
+        summary_pattern = self.parameters["aquaduct_results_relative_summaryfile"]
+        summary_file = None
+        for root_path, md_labels in aquaduct_paths.items():
+            for md_label in md_labels:
+                try:
+                    summary_file = get_filepath(os.path.join(root_path, md_label), summary_pattern)
+                except RuntimeError:
+                    continue
+                break
+            if summary_file is not None:
+                break
+        if summary_file is None:
+            return
+
+        with open(summary_file) as in_stream:
+            event_domain_length = parse_aquaduct_frames_window(in_stream.readlines())
+        if event_domain_length is None:  # older AQUA-DUCT output without the window line
+            logger.debug("AQUA-DUCT summary %s has no 'Frames window' line; cannot validate "
+                         "'caver_snapshot_stride'.", summary_file)
+            return
+
+        config_stride = self.parameters.get("caver_snapshot_stride") or 1
+        # the configured stride is consistent if N snapshots at that stride span the analyzed window to
+        # within one stride (the slack absorbs an off-by-one frame count or a dropped partial last window)
+        if abs(event_domain_length - num * config_stride) < config_stride:
+            return
+
+        expected_stride = max(1, round(event_domain_length / num))
+        needs_map = (self.parameters.get("perform_exact_matching_analysis")
+                     or self.parameters.get("perform_trace_matching_analysis")
+                     or self.parameters.get("ambiguous_event_assignment_resolution") in ("exact_matching",
+                                                                                          "trace_matching"))
+        message = ("AQUA-DUCT analyzed {} frames for {} CAVER snapshots, implying a sampling stride of "
+                   "~{}, but 'caver_snapshot_stride' is {}.".format(event_domain_length, num,
+                                                                    expected_stride, config_stride))
+        if needs_map:
+            raise ValueError("\n" + message + " Event matching (or matching-based ambiguous resolution) "
+                             "relies on this mapping, so set 'caver_snapshot_stride' to {} to match the "
+                             "data.".format(expected_stride))
+        logger.warning("%s It does not affect this run (no event matching uses the mapping), but set "
+                       "'caver_snapshot_stride' to %d if you enable matching.", message, expected_stride)
 
     def _detect_set_pdb_reference_structure(self):
         """

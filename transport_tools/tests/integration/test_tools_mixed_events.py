@@ -22,10 +22,14 @@ __mail__ = 'janbre@amu.edu.pl'
 
 import unittest
 import os
+import json
 import pytest
 from transport_tools.libs.utils import (set_paths_from_package_root, prep_test_config,
                                          compare_test_folders, compare_test_files)
 from transport_tools.libs.tools import load_checkpoint, TransportProcesses, save_checkpoint
+from transport_tools.tests.integration.generate_event_assignment_fixtures import (
+    MIXED_EVENTS_TRACE_VARIANTS, MIXED_EVENTS_TRACE_SAMPLE_FILES, MIXED_EVENTS_TRACE_MANIFEST_FILE,
+    variant_artifacts, list_trace_detail_files)
 
 
 class TestTransportProcessesMixedEvents(unittest.TestCase):
@@ -324,6 +328,51 @@ class TestTransportProcessesMixedEvents(unittest.TestCase):
                                    os.path.join(self.out_path, rel), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(11), overwrite=True)
+
+    # ------------------------------------------------------------------
+    # Stage 12 — alternative event assignment: trajectory-free trace_matching under the CAVER sampling
+    # stride (caver_snapshot_stride=20), golden-compared with the frame->snapshot mapping in both modes,
+    # exact alignment and interpolation. Each variant runs on a freshly loaded stage-10 checkpoint so the
+    # assignment mutations do not leak between variants or into test_11's default chain. The variant set and
+    # the artifact helpers are shared with the fixture generator (generate_event_assignment_fixtures) so the
+    # producer and consumer cannot drift.
+    # ------------------------------------------------------------------
+    def test_12assign_transport_events_trace_matching(self):
+        try:
+            load_checkpoint(self._get_dumpfile(10))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        for variant, param_overrides in MIXED_EVENTS_TRACE_VARIANTS:
+            # the matching code appends per-event files without clearing, so wipe the analysis folder before
+            # each variant - otherwise files from the previous variant would leak into this variant's manifest
+            analysis_root = os.path.join(self.out_path, "data", "trace_matching_analysis")
+            if os.path.exists(analysis_root):
+                from shutil import rmtree
+                rmtree(analysis_root)
+
+            mol_system = load_checkpoint(self._get_dumpfile(10))
+            for key, value in param_overrides.items():
+                mol_system.parameters[key] = value
+            mol_system.assign_transport_events()
+            mol_system.generate_super_cluster_summary(out_filename="3-initial_events_summary.txt")
+
+            fixtures = os.path.join(self.saved_data, "event_assignment_variants", variant)
+            # the two small assignment-outcome artifacts (summary + supercluster events details)
+            for produced, relpath in variant_artifacts(self.out_path):
+                compare_test_files(os.path.join(fixtures, relpath), produced, self)
+            # the full per-event analysis output is validated by identity: the produced detail-file set per
+            # simulation must match the committed manifest exactly (which (event, supercluster) pairs matched),
+            # without committing the ~68 MB of file contents
+            with open(os.path.join(fixtures, MIXED_EVENTS_TRACE_MANIFEST_FILE)) as manifest_stream:
+                expected_manifest = json.load(manifest_stream)
+            self.assertEqual(expected_manifest, list_trace_detail_files(self.out_path),
+                             msg="variant {}: produced trace_matching detail-file set differs from the "
+                                 "committed manifest".format(variant))
+            # and the numeric content (frame->snapshot mapping, distances) is golden-compared for a curated few
+            for relpath in MIXED_EVENTS_TRACE_SAMPLE_FILES:
+                compare_test_files(os.path.join(fixtures, relpath),
+                                   os.path.join(self.out_path, "data", relpath), self)
 
 
 class TestAquaductTracedResiduesFilterIntegration(unittest.TestCase):

@@ -700,6 +700,7 @@ class TestTunnelNetworksShardStageFingerprint(unittest.TestCase):
         params = {
             "caver_results_folder_pattern": "*",
             "snapshots_per_simulation": 10,
+            "caver_snapshot_stride": 1,
             "caver_traj_offset": 1,
             "process_bottleneck_residues": False,
             "visualize_transformed_tunnels": False,
@@ -729,6 +730,12 @@ class TestTunnelNetworksShardStageFingerprint(unittest.TestCase):
         stage = TunnelNetworksShardStage(["md1"])
         fp1 = stage.fingerprint(self._params(snapshots_per_simulation=10), num_shards=1)
         fp2 = stage.fingerprint(self._params(snapshots_per_simulation=20), num_shards=1)
+        self.assertNotEqual(fp1, fp2)
+
+    def test_fingerprint_changes_when_caver_snapshot_stride_differs(self):
+        stage = TunnelNetworksShardStage(["md1"])
+        fp1 = stage.fingerprint(self._params(caver_snapshot_stride=1), num_shards=1)
+        fp2 = stage.fingerprint(self._params(caver_snapshot_stride=20), num_shards=1)
         self.assertNotEqual(fp1, fp2)
 
     def test_fingerprint_changes_when_visualize_transformed_tunnels_flips(self):

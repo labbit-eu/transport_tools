@@ -678,5 +678,66 @@ class TestAquaductNetworkLazyInput(unittest.TestCase):
         gfp.assert_called_once()
 
 
+class TestValidateSnapshotSampling(unittest.TestCase):
+    """
+    Cross-check of the configured snapshot sampling against the CAVER snapshot IDs actually parsed
+    (TunnelNetwork._validate_snapshot_sampling). The method only reads orig_entities, parameters and
+    md_label, so it is exercised here on a lightweight stand-in carrying real TunnelCluster instances.
+    """
+
+    @staticmethod
+    def _make_self(observed_ids, snapshots_per_simulation, caver_snapshot_stride=None):
+        from types import SimpleNamespace
+        from transport_tools.libs.networks import TunnelCluster
+        transform_mat = np.eye(4)
+        sp = np.array([[0.0, 0.0, 0.0]])
+        params = {"snapshots_per_simulation": snapshots_per_simulation,
+                  "relevant_tunnel_min_radius": 0, "relevant_tunnel_min_length": 0,
+                  "relevant_tunnel_max_curvature": 999, "tunnel_properties_quantile": 0.9,
+                  "layer_thickness": 1.5, "sp_radius": 0.5}
+        if caver_snapshot_stride is not None:
+            params["caver_snapshot_stride"] = caver_snapshot_stride
+        cluster = TunnelCluster(1, params, transform_mat, sp)
+        # only the snapshot-ID keys are inspected, so the tunnel values are irrelevant here
+        cluster.tunnels = {int(i): None for i in observed_ids}
+        return SimpleNamespace(orig_entities=[cluster], parameters=params, md_label="md1")
+
+    def _validate(self, fake_self):
+        from transport_tools.libs.networks import TunnelNetwork
+        TunnelNetwork._validate_snapshot_sampling(fake_self)
+
+    def test_dense_sequential_full_run_passes(self):
+        # dense IDs 1..10 matching snapshots_per_simulation -> no complaint
+        fake_self = self._make_self(range(1, 11), snapshots_per_simulation=10)
+        self._validate(fake_self)
+        self.assertEqual(False, fake_self.parameters["_caver_snapshot_by_frame"])
+        self.assertEqual(1, fake_self.parameters["_caver_snapshot_id_stride"])
+
+    def test_by_frame_consistent_stride_passes_and_caches_mode(self):
+        # frame-numbered IDs spaced by 20 (gcd=20) with a matching configured stride
+        fake_self = self._make_self([1, 21, 41], snapshots_per_simulation=3, caver_snapshot_stride=20)
+        self._validate(fake_self)
+        self.assertEqual(True, fake_self.parameters["_caver_snapshot_by_frame"])
+        self.assertEqual(20, fake_self.parameters["_caver_snapshot_id_stride"])
+
+    def test_by_frame_conflicting_stride_raises(self):
+        # IDs imply a stride of 20 but the config claims 5 -> hard error
+        fake_self = self._make_self([1, 21, 41], snapshots_per_simulation=3, caver_snapshot_stride=5)
+        with self.assertRaises(RuntimeError):
+            self._validate(fake_self)
+
+    def test_sequential_trajectory_length_misconfig_raises(self):
+        # dense IDs 1..3 but snapshots_per_simulation left at the 1000-frame trajectory length
+        fake_self = self._make_self([1, 2, 3], snapshots_per_simulation=1000)
+        with self.assertRaises(RuntimeError):
+            self._validate(fake_self)
+
+    def test_sequential_modest_shortfall_warns(self):
+        # a tunnel-less tail (max ID 8 of 10) is only a hint, not an error
+        fake_self = self._make_self(range(1, 9), snapshots_per_simulation=10)
+        with self.assertLogs("transport_tools.libs.networks", level="WARNING"):
+            self._validate(fake_self)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -378,6 +378,26 @@ class TestTunnelProfile4MD(unittest.TestCase):
         expected_length = test_parameters["snapshots_per_simulation"]
         self.assertEqual(expected_length, len(data))
 
+    def test_get_property_time_evolution_data_length_independent_of_stride(self):
+        """
+        The time-evolution array spans the analysed-snapshot domain (snapshots_per_simulation), not the
+        wider event-frame domain, so configuring a sampling stride does not inflate it. The dense snapshot
+        ids (1, 2, 3) keep the labelling sequential, so the domain stays 1..N at any stride.
+        """
+        strided_params = test_parameters.copy()
+        strided_params["caver_snapshot_stride"] = 20
+
+        strided_profile = TunnelProfile4MD(
+            md_label="md1",
+            caver_clusters=[1, 2],
+            dump_file=self.dump_file,
+            parameters=strided_params
+        )
+        strided_profile.load_network()
+
+        data = strided_profile.get_property_time_evolution_data("bottleneck_radius")
+        self.assertEqual(test_parameters["snapshots_per_simulation"], len(data))
+
     def test_get_property_time_evolution_data_uses_default_for_missing_frames(self):
         """
         Test that get_property_time_evolution_data() uses default value for missing frames

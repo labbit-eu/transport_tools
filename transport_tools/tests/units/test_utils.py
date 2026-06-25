@@ -323,5 +323,173 @@ class TestGetResidueColor(unittest.TestCase):
             self.assertNotEqual(get_residue_color(rank), get_caver_color(rank))
 
 
+class TestSnapshotFrameMap(unittest.TestCase):
+    """Frame<->snapshot mapping under CAVER snapshot sparsity (caver_snapshot_stride)."""
+
+    def test_default_stride1_matches_legacy(self):
+        """At stride 1 the map reproduces the legacy 'frame + offset' behaviour exactly."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        m = SnapshotFrameMap(5, offset=1, stride=1)
+        self.assertEqual([m.frame_to_snap(f) for f in range(5)], [1, 2, 3, 4, 5])
+        self.assertIsNone(m.frame_to_snap(5))      # frame 5 -> snap 6 is outside 1..5
+        self.assertIsNone(m.frame_to_snap(-1))
+        self.assertEqual(m.snapshot_ids(), [1, 2, 3, 4, 5])
+        self.assertEqual(m.num_analyzed_snapshots, 5)
+        self.assertEqual([m.snap_to_frame(s) for s in (1, 2, 5)], [0, 1, 4])
+
+    def test_sequential_stride_exact(self):
+        """Sequential, stride 20: only frames on the analysed grid map; the rest are None."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        m = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=False, id_stride=1)
+        self.assertEqual(m.frame_to_snap(0), 1)
+        self.assertEqual(m.frame_to_snap(20), 2)
+        self.assertEqual(m.frame_to_snap(40), 3)
+        self.assertEqual(m.frame_to_snap(19980), 1000)
+        for f in (1, 5, 19, 21, 39):               # between analysed snapshots -> no tunnel
+            self.assertIsNone(m.frame_to_snap(f))
+        self.assertIsNone(m.frame_to_snap(20000))  # past the analysed domain
+        self.assertEqual(m.snapshot_ids()[:3], [1, 2, 3])
+
+    def test_sequential_stride_interpolate(self):
+        """interpolate=True returns the nearest analysed snapshot (half-up), clamped to the domain."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        m = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=False, id_stride=1)
+        self.assertEqual(m.frame_to_snap(5, interpolate=True), 1)    # closest to frame 0
+        self.assertEqual(m.frame_to_snap(10, interpolate=True), 2)   # tie -> half-up to frame 20
+        self.assertEqual(m.frame_to_snap(15, interpolate=True), 2)
+        self.assertEqual(m.frame_to_snap(19, interpolate=True), 2)
+        self.assertEqual(m.frame_to_snap(30, interpolate=True), 3)
+        self.assertEqual(m.frame_to_snap(10 ** 9, interpolate=True), 1000)  # clamped to last
+        self.assertEqual(m.frame_to_snap(-5, interpolate=True), 1)          # clamped to first
+
+    def test_by_frame_exact(self):
+        """by_frame: IDs are frame numbers; only grid frames map, to the real observed IDs."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        m = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=True, id_stride=20)
+        self.assertEqual(m.frame_to_snap(0), 1)
+        self.assertEqual(m.frame_to_snap(20), 21)
+        self.assertEqual(m.frame_to_snap(40), 41)
+        for f in (1, 5, 19):
+            self.assertIsNone(m.frame_to_snap(f))
+        self.assertEqual(m.snapshot_ids()[:3], [1, 21, 41])
+
+    def test_by_frame_interpolate(self):
+        from transport_tools.libs.utils import SnapshotFrameMap
+        m = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=True, id_stride=20)
+        self.assertEqual(m.frame_to_snap(5, interpolate=True), 1)
+        self.assertEqual(m.frame_to_snap(15, interpolate=True), 21)
+        self.assertEqual(m.frame_to_snap(25, interpolate=True), 21)
+
+    def test_sequential_and_by_frame_match_same_physical_frames(self):
+        """Same physical sampling, two labellings: both match the same frames and the same physical time."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        seq = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=False, id_stride=1)
+        byf = SnapshotFrameMap(1000, offset=1, stride=20, by_frame=True, id_stride=20)
+        for f in range(0, 200):
+            matched_seq = seq.frame_to_snap(f) is not None
+            matched_byf = byf.frame_to_snap(f) is not None
+            self.assertEqual(matched_seq, matched_byf, "labellings disagree on frame {}".format(f))
+            if matched_seq:
+                # the two snapshot IDs label the same physical source-trajectory frame
+                self.assertEqual(seq.snap_to_frame(seq.frame_to_snap(f)),
+                                 byf.snap_to_frame(byf.frame_to_snap(f)))
+
+    def test_snap_to_frame_roundtrip(self):
+        from transport_tools.libs.utils import SnapshotFrameMap
+        for m in (SnapshotFrameMap(50, offset=1, stride=20, by_frame=False, id_stride=1),
+                  SnapshotFrameMap(50, offset=1, stride=20, by_frame=True, id_stride=20),
+                  SnapshotFrameMap(50, offset=0, stride=1)):
+            for snap in m.snapshot_ids():
+                self.assertEqual(m.frame_to_snap(m.snap_to_frame(snap)), snap)
+
+    def test_detect_sequential_from_dense_ids(self):
+        """Dense observed IDs => sequential; the configured stride is honoured, id_stride stays 1."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        p = {"snapshots_per_simulation": 1000, "caver_traj_offset": 1, "caver_snapshot_stride": 20}
+        m = SnapshotFrameMap.from_parameters(p, observed_ids=list(range(1, 1001)))
+        self.assertFalse(m.by_frame)
+        self.assertEqual(m.id_stride, 1)
+        self.assertEqual(m.map_stride, 20)             # the user's stride drives the mapping
+        self.assertEqual(m.frame_to_snap(20), 2)
+        self.assertEqual(m.snapshot_ids()[:3], [1, 2, 3])
+
+    def test_detect_by_frame_from_spaced_ids(self):
+        """Spaced observed IDs => by_frame; stride is read from the data gap."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        p = {"snapshots_per_simulation": 1000, "caver_traj_offset": 1, "caver_snapshot_stride": 1}
+        m = SnapshotFrameMap.from_parameters(p, observed_ids=[1 + 20 * i for i in range(1000)])
+        self.assertTrue(m.by_frame)
+        self.assertEqual(m.id_stride, 20)
+        self.assertEqual(m.frame_to_snap(20), 21)
+
+    def test_detect_sequential_with_trailing_holes(self):
+        """A sequential run ending tunnel-less (max ID < N) must still detect as sequential, not by_frame."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        p = {"snapshots_per_simulation": 1000, "caver_traj_offset": 1, "caver_snapshot_stride": 1}
+        m = SnapshotFrameMap.from_parameters(p, observed_ids=list(range(1, 996)))  # 996..1000 absent
+        self.assertFalse(m.by_frame)
+        self.assertEqual(m.id_stride, 1)
+
+    def test_detect_sequential_with_interior_holes(self):
+        """Interior gaps keep gcd at 1 => sequential."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        p = {"snapshots_per_simulation": 10, "caver_traj_offset": 1, "caver_snapshot_stride": 1}
+        m = SnapshotFrameMap.from_parameters(p, observed_ids=[1, 2, 3, 5, 6, 7])  # 4 missing
+        self.assertFalse(m.by_frame)
+
+    def test_resolve_into_caches_and_is_idempotent(self):
+        """resolve_into caches the labelling on the parameters dict and keeps an already-cached one."""
+        from transport_tools.libs.utils import SnapshotFrameMap as M
+        p = {"snapshots_per_simulation": 100, "caver_traj_offset": 1, "caver_snapshot_stride": 1}
+        m = M.resolve_into(p, observed_ids=[1 + 20 * i for i in range(100)])
+        self.assertTrue(m.by_frame)
+        self.assertEqual(p[M.MODE_KEY], True)
+        self.assertEqual(p[M.ID_STRIDE_KEY], 20)
+        # a second call with contradicting observed IDs keeps the cached labelling
+        m2 = M.resolve_into(p, observed_ids=list(range(1, 101)))
+        self.assertTrue(m2.by_frame)
+
+    def test_from_parameters_uses_cached_mode_without_observed_ids(self):
+        from transport_tools.libs.utils import SnapshotFrameMap as M
+        p = {"snapshots_per_simulation": 100, "caver_traj_offset": 1, "caver_snapshot_stride": 20,
+             M.MODE_KEY: True, M.ID_STRIDE_KEY: 20}
+        m = M.from_parameters(p)
+        self.assertTrue(m.by_frame)
+        self.assertEqual(m.id_stride, 20)
+
+    def test_from_parameters_fallback_sequential(self):
+        """With neither observed IDs nor a cached mode, fall back to sequential (back-compatible)."""
+        from transport_tools.libs.utils import SnapshotFrameMap
+        p = {"snapshots_per_simulation": 100, "caver_traj_offset": 1}
+        m = SnapshotFrameMap.from_parameters(p)
+        self.assertFalse(m.by_frame)
+        self.assertEqual(m.id_stride, 1)
+        self.assertEqual(m.map_stride, 1)
+
+    def test_derive_stride(self):
+        from transport_tools.libs.utils import SnapshotFrameMap
+        self.assertEqual(SnapshotFrameMap.derive_stride(20000, 1000), (20, True))
+        self.assertEqual(SnapshotFrameMap.derive_stride(20001, 1000), (20, False))
+        self.assertEqual(SnapshotFrameMap.derive_stride(500, 0), (1, False))
+
+
+class TestParseAquaductFramesWindow(unittest.TestCase):
+    def test_parses_window_step1(self):
+        from transport_tools.libs.utils import parse_aquaduct_frames_window
+        self.assertEqual(parse_aquaduct_frames_window(["Frames window: 0:19999 step 1"]), 20000)
+
+    def test_parses_window_with_step(self):
+        from transport_tools.libs.utils import parse_aquaduct_frames_window
+        self.assertEqual(parse_aquaduct_frames_window(["Frames window: 0:19998 step 2"]), 10000)
+
+    def test_missing_line_returns_none(self):
+        from transport_tools.libs.utils import parse_aquaduct_frames_window
+        self.assertIsNone(parse_aquaduct_frames_window(["some other summary line", "no window here"]))
+
+    def test_step_zero_returns_none(self):
+        from transport_tools.libs.utils import parse_aquaduct_frames_window
+        self.assertIsNone(parse_aquaduct_frames_window(["Frames window: 0:100 step 0"]))
+
+
 if __name__ == "__main__":
     unittest.main()

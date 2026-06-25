@@ -37,7 +37,9 @@ from transport_tools.tests.units.data.data_event_assigner import (
     sample_buriedness_below_cutoff, sample_depth_high, sample_depth_medium,
     sample_depth_low, sample_exact_matching_buriedness, sample_exact_matching_no_tunnels,
     sample_min_depth, sample_min_depth_narrow, sample_min_depth_wide,
-    sample_direction_aligned, sample_direction_offaxis
+    sample_direction_aligned, sample_direction_offaxis,
+    test_parameters_trace_matching_strided, test_parameters_trace_matching_dense,
+    test_parameters_trace_matching_strided_interp, sample_event_frame_trace
 )
 
 
@@ -776,6 +778,112 @@ class TestEventAssignerDirectionality(unittest.TestCase):
 
         self.assertIsNotNone(assigned_ids)
         self.assertEqual(sorted(assigned_ids), [1, 2])
+
+
+class TestEventAssignerStridedMatching(unittest.TestCase):
+    """
+    event frame -> CAVER snapshot tests for trajectory-free trace matching under a sampling stride.
+
+    With caver_snapshot_stride > 1 only event frames that land on an analysed CAVER snapshot are matched;
+    the frames between snapshots map to None and are skipped (exact alignment), so the ligand is never
+    compared against a tunnel from a different time. At stride 1 every frame resolves to its own snapshot,
+    reproducing the legacy f + caver_traj_offset behaviour.
+    """
+
+    @staticmethod
+    def _make_recording_supercluster():
+        """
+        Mock supercluster whose single CAVER cluster records every snapshot id it is queried for and always
+        reports a buried sphere (distance 0.5 <= the 1.5 effective-radius cutoff). Returns the supercluster
+        and the list the queried snapshot ids accumulate into.
+        """
+
+        queried_snap_ids = []
+        mock_cluster = Mock()
+        mock_cluster.cluster_id = 1
+
+        def _closest(trace_xyz, snap_id):
+            queried_snap_ids.append(snap_id)
+            # (distance, 6-element sphere [x, y, z, dist, radius, length]) -> closest_tunnels_data row of 12
+            return 0.5, np.array([1.0, 1.0, 1.0, 0.5, 2.0, 15.0])
+
+        mock_cluster.get_closest_tunnel_sphere_in_frame2coords.side_effect = _closest
+
+        mock_sc = Mock()
+        mock_sc.sc_id = 1
+        mock_sc.get_caver_clusters.return_value = {"md1": [mock_cluster]}
+        return mock_sc, queried_snap_ids
+
+    @staticmethod
+    def _make_event():
+        mock_event = Mock()
+        mock_event.entity_label = "1_entry"
+        mock_event.nodes_data = sample_nodes_data_entry
+        return mock_event
+
+    def test_strided_matching_queries_only_grid_snapshots(self):
+        """
+        Verify under stride 20 only event frames on the snapshot grid (20, 40 -> snapshots 2, 3) are matched
+        and the 39 in-between frames are skipped, so no tunnel is ever queried for a non-analysed frame
+        """
+        params = test_parameters_trace_matching_strided.copy()
+        mock_sc, queried_snap_ids = self._make_recording_supercluster()
+
+        with patch("transport_tools.libs.tools.get_event_frame_traces",
+                   return_value={"1_entry": sample_event_frame_trace}):
+            assigner = EventAssigner(params, sample_event_specification_1, self._make_event(),
+                                     {1: mock_sc}, test_active_filters)
+            buriedness = assigner._trace_event_tunnel_matching(np.array([1]))
+
+        # event frames 20 and 40 are the only ones on the snapshot grid (stride 20) -> snapshots 2 and 3;
+        # frames 10..19, 21..39, 41..50 map to None and are skipped (never queried for a tunnel)
+        self.assertEqual(sorted(set(queried_snap_ids)), [2, 3])
+        mock_sc.get_caver_clusters.assert_called_once_with(md_labels=["md1"], snap_ids=[2, 3])
+        # both matched frames are buried (dist 0.5 <= 1.5): 2 buried of 41 reported frames; of 2 existing tunnels
+        self.assertAlmostEqual(buriedness["4all_frames"][1], 2 / 41)
+        self.assertAlmostEqual(buriedness["4existing_tunnels"][1], 1.0)
+
+    def test_dense_stride1_matching_queries_every_frame(self):
+        """
+        Verify at the default stride 1 every event frame f (10..50) resolves to snapshot f + offset (11..51),
+        so nothing is skipped - the back-compatible behaviour
+        """
+        params = test_parameters_trace_matching_dense.copy()
+        mock_sc, queried_snap_ids = self._make_recording_supercluster()
+
+        with patch("transport_tools.libs.tools.get_event_frame_traces",
+                   return_value={"1_entry": sample_event_frame_trace}):
+            assigner = EventAssigner(params, sample_event_specification_1, self._make_event(),
+                                     {1: mock_sc}, test_active_filters)
+            buriedness = assigner._trace_event_tunnel_matching(np.array([1]))
+
+        # stride 1 + offset 1: every event frame f maps to snapshot f + 1, nothing dropped
+        self.assertEqual(sorted(set(queried_snap_ids)), list(range(11, 52)))
+        mock_sc.get_caver_clusters.assert_called_once_with(md_labels=["md1"], snap_ids=list(range(11, 52)))
+        self.assertAlmostEqual(buriedness["4all_frames"][1], 41 / 41)
+        self.assertAlmostEqual(buriedness["4existing_tunnels"][1], 1.0)
+
+    def test_strided_matching_with_interpolation_matches_every_frame(self):
+        """
+        Verify interpolate_missing_snapshots4matching makes every event frame resolve to its nearest
+        analysed snapshot (none skipped): under stride 20 frames 10..50 snap to the closest of 2, 3, 4
+        """
+        params = test_parameters_trace_matching_strided_interp.copy()
+        mock_sc, queried_snap_ids = self._make_recording_supercluster()
+
+        with patch("transport_tools.libs.tools.get_event_frame_traces",
+                   return_value={"1_entry": sample_event_frame_trace}):
+            assigner = EventAssigner(params, sample_event_specification_1, self._make_event(),
+                                     {1: mock_sc}, test_active_filters)
+            buriedness = assigner._trace_event_tunnel_matching(np.array([1]))
+
+        # nothing is skipped: all 41 frames query their nearest snapshot (frames 10..29 -> 2, 30..49 -> 3,
+        # 50 -> 4), the opposite of the non-interpolated run that queried only frames 20 and 40
+        self.assertEqual(len(queried_snap_ids), 41)
+        self.assertEqual(sorted(set(queried_snap_ids)), [2, 3, 4])
+        mock_sc.get_caver_clusters.assert_called_once_with(md_labels=["md1"], snap_ids=[2, 3, 4])
+        self.assertAlmostEqual(buriedness["4all_frames"][1], 41 / 41)
+        self.assertAlmostEqual(buriedness["4existing_tunnels"][1], 1.0)
 
 
 class TestEventAssignerEdgeCases(unittest.TestCase):

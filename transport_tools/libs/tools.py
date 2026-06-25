@@ -337,14 +337,22 @@ class TransportProcesses:
         :param new_config: object with job parameters
         """
 
+        previous_parameters = self.parameters
         for key in ("snapshots_per_simulation", "pdb_reference_structure", "num_cpus"):
-            if new_config.parameters.get(key) is None and self.parameters.get(key) is not None:
-                new_config.parameters[key] = self.parameters[key]
-                new_config.calculations_settings[key] = self.parameters[key]
+            if new_config.parameters.get(key) is None and previous_parameters.get(key) is not None:
+                new_config.parameters[key] = previous_parameters[key]
+                new_config.calculations_settings[key] = previous_parameters[key]
 
-        new_config.report_updates(self.parameters)
+        new_config.report_updates(previous_parameters)
         self.parameters = new_config.get_parameters()
         self.config_file = new_config.source_file
+
+        # Carry the runtime-resolved CAVER snapshot labelling (derived once at stage 2, see
+        # SnapshotFrameMap) across the resume so a later-stage rerun reuses it instead of re-deriving it.
+        # These are internal runtime keys, not user config, so they are restored onto parameters only.
+        for key in (utils.SnapshotFrameMap.MODE_KEY, utils.SnapshotFrameMap.ID_STRIDE_KEY):
+            if self.parameters.get(key) is None and previous_parameters.get(key) is not None:
+                self.parameters[key] = previous_parameters[key]
 
         refresh_caver = new_config._runs_stage(1, 2)
         refresh_traj = new_config._runs_stage(2, 9)
@@ -787,6 +795,39 @@ class TransportProcesses:
             if self._outlier_transport_events.exist():
                 self._outlier_transport_events.report_events_details("outlier_transport_events_details.txt")
 
+    def _ensure_snapshot_sampling_resolved(self):
+        """
+        Make sure the CAVER snapshot labelling (dense/sequential vs strided by-frame) is resolved and
+        cached on ``self.parameters`` before the event-assigner workers are spawned, so they map event
+        frames to snapshots correctly without re-deriving it per event. In a normal local run it is
+        already cached from stage-2 parsing; across a resume it is restored by the checkpoint
+        carry-forward; only a cold stage-9 process (e.g. a SLURM assignment shard, whose config is
+        rebuilt from the raw INI) falls through to deriving it here, once, from a single MD's already
+        written orig network. It is needed only when event matching or matching-based ambiguous
+        resolution is active - the sole consumers of the frame<->snapshot map.
+        """
+
+        if self.parameters.get(utils.SnapshotFrameMap.MODE_KEY) is not None:
+            return
+        needs_map = (self.parameters["perform_exact_matching_analysis"]
+                     or self.parameters["perform_trace_matching_analysis"]
+                     or self.parameters["ambiguous_event_assignment_resolution"] in ("exact_matching",
+                                                                                      "trace_matching"))
+        if not needs_map or not self.caver_input_folders:
+            return
+
+        observed_ids = set()
+        for md_label in self.caver_input_folders:
+            network = TunnelNetwork(self.parameters, md_label)
+            network.load_orig_network()
+            for cluster in network.orig_entities:
+                if isinstance(cluster, TunnelCluster):
+                    observed_ids.update(cluster.tunnels.keys())
+            if observed_ids:
+                break  # snapshot sampling is uniform across simulations, so one MD is enough
+        if observed_ids:
+            utils.SnapshotFrameMap.resolve_into(self.parameters, observed_ids)
+
     def _assign_transport_events_local(self, path_sets: Dict[Tuple[str, str, Tuple[str, Tuple[int, int]]],
                                                              "LayeredPathSet"]):
         """
@@ -797,6 +838,7 @@ class TransportProcesses:
         post-streaming assembly logic.
         """
 
+        self._ensure_snapshot_sampling_resolved()
         items2process = len(path_sets)
         logger.info("Assigning {:d} transport events to {:d} superclusters "
                     "using {:d} {}:".format(items2process, self.enumerate_valid_super_clusters(),
@@ -1538,6 +1580,11 @@ class TransportProcesses:
         # _validate_event_resids check) see the same superclusters and filters as the launcher
         self._super_clusters = super_clusters
         self._active_filters = active_filters
+
+        # this shard rebuilt its config from the raw INI, so the stage-2-derived snapshot labelling is
+        # not on its parameters yet; resolve it once here (from a single MD) before the assigner workers
+        # start, mirroring the local backend
+        self._ensure_snapshot_sampling_resolved()
 
         # strided assignment: shard i gets every Nth item from the enumeration. The
         # enumeration was built in stable submission order by the launcher, so this slicing
@@ -3505,12 +3552,15 @@ class TransportProcesses:
                 out_stream.write("cmd.show('lines', 'structure')\n")
 
         os.makedirs(out_folder_path, exist_ok=True)
+        snapshot_map = utils.SnapshotFrameMap.from_parameters(self.parameters)
         if start_snapshot is not None and end_snapshot is not None:
             snap_ids = [*range(start_snapshot, end_snapshot + 1)]
             viz_snap_ids = snap_ids
         else:
             snap_ids = None
-            viz_snap_ids = [*range(1, self.parameters["snapshots_per_simulation"] + 1)]
+            # the analysed-snapshot domain (1..N for dense/sequential CAVER output, the actual sparse IDs
+            # for strided by-frame output); save_pdb_files writes one MODEL per ID, absent ones left empty
+            viz_snap_ids = snapshot_map.snapshot_ids()
 
         super_cluster = self._super_clusters[sc_id]
         viz_pdb_file = os.path.relpath(os.path.join(self.parameters["transformation_folder"],
@@ -3540,8 +3590,8 @@ class TransportProcesses:
                 # we must save per trajectory
                 _save_pymol_script(vis_inputs, md_label)
                 vis_inputs = list()
-                start_frame = start_snapshot - self.parameters["caver_traj_offset"]
-                end_frame = end_snapshot - self.parameters["caver_traj_offset"]
+                start_frame = snapshot_map.snap_to_frame(start_snapshot) if start_snapshot is not None else snapshot_map.snap_to_frame(1)
+                end_frame = snapshot_map.snap_to_frame(end_snapshot) if end_snapshot is not None else snapshot_map.snap_to_frame(self.parameters["snapshots_per_simulation"])
                 out_pdbfile = os.path.join(out_folder_path, "{}_structure.pdb.gz".format(md_label))
 
                 if self.parameters["trajectory_engine"] == "mdtraj":
@@ -3778,8 +3828,14 @@ class EventAssigner:
         start_frame, end_frame = self.event_specification[2][1]
         start_frame = int(start_frame)
         end_frame = int(end_frame)
-        frames = range(start_frame, end_frame + 1)
-        snap_ids = [x + self.parameters["caver_traj_offset"] for x in frames]
+        frames = list(range(start_frame, end_frame + 1))
+        # map each event frame to its CAVER snapshot under the resolved sampling (see SnapshotFrameMap).
+        # By default a frame between analyzed snapshots maps to None and is skipped; with
+        # interpolate_missing_snapshots4matching it is matched against its nearest analyzed snapshot instead
+        snapshot_map = utils.SnapshotFrameMap.from_parameters(self.parameters)
+        interpolate = self.parameters.get("interpolate_missing_snapshots4matching", False)
+        snap_ids = [snapshot_map.frame_to_snap(x, interpolate=interpolate) for x in frames]
+        fetch_snap_ids = sorted({s for s in snap_ids if s is not None})
         perform_exact_matching_analysis = self.parameters["perform_exact_matching_analysis"] and\
                                           md_label in [a.name for a in Path(self.parameters["trajectory_path"]).glob(self.parameters["folder_pattern4exact_matching_analysis"]) if a.is_dir()]
 
@@ -3809,14 +3865,19 @@ class EventAssigner:
         for sc_id in considered_sc_ids:
             super_cluster = self.super_clusters[sc_id]
             closest_tunnels_data = None
-            # get subclusters of tunnel clusters for relevant frames from SCs
-            subclusters = super_cluster.get_caver_clusters(md_labels=[md_label], snap_ids=snap_ids)
+            # get subclusters of tunnel clusters for relevant frames from SCs (deduplicated snapshot IDs:
+            # under a stride several event frames can share one snapshot, and get_subcluster rejects repeats)
+            subclusters = super_cluster.get_caver_clusters(md_labels=[md_label], snap_ids=fetch_snap_ids)
             if md_label in subclusters.keys():
                 clusters2proc = subclusters[md_label]
             else:
                 clusters2proc = []
 
             for frame_coords, frame, snap_id in zip(event_coords, frames, snap_ids):
+                # frames between analyzed CAVER snapshots map to None (no tunnel was computed there) - skip
+                # the cluster/coords scan that could only return no match
+                if snap_id is None:
+                    continue
                 # find a tunnel sphere from caver clusters in this SC that is closest to any ligand atom
                 min_dist2sphere = 9999999
                 closest_sphere = None
@@ -3889,7 +3950,7 @@ class EventAssigner:
                     else:
                         resid = None
                     visualize_transport_details(folder_path, trajectory, start_frame, end_frame,
-                                                self.parameters["caver_traj_offset"], clusters2proc, resids=resid)
+                                                snapshot_map, clusters2proc, resids=resid)
 
         return buriedness
 
@@ -3929,15 +3990,24 @@ class EventAssigner:
             details_path = os.path.join(self.parameters["trace_matching_details_folder"], md_label)
             os.makedirs(details_path, exist_ok=True)
 
-        snap_ids = [int(frame) + self.parameters["caver_traj_offset"] for frame in frame_trace[:, 0]]
+        # map each traced frame to its CAVER snapshot under the resolved sampling (see SnapshotFrameMap).
+        # By default a frame between analyzed snapshots maps to None and finds no tunnel below; with
+        # interpolate_missing_snapshots4matching it is matched against its nearest analyzed snapshot instead
+        snapshot_map = utils.SnapshotFrameMap.from_parameters(self.parameters)
+        interpolate = self.parameters.get("interpolate_missing_snapshots4matching", False)
+        snap_ids = [snapshot_map.frame_to_snap(int(frame), interpolate=interpolate) for frame in frame_trace[:, 0]]
+        fetch_snap_ids = sorted({s for s in snap_ids if s is not None})
 
         for sc_id in considered_sc_ids:
             super_cluster = self.super_clusters[sc_id]
             closest_tunnels_data = None
-            subclusters = super_cluster.get_caver_clusters(md_labels=[md_label], snap_ids=snap_ids)
+            subclusters = super_cluster.get_caver_clusters(md_labels=[md_label], snap_ids=fetch_snap_ids)
             clusters2proc = subclusters.get(md_label, [])
 
             for (frame, x, y, z), snap_id in zip(frame_trace, snap_ids):
+                # traced frames between analyzed CAVER snapshots map to None (no tunnel there) - skip them
+                if snap_id is None:
+                    continue
                 # find the tunnel sphere from this SC's caver clusters closest to the traced position in this frame
                 min_dist2sphere = 9999999
                 closest_sphere = None
@@ -4152,7 +4222,8 @@ def process_aquaduct_network_worker(task: Tuple[str, dict, List[str], bool]) -> 
                                                             parallel_processing)
 
 
-def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int, end_frame: int, caver_traj_offset: int,
+def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, start_frame: int, end_frame: int,
+                                snapshot_map: "utils.SnapshotFrameMap",
                                 caver_clusters: List[TunnelCluster] | None = None, start_snapshot: int | None = None, end_snapshot: int | None = None,
                                 resids: List[int] | None = None):
     """
@@ -4161,23 +4232,25 @@ def visualize_transport_details(out_folder_path: str, trajectory: TrajectoryTT, 
     :param trajectory: MD simulation trajectory to process
     :param start_frame: start frame for visualization
     :param end_frame: end frame for visualization
-    :param caver_traj_offset: difference in IDs of MD frames (from 0) and caver snapshots (often from 1)
+    :param snapshot_map: frame<->snapshot map relating MD frames to CAVER snapshot IDs (honours sparsity)
     :param caver_clusters: list of tunnel clusters for visualization
     :param start_snapshot: start snapshot for visualization
     :param end_snapshot: end snapshot for visualization
     :param resids: residue ID(s) to show as events
     """
 
-    if start_snapshot is None and end_snapshot is None:
-        snap_ids = [x + caver_traj_offset for x in range(start_frame, end_frame + 1)]
-    elif start_snapshot is None and end_snapshot is not None:
-        start_snapshot = start_frame + caver_traj_offset
-        snap_ids = [*range(start_snapshot, end_snapshot + 1)]
-    elif end_snapshot is None and start_snapshot is not None:
-        end_snapshot = end_frame + caver_traj_offset
-        snap_ids = [*range(start_snapshot, end_snapshot + 1)]
-    else:
+    # only snapshots actually analysed within the requested window get their tunnels drawn; frames lying
+    # between analysed snapshots contribute the ligand only (write_frames below spans the whole
+    # start_frame..end_frame regardless), hence the exact, non-interpolated frame->snapshot mapping
+    if start_snapshot is not None and end_snapshot is not None:
         snap_ids = [*range(start_snapshot, end_snapshot + 1)]  # type: ignore[arg-type, operator]
+    else:
+        snap_ids = sorted({s for s in (snapshot_map.frame_to_snap(x)
+                                       for x in range(start_frame, end_frame + 1)) if s is not None})
+        if start_snapshot is not None:
+            snap_ids = [s for s in snap_ids if s >= start_snapshot]
+        if end_snapshot is not None:
+            snap_ids = [s for s in snap_ids if s <= end_snapshot]
 
     os.makedirs(out_folder_path, exist_ok=True)
     protein_filename = os.path.join(out_folder_path, "structure.pdb.gz")

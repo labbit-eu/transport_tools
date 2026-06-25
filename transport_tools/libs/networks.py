@@ -854,8 +854,12 @@ class TunnelCluster:
 
         subcluster = TunnelCluster(self.cluster_id, self.parameters, self.transform_mat, self.starting_point_coords)
 
+        # when no explicit snapshot selection is given, take every tunnel actually present in the cluster
+        # (sorted to keep the previous ascending iteration order); this is both correct under sparse/
+        # strided CAVER snapshot IDs and avoids scanning a dense 1..snapshots_per_simulation range that
+        # is mostly absent
         if snap_ids is None:
-            snap_ids = [*range(1, self.parameters["snapshots_per_simulation"] + 1)]
+            snap_ids = sorted(self.tunnels.keys())
 
         for snap_id in snap_ids:
             if snap_id in self.tunnels.keys():
@@ -1109,8 +1113,54 @@ class TunnelNetwork(Network):
                 assert isinstance(cluster, TunnelCluster), f"Expected TunnelCluster but got {type(cluster).__name__}"
                 cluster.add_tunnel(tmp_tunnel)
 
+        self._validate_snapshot_sampling()
+
         if self.parameters["process_bottleneck_residues"]:
             self._read_bottleneck_data()
+
+    def _validate_snapshot_sampling(self):
+        """
+        Cross-check the configured snapshot sampling against the CAVER snapshot IDs actually parsed.
+        Runs for free at parse time - it only inspects IDs already read - and fails fast on a clear
+        misconfiguration (wrong stride, or snapshots_per_simulation set to the trajectory length).
+        """
+
+        observed_ids = set()
+        for cluster in self.orig_entities:
+            if isinstance(cluster, TunnelCluster):
+                observed_ids.update(cluster.tunnels.keys())
+        if not observed_ids:
+            return
+
+        # cache the detected labelling on the parameters so it is derived once here at parse time and then
+        # carried along (to workers and across a resume) instead of being re-derived downstream
+        snapshot_map = utils.SnapshotFrameMap.resolve_into(self.parameters, observed_ids)
+        num = self.parameters["snapshots_per_simulation"]
+        max_id = max(observed_ids)
+
+        if snapshot_map.by_frame:
+            config_stride = self.parameters.get("caver_snapshot_stride") or 1
+            if config_stride > 1 and config_stride != snapshot_map.id_stride:
+                raise RuntimeError("CAVER snapshot IDs in {} are frame-numbered with a stride of {} "
+                                   "(every {}th frame), but 'caver_snapshot_stride' is set to {}. "
+                                   "Set 'caver_snapshot_stride' to {} or remove "
+                                   "it.".format(self.md_label, snapshot_map.id_stride,
+                                                snapshot_map.id_stride, config_stride,
+                                                snapshot_map.id_stride))
+        elif max_id * 2 < num:
+            # losing more than half of a sequentially-numbered run to tunnel-less frames is implausible;
+            # the usual cause is snapshots_per_simulation set to the trajectory length instead of the
+            # CAVER snapshot count
+            raise RuntimeError("Highest CAVER snapshot ID in {} is {}, far below 'snapshots_per_simulation' "
+                               "({}). 'snapshots_per_simulation' must be the number of CAVER snapshots; if "
+                               "CAVER analyzed a sparse trajectory, also set 'caver_snapshot_stride' "
+                               "accordingly.".format(self.md_label, max_id, num))
+        elif max_id < num:
+            # a sequential run can legitimately end tunnel-less (e.g. the structure compacts), so a modest
+            # shortfall is only a hint
+            logger.warning("Highest CAVER snapshot ID in {} is {}, below 'snapshots_per_simulation' ({}). "
+                           "If this is unexpected, check 'snapshots_per_simulation' and "
+                           "'caver_snapshot_stride'.".format(self.md_label, max_id, num))
 
     def _read_reweighting_data(self):
         """
@@ -1282,6 +1332,10 @@ class AquaductNetwork(Network):
         self.entity_pymol_abbreviation = "evt_"  # default prefix, overridden per-entity by visualization_prefix
         self.transformed_pdb_file_name = self.md_label + "_A_trans_rot.pdb"
         self.protein_pdb_filename = self.parameters["aquaduct_results_pdb_filename"]
+        # number of source-trajectory frames AQUA-DUCT analyzed (parsed from the summary's
+        # "Frames window: start:end step" line); the authoritative event frame-domain length used to
+        # validate caver_snapshot_stride. None until read_raw_paths_data parses the summary.
+        self.event_domain_length: int | None = None
 
         # Stage 9's SLURM launcher only needs the (md_label, event_label, traced_event)
         # key triples to enumerate items in submission order; the sidecar lets it skip the
@@ -1415,6 +1469,7 @@ class AquaductNetwork(Network):
             return int(filename.split("_")[2].split(".")[0])
         return 0
 
+
     @staticmethod
     def _process_single_raw_path(path_label: str, parameters: dict, traced_residue: Tuple[str, int, Tuple[int, int],
                                                                                           Tuple[int, int]],
@@ -1448,6 +1503,7 @@ class AquaductNetwork(Network):
         # read residue info from summary text file from AquaDuct
         with open(self.summary_file) as sum_stream:
             summary_text = sum_stream.readlines()
+        self.event_domain_length = utils.parse_aquaduct_frames_window(summary_text)
         try:
             start_line = summary_text.index("List of separate paths and properties\n") + 4
         except ValueError:
@@ -3466,8 +3522,11 @@ class TunnelProfile4MD:
         for snapshot_id, tunnel in self.records.items():
             values[snapshot_id] = getattr(tunnel, property_name)
         array = list()
-        for frame_id in range(self.parameters["snapshots_per_simulation"]):
-            caver_id = frame_id + self.parameters["caver_traj_offset"]
+        # iterate the analysed-snapshot domain (1..N for dense/sequential CAVER output, the actual sparse
+        # IDs for strided by-frame output) rather than a dense 0..N-1 frame range plus a fixed offset; the
+        # profile's own snapshot IDs let the map detect the labelling
+        snapshot_map = utils.SnapshotFrameMap.from_parameters(self.parameters, observed_ids=self.records.keys())
+        for caver_id in snapshot_map.snapshot_ids():
             if caver_id in values.keys():
                 array.append(values[caver_id])
             else:

@@ -23,6 +23,7 @@ __mail__ = 'janbre@amu.edu.pl'
 import numpy as np
 import os
 from pathlib import Path
+from re import search
 from typing import List, Tuple
 from logging import getLogger
 
@@ -597,6 +598,194 @@ def node_labels_split(node_label: str) -> Tuple[int, int]:
         return int(node_label.split("_")[0]), int(node_label.split("_")[1])
     except ValueError:  # cannot be split
         return -99, -99
+
+
+class SnapshotFrameMap:
+    """
+    Maps between AQUA-DUCT / source-trajectory frame indices and CAVER snapshot IDs.
+
+    Historically 'snapshots_per_simulation' was overloaded into three roles that only coincide when
+    CAVER analysed every frame and numbered snapshots densely 1..N: (A) the set of valid snapshot IDs,
+    (B) the count of analysed snapshots used for normalisation, and (C) the frame<->snapshot
+    correspondence. This object decouples them so CAVER sparsity (every Nth frame) and mismatched
+    AQUA-DUCT/CAVER frame domains are handled robustly.
+
+    CAVER labels snapshots one of two ways, *detected from the observed IDs* rather than configured (so
+    nothing has to be stored or persisted across stages - each call site passes the snapshot IDs it has
+    already loaded):
+      - 'sequential': dense IDs 1..N - CAVER consumed a pre-thinned trajectory. An event frame f maps to
+        snapshot f // stride + offset, where stride is the event-frames-per-snapshot ratio
+        (caver_snapshot_stride; e.g. a 20000-frame trajectory thinned to 1000 snapshots has stride 20).
+      - 'by_frame': IDs are the original frame numbers, spaced by the sampling stride. An event frame f
+        maps to snapshot f + offset; whether that snapshot actually exists is left to the caller's
+        tunnel-presence check.
+    The two are told apart by the gcd of the gaps between sorted observed IDs (1 => sequential, >=2 =>
+    by_frame with that stride); a missing snapshot only ever removes an ID, leaving the gcd intact. When
+    no observed IDs are supplied the map falls back to 'sequential', which at stride 1 reproduces the
+    legacy 'frame + caver_traj_offset' behaviour exactly.
+    """
+
+    # parameters keys under which the resolved labelling is cached so it is derived once (at stage 2 /
+    # the first stage-9 process) and then carried along on the parameters dict - to local workers via the
+    # pool initializer and across a resume via the checkpoint carry-forward - rather than re-derived
+    MODE_KEY = "_caver_snapshot_by_frame"
+    ID_STRIDE_KEY = "_caver_snapshot_id_stride"
+
+    def __init__(self, num_snapshots: int, offset: int = 1, stride: int = 1,
+                 by_frame: bool = False, id_stride: int | None = None):
+        self.num_snapshots = int(num_snapshots)
+        self.offset = int(offset)
+        self.stride = max(1, int(stride))
+        self.by_frame = bool(by_frame)
+        # spacing between consecutive snapshot IDs when enumerating the analysed-snapshot domain
+        self.id_stride = int(id_stride) if id_stride else (self.stride if self.by_frame else 1)
+
+    @classmethod
+    def from_parameters(cls, parameters: dict, observed_ids=None) -> "SnapshotFrameMap":
+        """
+        Build a map from job parameters. When ``observed_ids`` (the CAVER snapshot IDs actually present in
+        the data the caller is processing) is given, the labelling is detected from them; otherwise a
+        previously resolved labelling cached on ``parameters`` (see resolve_into) is used, falling back to
+        the back-compatible 'sequential' labelling with the configured stride.
+        """
+
+        num = parameters["snapshots_per_simulation"]
+        offset = parameters.get("caver_traj_offset", 1)
+        stride = parameters.get("caver_snapshot_stride") or 1
+        if observed_ids:
+            by_frame, id_stride = cls._detect(observed_ids)
+            return cls(num, offset, stride, by_frame=by_frame, id_stride=id_stride)
+        if parameters.get(cls.MODE_KEY) is not None:
+            return cls(num, offset, stride, by_frame=parameters[cls.MODE_KEY],
+                       id_stride=parameters.get(cls.ID_STRIDE_KEY))
+        return cls(num, offset, stride, by_frame=False, id_stride=1)
+
+    @classmethod
+    def resolve_into(cls, parameters: dict, observed_ids) -> "SnapshotFrameMap":
+        """
+        Detect the labelling from observed CAVER snapshot IDs and cache it on ``parameters`` (idempotent:
+        an already-cached labelling is kept). Storing it on the parameters dict lets it travel along the
+        existing channels - to multiprocessing workers via the pool initializer and across a resume via
+        the checkpoint carry-forward - so the data is scanned once rather than per event.
+        """
+
+        if parameters.get(cls.MODE_KEY) is not None:
+            return cls.from_parameters(parameters)
+        snapshot_map = cls.from_parameters(parameters, observed_ids=observed_ids)
+        parameters[cls.MODE_KEY] = snapshot_map.by_frame
+        parameters[cls.ID_STRIDE_KEY] = snapshot_map.id_stride
+        return snapshot_map
+
+    @staticmethod
+    def _gap_gcd(observed_ids) -> int:
+        ids = sorted({int(i) for i in observed_ids})
+        if len(ids) < 2:
+            return 1
+        diffs = np.diff(ids)
+        diffs = diffs[diffs > 0]
+        if diffs.size == 0:
+            return 1
+        return int(np.gcd.reduce(diffs))
+
+    @classmethod
+    def _detect(cls, observed_ids) -> Tuple[bool, int]:
+        """
+        Infer (by_frame, id_stride) purely from the spacing of the observed snapshot IDs. id_stride is the
+        gap between consecutive ID *labels*, not the event-frames-per-snapshot stride (that is the user's
+        caver_snapshot_stride, carried separately in self.stride/map_stride):
+          - gap >= 2 => 'by_frame': IDs are frame numbers spaced by the sampling stride, so id_stride = gap
+          - gap == 1 => 'sequential': dense IDs 1,2,3,..., so id_stride = 1 (the stride lives in map_stride)
+        """
+
+        gap = cls._gap_gcd(observed_ids)
+        if gap >= 2:
+            return True, gap
+        return False, 1
+
+    @property
+    def map_stride(self) -> int:
+        """Event-frames per snapshot used in the frame<->snapshot formula (1 for by_frame)."""
+
+        return 1 if self.by_frame else self.stride
+
+    def frame_to_snap(self, frame: int, interpolate: bool = False) -> int | None:
+        """
+        Snapshot ID for an event/source-trajectory frame.
+
+        By default (interpolate=False) a frame that does not coincide with an analysed snapshot returns
+        None: CAVER computed no tunnel at that frame, so it must not be matched against a tunnel from a
+        different time. This makes the two labellings ('sequential' and 'by_frame') of the same physical
+        sampling behave identically - only frames on the analysed grid match, the rest count as 'no tunnel
+        in this frame'. With interpolate=True the *nearest* analysed snapshot is returned instead (clamped
+        into the domain), for the occasional call site that needs every frame to resolve to some snapshot.
+
+        At the default stride 1 every frame is on the grid, so both modes reduce to the legacy
+        'frame + offset' mapping.
+        """
+
+        frame = int(frame)
+        # event-frame spacing between consecutive analysed snapshots (= the sampling stride): exactly one
+        # of map_stride / id_stride carries the stride and the other is 1, so their product is the stride
+        frame_stride = self.map_stride * self.id_stride
+        if interpolate:
+            # nearest analysed snapshot (deterministic half-up rounding), clamped into the analysed domain
+            idx = (frame + frame_stride // 2) // frame_stride
+            idx = min(max(idx, 0), self.num_snapshots - 1)
+        else:
+            if frame % frame_stride != 0:
+                return None  # frame lies between analysed snapshots - no tunnel was computed here
+            idx = frame // frame_stride
+            if idx < 0 or idx >= self.num_snapshots:
+                return None  # frame outside the analysed-snapshot domain
+        return self.offset + idx * self.id_stride
+
+    def snap_to_frame(self, snap_id: int) -> int:
+        """Representative source-trajectory frame for a snapshot ID (inverse of frame_to_snap)."""
+
+        return (int(snap_id) - self.offset) * self.map_stride
+
+    def snapshot_ids(self) -> List[int]:
+        """The analysed-snapshot ID domain - replaces the legacy ``range(1, N+1)``."""
+
+        return [self.offset + i * self.id_stride for i in range(self.num_snapshots)]
+
+    @property
+    def num_analyzed_snapshots(self) -> int:
+        """Number of analysed CAVER snapshots - the correct denominator for occupancy normalisation."""
+
+        return self.num_snapshots
+
+    @staticmethod
+    def derive_stride(event_domain_length: int, num_snapshots: int) -> Tuple[int, bool]:
+        """
+        Stride implied by an AQUA-DUCT frame window vs the CAVER snapshot count, with a flag marking
+        whether the division was exact. Used to validate/inform caver_snapshot_stride.
+        """
+
+        if num_snapshots <= 0:
+            return 1, False
+        stride = event_domain_length // num_snapshots
+        return max(1, stride), (event_domain_length % num_snapshots == 0)
+
+
+def parse_aquaduct_frames_window(summary_text: List[str]) -> int | None:
+    """
+    Parse the number of analyzed source-trajectory frames from an AQUA-DUCT summary's
+    "Frames window: <start>:<end> step <step>" line - the authoritative event frame-domain length used to
+    validate caver_snapshot_stride. Returns None when the line is absent (older AQUA-DUCT outputs) so the
+    caller can fall back gracefully.
+    :param summary_text: lines of the AQUA-DUCT 5_analysis_results.txt summary
+    :return: number of frames in the analyzed window, or None if not present
+    """
+
+    for line in summary_text:
+        match = search(r"Frames window:\s*(\d+):(\d+)\s+step\s+(\d+)", line)
+        if match:
+            start, end, step = (int(match.group(i)) for i in (1, 2, 3))
+            if step <= 0:
+                return None
+            return (end - start) // step + 1
+    return None
 
 
 def get_filepath(root_folder: str = ".", pattern: str = "*") -> str:

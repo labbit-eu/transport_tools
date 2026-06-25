@@ -1,0 +1,8 @@
+Trace matching of transport event '('e10s0_seed43_f371m1821', 'wat_102_entry', ('WAT:1765', (17800, 17867)))' to tunnels from Supercluster 6 
+fraction of frames in which ligand is inside SC tunnels 0.01
+fraction of frames in which SC tunnels exist and the ligand is inside of them 0.50
+Data on the tunnel spheres closest to the traced ligand position:
+-------------------------------------------------
+     Frame,X-coordLig,Y-coordLig,Z-coordLig,  Dist2lig,CaverClsID,X-coordSph,Y-coordSph,Z-coordSph,   Dist2SP,    Radius, TunLength,
+     17800,    -2.494,    -2.595,   -11.198,    -1.289,        27,    -3.379,    -1.115,   -12.214,    12.600,     3.291,    24.834
+     17820,    -1.378,     4.372,    -2.784,     1.170,        22,     1.306,     2.271,    -2.373,     3.441,     2.263,     3.546

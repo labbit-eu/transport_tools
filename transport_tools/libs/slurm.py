@@ -1538,6 +1538,7 @@ class TunnelNetworksShardStage(SlurmShardStage):
         "caver_results_folder_pattern",
         "snapshots_per_simulation",
         "caver_traj_offset",
+        "caver_snapshot_stride",
         "process_bottleneck_residues",
         "visualize_transformed_tunnels",
     )
