@@ -166,14 +166,43 @@ class OutlierTransportEvents:
                                                                      traced_event[1][1]))
                     out_stream.write("\n")
 
+    def _get_per_sim_residue_event_counts(self, resname: str, sims2process: List[str],
+                                          md_label: str = "overall") -> Tuple[List[int], List[int]]:
+        """
+        Counts unassigned entry and release events of a given residue for each simulation in sims2process, using
+        0 for simulations that contributed no such event; used as the sample for per-residue mean/stdev reporting
+        :param resname: residue name to count events for
+        :param sims2process: md_labels of all simulations belonging to the group being summarized
+        :param md_label: 'overall' draws from transport_events_global (events outlying for the whole run,
+                         matching num_events['overall']); any other md_label/group draws from transport_events
+                         (events outlying at least locally for that md_label, matching num_events[md_label])
+        :return: (per-sim entry counts, per-sim release counts), aligned with sims2process
+        """
+
+        source = self.transport_events_global if md_label == "overall" else self.transport_events
+        entry_events = source.get("entry", {})
+        release_events = source.get("release", {})
+
+        entry_counts = [sum(1 for _, traced_event in entry_events.get(sim, [])
+                            if traced_event[0].split(":")[0] == resname) for sim in sims2process]
+        release_counts = [sum(1 for _, traced_event in release_events.get(sim, [])
+                              if traced_event[0].split(":")[0] == resname) for sim in sims2process]
+
+        return entry_counts, release_counts
+
     def report_summary_line(self, widths: List[int], md_label: str = "overall",
-                            residue_names: List[str] | None = None) -> str:
+                            residue_names: List[str] | None = None,
+                            sims2process: List[str] | None = None) -> str:
         """
         Prepares information on transport events flagged as outliers for generation of summary of superclusters
         :param widths: column widths; first 4 are [text_start, Num_Events, Num_entries, Num_releases],
-                       followed by pairs [RES_E_width, RES_R_width] for each residue in residue_names
+                       followed by quadruples [RES_E_avg, RES_E_std, RES_R_avg, RES_R_std widths]
+                       for each residue in residue_names
         :param md_label: summary of which simulations to report; by default report 'overall' stats
         :param residue_names: sorted list of residue names matching the per-residue columns; None = skip
+        :param sims2process: md_labels of all simulations belonging to md_label's group, used to compute
+                             per-residue mean/stdev of event counts (0-filled for silent simulations);
+                             required when residue_names is set
         :return: info on outlier events
         """
 
@@ -181,14 +210,22 @@ class OutlierTransportEvents:
                "{:{width4}d}".format("Total number of unassigned events:", *self.count_events(md_label),
                                      width1=widths[0], width2=widths[1], width3=widths[2], width4=widths[3])
         if residue_names:
+            if not sims2process:
+                raise ValueError("sims2process must be provided (non-empty) when residue_names is set")
             res_counts = self.num_events_by_residue.get(md_label, {})
             for i, resname in enumerate(residue_names):
-                w_e, w_r = widths[4 + i * 2], widths[4 + i * 2 + 1]
+                w_ea, w_es, w_ra, w_rs = widths[4 + i * 4], widths[4 + i * 4 + 1], \
+                    widths[4 + i * 4 + 2], widths[4 + i * 4 + 3]
                 if resname in res_counts:
-                    line += ", {:{we}d}, {:{wr}d}".format(
-                        res_counts[resname]["entry"], res_counts[resname]["release"], we=w_e, wr=w_r)
+                    entry_counts, release_counts = self._get_per_sim_residue_event_counts(
+                        resname, sims2process, md_label)
+                    line += ", {:{wea}.1f}, {:{wes}.1f}, {:{wra}.1f}, {:{wrs}.1f}".format(
+                        np.average(entry_counts), np.std(entry_counts),
+                        np.average(release_counts), np.std(release_counts),
+                        wea=w_ea, wes=w_es, wra=w_ra, wrs=w_rs)
                 else:
-                    line += ", {:{we}s}, {:{wr}s}".format("-", "-", we=w_e, wr=w_r)
+                    line += ", {:{wea}s}, {:{wes}s}, {:{wra}s}, {:{wrs}s}".format(
+                        "-", "-", "-", "-", wea=w_ea, wes=w_es, wra=w_ra, wrs=w_rs)
         return line + "\n"
 
     def prepare_visualization(self, md_label: str = "overall", flag: str = "") \
@@ -3249,8 +3286,13 @@ class TransportProcesses:
                         and md_label in self.parameters["comparative_groups_definition"].keys():
                     md_labels = sorted(self.parameters["comparative_groups_definition"][md_label])
                     group_label = "{} {}".format(md_label, md_labels)
+                    sims2process = md_labels
+                elif "overall" in md_label:
+                    group_label = md_label
+                    sims2process = list(self.caver_input_folders)
                 else:
                     group_label = md_label
+                    sims2process = [md_label]
 
                 with open(os.path.join(out_folder, out_filename), "w") as out_stream:
                     header_list = ["SC_ID", "No_Sims", "Total_No_Frames", "Avg_No_Frames", "Avg_BR", "StDev", "Max_BR",
@@ -3262,17 +3304,18 @@ class TransportProcesses:
                         residue_set: set = set()
                         for sc in self._super_clusters.values():
                             residue_set.update(sc.num_events_by_residue.get(md_label, {}).keys())
-                        if len(residue_set) > 1:
+                        if residue_set:
                             residue_names = sorted(residue_set)
                             for res in residue_names:
-                                header_list.extend(["{}_E".format(res), "{}_R".format(res)])
+                                header_list.extend(["{}_E_avg".format(res), "{}_E_std".format(res),
+                                                   "{}_R_avg".format(res), "{}_R_std".format(res)])
 
                     dataset = [header_list]
                     for prio_sc in sorted(self._prioritized_clusters.keys()):  #
                         # we use prioritized IDs as those are also respecting active filters
                         sc_id = self._prioritized_clusters[prio_sc]
                         dataset.append(self._super_clusters[sc_id].get_summary_line_data(
-                            self._events_assigned, md_label, residue_names or None))
+                            self._events_assigned, md_label, residue_names or None, sims2process))
 
                     # find appropriate width of columns
                     widths = dict()
@@ -3310,10 +3353,12 @@ class TransportProcesses:
                             widths[header_list.index("Num_releases")]
                         ]
                         for res in residue_names:
-                            out_widths.append(widths[header_list.index("{}_E".format(res))])
-                            out_widths.append(widths[header_list.index("{}_R".format(res))])
+                            out_widths.append(widths[header_list.index("{}_E_avg".format(res))])
+                            out_widths.append(widths[header_list.index("{}_E_std".format(res))])
+                            out_widths.append(widths[header_list.index("{}_R_avg".format(res))])
+                            out_widths.append(widths[header_list.index("{}_R_std".format(res))])
                         output += self._outlier_transport_events.report_summary_line(
-                            out_widths, md_label, residue_names or None)
+                            out_widths, md_label, residue_names or None, sims2process)
 
                     out_stream.write(output)
                     if "overall" not in md_label and cat_stream1 is not None:

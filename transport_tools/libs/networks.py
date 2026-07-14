@@ -2916,13 +2916,36 @@ class SuperCluster:
 
         return plines, viz_data, bundle_request
 
+    def _get_per_sim_residue_event_counts(self, resname: str, sims2process: List[str]) -> Tuple[List[int], List[int]]:
+        """
+        Counts entry and release events of a given residue for each simulation in sims2process, using 0 for
+        simulations that contributed no such event; used as the sample for per-residue mean/stdev reporting
+        :param resname: residue name to count events for
+        :param sims2process: md_labels of all simulations belonging to the group being summarized
+        :return: (per-sim entry counts, per-sim release counts), aligned with sims2process
+        """
+
+        entry_events = self.transport_events.get("entry", {})
+        release_events = self.transport_events.get("release", {})
+
+        entry_counts = [sum(1 for _, traced_event in entry_events.get(sim, [])
+                            if traced_event[0].split(":")[0] == resname) for sim in sims2process]
+        release_counts = [sum(1 for _, traced_event in release_events.get(sim, [])
+                              if traced_event[0].split(":")[0] == resname) for sim in sims2process]
+
+        return entry_counts, release_counts
+
     def get_summary_line_data(self, print_transport_events: bool = False, md_label: str = "overall",
-                              residue_names: List[str] | None = None) -> List[str]:
+                              residue_names: List[str] | None = None,
+                              sims2process: List[str] | None = None) -> List[str]:
         """
         Generates data for creation of line summarizing overall properties of this supercluster (SC)
         :param print_transport_events: if properties related to transport events should be reported
         :param md_label: summary of which simulations to report; by default report 'overall' stats
         :param residue_names: sorted list of residue names for per-residue event columns; None = skip
+        :param sims2process: md_labels of all simulations belonging to md_label's group, used to compute
+                             per-residue mean/stdev of event counts (0-filled for silent simulations);
+                             required when residue_names is set
         :return: list of items for the summary line
         """
         data = ["{:d}".format(self.sc_id)]
@@ -2950,13 +2973,19 @@ class SuperCluster:
                 data.append("{:d}".format(self.num_events[md_label]["entry"]))
                 data.append("{:d}".format(self.num_events[md_label]["release"]))
             if residue_names:
+                if not sims2process:
+                    raise ValueError("sims2process must be provided (non-empty) when residue_names is set")
                 res_counts = self.num_events_by_residue.get(md_label, {})
                 for resname in residue_names:
                     if resname in res_counts:
-                        data.append("{:d}".format(res_counts[resname]["entry"]))
-                        data.append("{:d}".format(res_counts[resname]["release"]))
+                        entry_counts, release_counts = self._get_per_sim_residue_event_counts(
+                            resname, sims2process)
+                        data.append("{:.1f}".format(np.average(entry_counts)))
+                        data.append("{:.1f}".format(np.std(entry_counts)))
+                        data.append("{:.1f}".format(np.average(release_counts)))
+                        data.append("{:.1f}".format(np.std(release_counts)))
                     else:
-                        data.extend(["-", "-"])
+                        data.extend(["-", "-", "-", "-"])
 
         return data
 

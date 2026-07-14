@@ -487,33 +487,66 @@ class TestSuperClusterPerResidueTracking(unittest.TestCase):
         data = self.sc.get_summary_line_data(print_transport_events=True, md_label="overall")
         self.assertEqual(len(data), 17)
 
-    def test_get_summary_line_data_with_residue_names_appends_pairs(self):
-        """Passing residue_names adds 2 columns (entry, release) per residue."""
+    def test_get_summary_line_data_with_residue_names_appends_quadruples(self):
+        """Passing residue_names adds 4 columns (E_avg, E_std, R_avg, R_std) per residue."""
         self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
         self.sc.add_transport_event("md1", "path_002", "release", ("U01:55", (20, 60)))
         data = self.sc.get_summary_line_data(print_transport_events=True,
                                               md_label="overall",
-                                              residue_names=["U01", "WAT"])
-        # 17 base columns + 4 (2 residues × 2 columns)
-        self.assertEqual(len(data), 21)
-        # Order matches residue_names: U01_E, U01_R, WAT_E, WAT_R
-        self.assertEqual(data[17], "0")  # U01 entry
-        self.assertEqual(data[18], "1")  # U01 release
-        self.assertEqual(data[19], "1")  # WAT entry
-        self.assertEqual(data[20], "0")  # WAT release
+                                              residue_names=["U01", "WAT"],
+                                              sims2process=["md1"])
+        # 17 base columns + 8 (2 residues × 4 columns)
+        self.assertEqual(len(data), 25)
+        # Order matches residue_names: U01_E_avg, U01_E_std, U01_R_avg, U01_R_std, WAT_...
+        self.assertEqual(data[17], "0.0")  # U01 entry avg
+        self.assertEqual(data[18], "0.0")  # U01 entry std
+        self.assertEqual(data[19], "1.0")  # U01 release avg
+        self.assertEqual(data[20], "0.0")  # U01 release std
+        self.assertEqual(data[21], "1.0")  # WAT entry avg
+        self.assertEqual(data[22], "0.0")  # WAT entry std
+        self.assertEqual(data[23], "0.0")  # WAT release avg
+        self.assertEqual(data[24], "0.0")  # WAT release std
 
     def test_get_summary_line_data_absent_residue_outputs_dash(self):
-        """Residue in residue_names but absent from this SC's events → '-' for both cols"""
+        """Residue in residue_names but absent from this SC's events → '-' for all 4 cols"""
         self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
         data = self.sc.get_summary_line_data(print_transport_events=True,
                                               md_label="overall",
-                                              residue_names=["U01", "WAT"])
-        # U01 has no events anywhere — both columns are '-'
+                                              residue_names=["U01", "WAT"],
+                                              sims2process=["md1"])
+        # U01 has no events anywhere — all 4 columns are '-'
         self.assertEqual(data[17], "-")
         self.assertEqual(data[18], "-")
-        # WAT has 1 entry, 0 release
-        self.assertEqual(data[19], "1")
-        self.assertEqual(data[20], "0")
+        self.assertEqual(data[19], "-")
+        self.assertEqual(data[20], "-")
+        # WAT has 1 entry, 0 release, single sim → avg=count, std=0
+        self.assertEqual(data[21], "1.0")
+        self.assertEqual(data[22], "0.0")
+        self.assertEqual(data[23], "0.0")
+        self.assertEqual(data[24], "0.0")
+
+    def test_get_summary_line_data_residue_names_requires_sims2process(self):
+        """residue_names without sims2process must raise, not silently emit nan"""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        with self.assertRaises(ValueError):
+            self.sc.get_summary_line_data(print_transport_events=True,
+                                          md_label="overall",
+                                          residue_names=["WAT"])
+
+    def test_get_summary_line_data_residue_avg_std_across_multiple_sims(self):
+        """Per-residue avg/std pool per-simulation counts, zero-filling silent simulations
+        that belong to sims2process (the group) but contributed no event of that residue."""
+        self.sc.add_transport_event("md1", "path_001", "entry", ("WAT:123", (10, 50)))
+        self.sc.add_transport_event("md1", "path_002", "entry", ("WAT:124", (10, 50)))
+        self.sc.add_transport_event("md2", "path_003", "entry", ("WAT:125", (10, 50)))
+        # md3 contributes nothing for this SC/residue but is part of the group being summarized
+        data = self.sc.get_summary_line_data(print_transport_events=True,
+                                              md_label="overall",
+                                              residue_names=["WAT"],
+                                              sims2process=["md1", "md2", "md3"])
+        # WAT entry counts per sim: [2, 1, 0] -> avg=1.0, std=sqrt(((2-1)^2+(1-1)^2+(0-1)^2)/3)=0.816
+        self.assertEqual(data[17], "1.0")
+        self.assertEqual(data[18], "0.8")
 
 
 class TestModuleFunctions(unittest.TestCase):
