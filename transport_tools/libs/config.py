@@ -268,6 +268,10 @@ class AnalysisConfig:
             # tunnels existing in a given simulation during the event occurrence
             # 'trace_matching' - like 'exact_matching' but uses the AQUA-DUCT per-frame trace of the event instead of
             # the MD trajectory, so it needs no source trajectories (only the per-snapshot CAVER tunnels)
+            # for both matching methods, when no discriminating signal is available (no tunnels exist in the event's
+            # frames, or tunnels exist but the ligand is never inside any of them) the assignment is resolved by
+            # 'directionality' over the buried candidates rather than demoting the event to an outlier - a buried,
+            # directionally-aligned event is never turned into an outlier by the resolution step
             # 'assign2all' - assign event to all superclusters in which it is buried
 
             # Additional filters applied on superclusters after event assignment (-1 => inactive filter)

@@ -600,40 +600,35 @@ class TestOutlierTransportEventsPerResidue(unittest.TestCase):
         self.assertIn("WAT: entry=2, release=0", content)
         self.assertIn("U01: entry=0, release=1", content)
 
-    def test_report_summary_line_with_residue_names_appends_pairs(self):
-        """Passing residue_names must append entry/release columns for each residue."""
+    def test_report_summary_line_with_residue_names_appends_quadruples(self):
+        """Passing residue_names appends a mean/stdev quadruple (E_avg, E_std, R_avg, R_std) per residue."""
         self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
         self.outliers.add_transport_event("md1", "p2", "release", ("U01:55", (20, 60)))
-        # widths: 4 base + 2 per residue = 8 entries
-        widths = [50, 10, 10, 10, 5, 5, 5, 5]
+        # widths: 4 base + 4 per residue = 12 entries
+        widths = [50, 10, 10, 10, 5, 5, 5, 5, 5, 5, 5, 5]
         line = self.outliers.report_summary_line(widths, "overall",
-                                                  residue_names=["U01", "WAT"])
+                                                  residue_names=["U01", "WAT"],
+                                                  sims2process=["md1"])
         # Strip trailing newline before counting columns
         line_stripped = line.rstrip("\n")
-        # Comma-separated values part: 'Total ... events: 2, 1, 1, 0, 1, 1, 0'
         parts = [p.strip() for p in line_stripped.split(",")]
-        # parts[0] is the header text + first value: "Total number of unassigned events:         2"
-        # parts[1..]: remaining values
-        # Expect: total=2, entry=1, release=1, U01_E=0, U01_R=1, WAT_E=1, WAT_R=0
-        # Last 4 values are the per-residue columns
-        self.assertEqual(parts[-4], "0")  # U01 entry
-        self.assertEqual(parts[-3], "1")  # U01 release
-        self.assertEqual(parts[-2], "1")  # WAT entry
-        self.assertEqual(parts[-1], "0")  # WAT release
+        # parts[0] is the header text + total; then entry, release, then the two per-residue quadruples.
+        # Single simulation -> avg == count, std == 0. Order follows residue_names: U01 then WAT.
+        # U01: entry=0, release=1  ->  0.0, 0.0, 1.0, 0.0
+        # WAT: entry=1, release=0  ->  1.0, 0.0, 0.0, 0.0
+        self.assertEqual(parts[-8:], ["0.0", "0.0", "1.0", "0.0", "1.0", "0.0", "0.0", "0.0"])
 
     def test_report_summary_line_absent_residue_uses_dash(self):
-        """A residue listed in residue_names but with no events must render as '-'"""
+        """A residue listed in residue_names but with no events must render all 4 columns as '-'"""
         self.outliers.add_transport_event("md1", "p1", "entry", ("WAT:123", (10, 50)))
-        widths = [50, 10, 10, 10, 5, 5, 5, 5]
+        widths = [50, 10, 10, 10, 5, 5, 5, 5, 5, 5, 5, 5]
         line = self.outliers.report_summary_line(widths, "overall",
-                                                  residue_names=["U01", "WAT"])
+                                                  residue_names=["U01", "WAT"],
+                                                  sims2process=["md1"])
         line_stripped = line.rstrip("\n")
         parts = [p.strip() for p in line_stripped.split(",")]
-        # U01 absent -> dashes; WAT present -> 1, 0
-        self.assertEqual(parts[-4], "-")
-        self.assertEqual(parts[-3], "-")
-        self.assertEqual(parts[-2], "1")
-        self.assertEqual(parts[-1], "0")
+        # U01 absent -> 4 dashes; WAT present (entry=1, release=0) -> 1.0, 0.0, 0.0, 0.0
+        self.assertEqual(parts[-8:], ["-", "-", "-", "-", "1.0", "0.0", "0.0", "0.0"])
 
     def test_prepare_visualization_obj_name_per_residue_pattern(self):
         """Per-residue object names are built at PyMOL runtime from the bundle's (event_type, resname)

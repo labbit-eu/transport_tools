@@ -195,6 +195,20 @@ sample_exact_matching_no_tunnels = {
     "4existing_tunnels": {}
 }
 
+# Tunnels from the candidate SCs exist in the event's frames, but the ligand is never inside any of them
+# (all-zero matched buriedness) - the other degenerate matching case, which must fall back to a geometric
+# resolution rather than keeping every candidate unfiltered
+sample_exact_matching_all_zero = {
+    "4all_frames": {
+        1: 0.0,
+        2: 0.0
+    },
+    "4existing_tunnels": {
+        1: 0.0,
+        2: 0.0
+    }
+}
+
 # Mock trajectory coordinates for ligand
 # Shape: (num_frames, num_atoms, 3)
 sample_ligand_coords = np.array([

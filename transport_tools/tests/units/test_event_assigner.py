@@ -36,6 +36,7 @@ from transport_tools.tests.units.data.data_event_assigner import (
     sample_buriedness_high, sample_buriedness_medium, sample_buriedness_low,
     sample_buriedness_below_cutoff, sample_depth_high, sample_depth_medium,
     sample_depth_low, sample_exact_matching_buriedness, sample_exact_matching_no_tunnels,
+    sample_exact_matching_all_zero,
     sample_min_depth, sample_min_depth_narrow, sample_min_depth_wide,
     sample_direction_aligned, sample_direction_offaxis,
     test_parameters_trace_matching_strided, test_parameters_trace_matching_dense,
@@ -449,6 +450,7 @@ class TestEventAssignerExactMatching(unittest.TestCase):
         self.mock_sc1.sc_id = 1
         self.mock_sc1.has_passed_filter.return_value = True
         self.mock_sc1.is_directionally_aligned.return_value = True
+        self.mock_sc1.avg_direction = sample_direction_aligned
         self.mock_sc1.compute_distance2transport_event.return_value = (
             sample_buriedness_high, sample_depth_high, sample_min_depth
         )
@@ -493,11 +495,12 @@ class TestEventAssignerExactMatching(unittest.TestCase):
         """
         Verify exact_matching resolution triggers exact matching analysis
         """
-        # Add second SC
+        # Add second, off-axis SC so the geometric fallback has something to discriminate
         mock_sc2 = Mock()
         mock_sc2.sc_id = 2
         mock_sc2.has_passed_filter.return_value = True
         mock_sc2.is_directionally_aligned.return_value = True
+        mock_sc2.avg_direction = sample_direction_offaxis
         mock_sc2.compute_distance2transport_event.return_value = (
             sample_buriedness_high, sample_depth_medium, sample_min_depth
         )
@@ -520,11 +523,13 @@ class TestEventAssignerExactMatching(unittest.TestCase):
                 test_active_filters
             )
 
-            # Should fail because exact matching is required but no tunnels match
+            # _exact_event_tunnel_matching runs, finds no tunnels, and the buried+aligned event falls back to
+            # directionality rather than being demoted to an outlier - so it stays assigned (to the aligned SC1)
             event_spec, assigned_ids, max_buriedness, max_depth = assigner.perform_assignment()
 
-            # _exact_event_tunnel_matching should have been called
             mock_exact.assert_called_once()
+            self.assertIsNotNone(assigned_ids)
+            self.assertEqual(list(assigned_ids), [1])
 
 
 class TestEventAssignerTraceMatching(unittest.TestCase):
@@ -548,12 +553,14 @@ class TestEventAssignerTraceMatching(unittest.TestCase):
         self.mock_sc1.sc_id = 1
         self.mock_sc1.has_passed_filter.return_value = True
         self.mock_sc1.is_directionally_aligned.return_value = True
+        self.mock_sc1.avg_direction = sample_direction_aligned
         self.mock_sc1.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_high, sample_min_depth)
 
         self.mock_sc2 = Mock()
         self.mock_sc2.sc_id = 2
         self.mock_sc2.has_passed_filter.return_value = True
         self.mock_sc2.is_directionally_aligned.return_value = True
+        self.mock_sc2.avg_direction = sample_direction_offaxis
         self.mock_sc2.compute_distance2transport_event.return_value = (sample_buriedness_high, sample_depth_medium,
                                                                        sample_min_depth)
 
@@ -575,9 +582,11 @@ class TestEventAssignerTraceMatching(unittest.TestCase):
             self.assertIsNotNone(assigned_ids)
             self.assertEqual(list(assigned_ids), [1])
 
-    def test_trace_matching_resolution_no_tunnels_unassigned(self):
+    def test_trace_matching_resolution_no_tunnels_falls_back_to_directionality(self):
         """
-        Verify an ambiguous event whose trace matches no tunnels is left unassigned under trace_matching
+        Verify an ambiguous, buried, directionally-aligned event whose trace matches no tunnels is NOT demoted to
+        an outlier: with no discriminating matching signal it falls back to directionality resolution over the
+        buried candidates and stays assigned (here to the aligned SC1, rejecting the off-axis SC2)
         """
         with patch.object(EventAssigner, '_trace_event_tunnel_matching') as mock_trace:
             mock_trace.return_value = sample_exact_matching_no_tunnels
@@ -587,7 +596,25 @@ class TestEventAssignerTraceMatching(unittest.TestCase):
             _, assigned_ids, _, _ = assigner.perform_assignment()
 
             mock_trace.assert_called_once()
-            self.assertIsNone(assigned_ids)
+            self.assertIsNotNone(assigned_ids)
+            self.assertEqual(list(assigned_ids), [1])
+
+    def test_trace_matching_resolution_all_zero_falls_back_to_directionality(self):
+        """
+        Verify the mirror degenerate case: tunnels exist in the event's frames but the ligand is never inside any
+        of them (all-zero matched buriedness). Rather than keeping every candidate unfiltered, the event falls back
+        to directionality and is resolved to the aligned SC1
+        """
+        with patch.object(EventAssigner, '_trace_event_tunnel_matching') as mock_trace:
+            mock_trace.return_value = sample_exact_matching_all_zero
+
+            assigner = EventAssigner(self.test_params, sample_event_specification_1, self.mock_event,
+                                     self.mock_superclusters, test_active_filters)
+            _, assigned_ids, _, _ = assigner.perform_assignment()
+
+            mock_trace.assert_called_once()
+            self.assertIsNotNone(assigned_ids)
+            self.assertEqual(list(assigned_ids), [1])
 
     def test_trace_matching_analysis_runs_for_single_sc(self):
         """

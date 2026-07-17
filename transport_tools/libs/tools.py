@@ -3787,30 +3787,11 @@ class EventAssigner:
         # (large angle) loses to the one it actually runs along. Ties within 10 degrees are then broken by the
         # penetration span, which is safe here because it only compares similarly aligned superclusters
         if buried_sc_ids.size > 1 and self.parameters["ambiguous_event_assignment_resolution"] == "directionality":
-            event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
-            angles = np.array([vector_angle(self.super_clusters[sc_id].avg_direction, event_direction)
-                               for sc_id in buried_sc_ids])
-            min_angle = np.min(angles)
-
-            msg = "Using directional alignment to identify the best supercluster for "
-            msg += "transport event '{:s}' buried inside {:d} superclusters " \
-                   "(buriedness = {:.2f}), ".format(str(self.event_specification), buried_sc_ids.size, max_buriedness)
-            for sc_id, angle in zip(buried_sc_ids, angles):
-                msg += "\n sc{:d} - direction angle = {:.1f} deg".format(sc_id, np.degrees(angle))
-            logger.debug(msg)
-
-            # primary: keep the best-aligned SC(s) within a 10 degree tie tolerance
-            aligned = angles <= min_angle + np.radians(10)
-            buried_sc_ids = buried_sc_ids[aligned]
-            max_depths = max_depths[aligned]
-            min_depths = min_depths[aligned]
-
-            # secondary: among directionally tied SCs prefer the wider penetration span (genuine traversal),
-            # keeping all within the 0.05 span tolerance of the best
-            if buried_sc_ids.size > 1:
-                spans = max_depths - min_depths
-                max_span = np.max(spans)
-                buried_sc_ids = buried_sc_ids[spans >= max_span - 0.05]
+            reason = "Using directional alignment to identify the best supercluster for " \
+                     "transport event '{:s}' buried inside {:d} superclusters " \
+                     "(buriedness = {:.2f}), ".format(str(self.event_specification), buried_sc_ids.size,
+                                                       max_buriedness)
+            buried_sc_ids = self._resolve_ambiguity_by_directionality(buried_sc_ids, max_depths, min_depths, reason)
 
         # event is buried in more than one SC and we resolve it by matching to the actual tunnels - either from the
         # MD trajectory (exact_matching) or from the trajectory-free AQUA-DUCT trace (trace_matching); both produce
@@ -3845,19 +3826,71 @@ class EventAssigner:
                            "event!\n"
             logger.debug(msg)
 
-            # use the matching results to verify and filter event assignment to multiple clusters
-            buried_sc_ids = np.array([*buriedness["4all_frames"].keys()])
+            # use the matching results to resolve the assignment among the buried candidate SCs. Matching only
+            # gets to pick winners when it has a positive discriminating signal; when it does not - no tunnels
+            # existed in the event's frames, or tunnels existed but the ligand was never inside any of them
+            # (all-zero) - we must NOT demote a buried, directionally-aligned event to an outlier (that verdict is
+            # reserved for the buriedness/direction gates above), nor keep every candidate unfiltered. Instead we
+            # fall back to directional-alignment resolution over the original buried candidates, so the outcome is
+            # always a discriminated, non-empty subset.
+            matched_sc_ids = np.array([*buriedness["4all_frames"].keys()])
+            matched_buriedness = np.array([*buriedness["4all_frames"].values()])
 
-            if buried_sc_ids.size:
-                # some tunnels matched for some of evaluated SCs
-                matched_buriedness = np.array([*buriedness["4all_frames"].values()])
+            if matched_sc_ids.size and np.max(matched_buriedness) > 0:
+                # matching discriminates - keep the best-matched SC(s)
                 max_matched_buriedness = np.max(matched_buriedness)
-                buried_sc_ids = buried_sc_ids[matched_buriedness == max_matched_buriedness]
+                buried_sc_ids = matched_sc_ids[matched_buriedness == max_matched_buriedness]
             else:
-                # no tunnels matched -> cannot assign event to any SC
-                buried_sc_ids = None
+                # matching gave no usable signal - resolve geometrically instead of demoting or keeping all
+                reason = "{:s} matching produced no discriminating signal for transport event '{:s}' " \
+                         "(no tunnels in its frames, or ligand never inside any); falling back to directional " \
+                         "alignment over its {:d} buried superclusters, ".format(kind,
+                                                                                 str(self.event_specification),
+                                                                                 buried_sc_ids.size)
+                buried_sc_ids = self._resolve_ambiguity_by_directionality(buried_sc_ids, max_depths, min_depths,
+                                                                          reason)
 
         return self.event_specification, buried_sc_ids, max_buriedness, max_depth
+
+    def _resolve_ambiguity_by_directionality(self, candidate_sc_ids: np.ndarray, max_depths: np.ndarray,
+                                             min_depths: np.ndarray, reason_msg: str) -> np.ndarray:
+        """
+        Resolve an ambiguous assignment (event buried in several superclusters) by how closely the event's exit
+        bearing matches each supercluster's overall direction, breaking ties (within 10 degrees) by the penetration
+        span. Always returns a non-empty subset of candidate_sc_ids - this only narrows the candidates, it never
+        demotes the event to an outlier. Used both by the 'directionality' resolution and as the geometric fallback
+        when tunnel matching produces no discriminating signal.
+        :param candidate_sc_ids: buried candidate supercluster IDs (>1)
+        :param max_depths: per-candidate maximal penetration depth (aligned with candidate_sc_ids)
+        :param min_depths: per-candidate shallowest buried depth (aligned with candidate_sc_ids)
+        :param reason_msg: header line for the debug log explaining why this resolution runs
+        :return: filtered, non-empty subset of candidate_sc_ids
+        """
+
+        event_direction = np.ravel(self.event.nodes_data[self.event.nodes_data[:, 4] == 1][0, :3])
+        angles = np.array([vector_angle(self.super_clusters[sc_id].avg_direction, event_direction)
+                           for sc_id in candidate_sc_ids])
+        min_angle = np.min(angles)
+
+        msg = reason_msg
+        for sc_id, angle in zip(candidate_sc_ids, angles):
+            msg += "\n sc{:d} - direction angle = {:.1f} deg".format(sc_id, np.degrees(angle))
+        logger.debug(msg)
+
+        # primary: keep the best-aligned SC(s) within a 10 degree tie tolerance
+        aligned = angles <= min_angle + np.radians(10)
+        candidate_sc_ids = candidate_sc_ids[aligned]
+        max_depths = max_depths[aligned]
+        min_depths = min_depths[aligned]
+
+        # secondary: among directionally tied SCs prefer the wider penetration span (genuine traversal),
+        # keeping all within the 0.05 span tolerance of the best
+        if candidate_sc_ids.size > 1:
+            spans = max_depths - min_depths
+            max_span = np.max(spans)
+            candidate_sc_ids = candidate_sc_ids[spans >= max_span - 0.05]
+
+        return candidate_sc_ids
 
     def _exact_event_tunnel_matching(self, considered_sc_ids: np.ndarray) -> Dict[str, Dict[int, float]]:
         """
