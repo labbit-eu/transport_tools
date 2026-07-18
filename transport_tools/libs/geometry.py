@@ -1903,13 +1903,11 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
                                                                                         self.md_label))
         num_points = self.points_mat.shape[0]
 
-        # assign tunnel ids
+        # assign tunnel ids: row i's id equals the number of end points (col 5 < 0) seen strictly
+        # before row i, i.e. a cumsum of the end-point flags shifted right by one
         self.points_mat = np.append(self.points_mat, np.zeros((num_points, 1)), axis=1)
-        tunnel_id = 0
-        for point in self.points_mat:
-            point[6] = tunnel_id
-            if point[5] < 0:  # end point
-                tunnel_id += 1
+        end_point_flags = self.points_mat[:, 5] < 0
+        self.points_mat[:, 6] = np.concatenate(([0], np.cumsum(end_point_flags[:-1])))
 
         layer_ids, layers = assign_layer_from_distances(self.points_mat[:, 3], self.layer_thickness)
         for layer_id in layer_ids:

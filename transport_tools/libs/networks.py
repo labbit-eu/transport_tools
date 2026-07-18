@@ -2380,26 +2380,41 @@ class AquaductPath:
         network = dict()
         network["BP"] = set()
         network["SP"] = set()
-
         for id1 in range(num_obs):
-            point1 = points_dataset[id1][1]
-            if id1 not in network.keys():
-                network[id1] = set()
-            for id2 in range(id1 + 1, num_obs):
-                point2 = points_dataset[id2][1]
-                diff_in_original_order = abs(points_dataset[id1][0]-points_dataset[id2][0])
-                if diff_in_original_order == 1:  # points were originally connected in AquaDuct trace
-                    network[id1].add(id2)
-                if point1.distance2point(point2) <= 2 * self.parameters["aqauduct_ligand_effective_radius"]:
-                    # points are connected when considering ligand radii
-                    network[id1].add(id2)
+            network[id1] = set()
 
-            if point1.data[0, 3] <= self.parameters["aqauduct_ligand_effective_radius"]:
-                # point connected to SP
-                network[id1].add("SP")
-            if point1.distance2point(border_point) <= 2 * self.parameters["aqauduct_ligand_effective_radius"]:
-                # point connected to BP
-                network[id1].add("BP")
+        if num_obs == 0:
+            return network
+
+        radius = 2 * self.parameters["aqauduct_ligand_effective_radius"]
+        orig_ids = np.array([entry[0] for entry in points_dataset], dtype=float)
+        coords = np.concatenate([entry[1].data[:, 0:3] for entry in points_dataset], axis=0)
+        dist2sp = np.array([entry[1].data[0, 3] for entry in points_dataset])
+
+        # pairwise coordinate distances among points_dataset (upper triangle only, id1 < id2), via
+        # the squared-norm expansion |a-b|^2 = |a|^2 + |b|^2 - 2 a.b so only NxN and Nx3 arrays are
+        # ever materialised (no NxNx3 diff tensor)
+        sq_norms = np.einsum('ij,ij->i', coords, coords)
+        gram = coords.dot(coords.T)
+        sq_dists = np.clip(sq_norms[:, np.newaxis] + sq_norms[np.newaxis, :] - 2 * gram, 0, None)
+        pair_dists = np.sqrt(sq_dists)
+        consecutive_in_trace = np.abs(orig_ids[:, np.newaxis] - orig_ids[np.newaxis, :]) == 1
+        overlapping = pair_dists <= radius
+        connected = np.triu(consecutive_in_trace | overlapping, k=1)
+
+        id1s, id2s = np.nonzero(connected)
+        for id1, id2 in zip(id1s.tolist(), id2s.tolist()):
+            network[id1].add(id2)
+
+        sp_connected = np.nonzero(dist2sp <= self.parameters["aqauduct_ligand_effective_radius"])[0]
+        for id1 in sp_connected.tolist():
+            network[id1].add("SP")
+
+        bp_diff = coords - border_point.data[0, 0:3]
+        dist2bp = np.sqrt(np.einsum('ij,ij->i', bp_diff, bp_diff))
+        bp_connected = np.nonzero(dist2bp <= radius)[0]
+        for id1 in bp_connected.tolist():
+            network[id1].add("BP")
 
         for point1, connections in network.items():  # make contacts symmetric
             for point2 in connections:
