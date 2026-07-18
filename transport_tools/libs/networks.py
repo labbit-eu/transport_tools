@@ -27,6 +27,7 @@ import pickle
 import tarfile
 import gzip
 import numpy as np
+from collections import OrderedDict
 from threadpoolctl import threadpool_limits
 from logging import getLogger
 from multiprocessing import Pool, get_context
@@ -2424,6 +2425,13 @@ class AquaductPath:
 
 
 # Super Clusters
+# process-local LRU registry of SuperCluster instances currently holding a loaded path_sets;
+# bounds how many superclusters' path_sets stay resident at once in a single worker process
+# (each load_path_sets() call, hit or miss, is an access and refreshes recency)
+_LOADED_PATH_SETS_LRU: "OrderedDict[int, SuperCluster]" = OrderedDict()
+_LOADED_PATH_SETS_LRU_CAP = 100
+
+
 class SuperCluster:
     def __init__(self, sc_id: int, parameters: dict, total_num_md_sims: int):
         """
@@ -2603,11 +2611,22 @@ class SuperCluster:
                     self.tunnel_clusters_valid[md_label][cluster_id] = False
 
     def load_path_sets(self):
-        with open(self.path_set_filename, "rb") as in_stream:
-            self.path_sets: Dict[str, LayeredPathSet] = pickle.load(in_stream)
+        if not self.path_sets:  # not already loaded in this worker
+            with open(self.path_set_filename, "rb") as in_stream:
+                self.path_sets: Dict[str, LayeredPathSet] = pickle.load(in_stream)
 
-        for path_set in self.path_sets.values():
-            path_set.parameters.update(self.parameters)  # to update config if needed
+            for path_set in self.path_sets.values():
+                path_set.parameters.update(self.parameters)  # to update config if needed
+
+        # (re-)register on every access, hit or miss: this instance may have been unpickled with
+        # path_sets already populated (e.g. it travelled into a fresh worker process via Pool
+        # initargs, or came from a checkpoint) without ever registering here, so this process-local
+        # LRU can lack an entry for it even though path_sets itself is present
+        _LOADED_PATH_SETS_LRU[self.sc_id] = self
+        _LOADED_PATH_SETS_LRU.move_to_end(self.sc_id)
+        if len(_LOADED_PATH_SETS_LRU) > _LOADED_PATH_SETS_LRU_CAP:
+            _, evicted = _LOADED_PATH_SETS_LRU.popitem(last=False)
+            evicted.path_sets = dict()
 
     def compute_space_descriptors(self) -> Tuple[int, np.ndarray]:
         """
