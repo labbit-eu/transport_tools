@@ -1558,11 +1558,14 @@ class TestTransportProcesses(unittest.TestCase):
         mol_system.generate_super_cluster_summary(out_filename="3-initial_events_summary.txt")
 
         fixtures = os.path.join(self.saved_data, "event_assignment_variants", variant)
-        for produced, relpath in variant_artifacts(self.out_path):
-            compare_test_files(os.path.join(fixtures, relpath), produced, self)
-        if param_overrides.get("perform_trace_matching_analysis"):
-            compare_test_folders(os.path.join(fixtures, "trace_matching_analysis", "md1"),
-                                 trace_analysis_dir(self.out_path), self)
+        try:
+            for produced, relpath in variant_artifacts(self.out_path):
+                compare_test_files(os.path.join(fixtures, relpath), produced, self)
+            if param_overrides.get("perform_trace_matching_analysis"):
+                compare_test_folders(os.path.join(fixtures, "trace_matching_analysis", "md1"),
+                                     trace_analysis_dir(self.out_path), self)
+        except AssertionError as exc:
+            raise AssertionError("[variant='{}'] {}".format(variant, exc)) from exc
 
     def test_11assign_transport_events(self):
         try:
