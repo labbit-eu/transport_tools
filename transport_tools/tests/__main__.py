@@ -34,6 +34,7 @@ import transport_tools.tests.units.test_supercluster as TT_test_supercluster
 import transport_tools.tests.units.test_msms as TT_test_msms
 import transport_tools.tests.units.test_config as TT_test_config
 import transport_tools.tests.units.test_ui as TT_test_ui
+import transport_tools.tests.units.test_tunnel_pruning as TT_test_tunnel_pruning
 from transport_tools.libs.utils import set_paths_from_package_root
 
 # Create unit tests suite
@@ -47,6 +48,7 @@ unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_msms))
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_config))
 unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_ui))
+unit_tests_suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(TT_test_tunnel_pruning))
 
 # Run unit tests first
 print("=" * 80)

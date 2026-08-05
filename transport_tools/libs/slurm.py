@@ -1541,6 +1541,17 @@ class TunnelNetworksShardStage(SlurmShardStage):
         "caver_snapshot_stride",
         "process_bottleneck_residues",
         "visualize_transformed_tunnels",
+        "prune_tunnels",
+        "prune_tunnels_mode",
+        "prune_tunnels_bin_size",
+        "prune_tunnels_survival_perc_low",
+        "prune_tunnels_survival_perc_high",
+        "prune_tunnels_core_fraction_low",
+        "prune_tunnels_core_fraction_high",
+        "prune_tunnels_min_joint_threshold",
+        "prune_tunnels_eff_thresh",
+        "prune_tunnels_slope_percentile",
+        "prune_tunnels_water_radius",
     )
 
     def __init__(self, items: List[str]):

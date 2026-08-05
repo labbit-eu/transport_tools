@@ -1119,6 +1119,49 @@ class TunnelNetwork(Network):
         if self.parameters["process_bottleneck_residues"]:
             self._read_bottleneck_data()
 
+        if self.parameters["prune_tunnels"]:
+            self._prune_tunnels()
+
+    def _prune_tunnels(self):
+        """
+        Prune offensive tunnel tails (segments extending into empty solvent space)
+        in-place, per CAVER cluster, before the network is saved for downstream stages.
+        Only tunnels flagged as inflating and/or curved are shortened; the derived
+        length, layer membership and relevant-tunnel filter verdicts are refreshed.
+        """
+
+        from transport_tools.libs import tunnel_pruning
+
+        tunnels = [
+            tunnel
+            for entity in self.orig_entities
+            if isinstance(entity, TunnelCluster)
+            for tunnel in entity.tunnels.values()
+        ]
+        if not tunnels:
+            logger.debug("No tunnels to prune in network of '%s'.", self.md_label)
+            return
+
+        stats = tunnel_pruning.prune_tunnels(
+            tunnels,
+            mode=self.parameters["prune_tunnels_mode"],
+            bin_size=self.parameters["prune_tunnels_bin_size"],
+            surv_perc_range=(self.parameters["prune_tunnels_survival_perc_low"],
+                             self.parameters["prune_tunnels_survival_perc_high"]),
+            core_range=(self.parameters["prune_tunnels_core_fraction_low"],
+                        self.parameters["prune_tunnels_core_fraction_high"]),
+            min_joint_threshold=self.parameters["prune_tunnels_min_joint_threshold"],
+            eff_thresh=self.parameters["prune_tunnels_eff_thresh"],
+            slope_percentile=self.parameters["prune_tunnels_slope_percentile"],
+            water_radius=self.parameters["prune_tunnels_water_radius"],
+        )
+        logger.info("Tunnel pruning in '%s': %d cluster(s), %d with cut, "
+                    "%d extending, %d offensive (%d inflating, %d curved, %d both), "
+                    "%d truncated.",
+                    self.md_label, stats["n_clusters"], stats["n_clusters_with_cut"],
+                    stats["n_extending"], stats["n_offensive"], stats["n_inflated"],
+                    stats["n_curved"], stats["n_both"], stats["n_truncated"])
+
     def _validate_snapshot_sampling(self):
         """
         Cross-check the configured snapshot sampling against the CAVER snapshot IDs actually parsed.
