@@ -1126,8 +1126,11 @@ class TunnelNetwork(Network):
         """
         Prune offensive tunnel tails (segments extending into empty solvent space)
         in-place, per CAVER cluster, before the network is saved for downstream stages.
-        Only tunnels flagged as inflating and/or curved are shortened; the derived
-        length, layer membership and relevant-tunnel filter verdicts are refreshed.
+        Only relevant tunnels (``filters_passed``) take part: they define the
+        consensus cut and are the only tunnels that may be shortened (when flagged
+        as inflating and/or curved); non-passing tunnels are left untouched.  For
+        truncated tunnels the derived length, curvature, layer membership and
+        relevant-tunnel filter verdicts are refreshed.
         """
 
         from transport_tools.libs import tunnel_pruning
@@ -1142,6 +1145,12 @@ class TunnelNetwork(Network):
             logger.debug("No tunnels to prune in network of '%s'.", self.md_label)
             return
 
+        # The CAVER starting point used for the length/curvature recomputation is the
+        # average starting point (same source as `starting_point_coords`), expressed in
+        # the transformed frame of `Tunnel.spheres_data`.  Transport Tools places this
+        # point at the global origin, so the transformed anchor typically equals [0,0,0].
+        anchor = self.transform_mat.dot(np.append(self.starting_point_coords.flatten(), 1.0))[0:3]
+
         stats = tunnel_pruning.prune_tunnels(
             tunnels,
             mode=self.parameters["prune_tunnels_mode"],
@@ -1154,6 +1163,7 @@ class TunnelNetwork(Network):
             eff_thresh=self.parameters["prune_tunnels_eff_thresh"],
             slope_percentile=self.parameters["prune_tunnels_slope_percentile"],
             water_radius=self.parameters["prune_tunnels_water_radius"],
+            anchor=anchor,
         )
         logger.info("Tunnel pruning in '%s': %d cluster(s), %d with cut, "
                     "%d extending, %d offensive (%d inflating, %d curved, %d both), "
