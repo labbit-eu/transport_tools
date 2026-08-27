@@ -61,7 +61,10 @@ __mail__ = 'igomar@amu.edu.pl'
 
 import numpy as np
 from logging import getLogger
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transport_tools.libs.networks import Tunnel
 
 logger = getLogger(__name__)
 
@@ -330,19 +333,19 @@ def verify_postcut(
 # ── Step 3: truncation ─────────────────────────────────────────────────────
 
 
-def truncate_tunnel(
-    tunnel, cut_distance: float, water_radius: float = 1.4,
-    anchor: np.ndarray | None = None,
-) -> bool:
+def truncate_tunnel(tunnel: Tunnel, cut_distance: float, water_radius: float = 1.4) -> bool:
     """Truncate a tunnel's sphere data at the guarded cut position, in place.
 
     Two rules govern the actual cut point:
-      1. Bottleneck protection -- never remove the tunnel's narrowest sphere.
-         The CAVER ``bottleneck_radius`` is deliberately not refreshed after
-         truncation, so the guard additionally protects the profile sphere
-         closest to that value: the kept tunnel must still contain the sphere
-         the CAVER bottleneck refers to.  This invariant is asserted before the
-         cut is committed.
+      1. Bottleneck protection -- the cut never reaches the tunnel's bottleneck.
+         CAVER locates the bottleneck on the continuous tunnel axis while the
+         profile samples that axis every ~0.5 A, so the reported
+         ``bottleneck_radius`` is not one of the profile radii and the true
+         narrowest point falls *between* two spheres.  Keeping one sphere past
+         ``argmin(R)`` therefore brackets it on both sides, which matters
+         because ``bottleneck_radius`` is deliberately not refreshed after
+         truncation: the value must stay valid for the kept geometry.  The
+         invariant is asserted before the cut is committed.
       2. Water-radius floor -- the cut is the first sphere at or after the
          guarded position whose radius is >= *water_radius*, and that sphere is
          kept, so the last kept sphere always meets the floor.  When no sphere
@@ -354,31 +357,17 @@ def truncate_tunnel(
     whenever the floor loop advanced; its own guard marker already plotted the
     floor-passing sphere, which is the contract this implementation follows.
 
-    The tunnel's ``length`` and ``curvature`` are recomputed from the kept
-    sphere coordinates (see below) and ``layer_membership``/``filters_passed``
-    are refreshed to stay consistent with the truncated geometry.  The CAVER
-    ``cost``, ``throughput`` and ``bottleneck_radius`` are *not* recomputable
-    from the sphere data and keep their original values (documented, logged
-    limitation).
+    The tunnel's ``length`` and ``curvature`` are recomputed by
+    ``Tunnel.recompute_length_and_curvature()`` -- which follows CAVER's own
+    definitions and reproduces its values for an unmodified tunnel -- and
+    ``layer_membership``/``filters_passed`` are refreshed to stay consistent
+    with the truncated geometry.  The CAVER ``cost``, ``throughput`` and
+    ``bottleneck_radius`` are *not* recomputable from the sphere data and keep
+    their original values (documented, logged limitation).
 
-    Length/curvature recomputation: CAVER defines ``length`` as the path length
-    measured from the calculation starting point along the tunnel axis, and
-    ``curvature = length / distance`` where ``distance`` is the straight
-    distance between the starting point and the tunnel end point.  Transport
-    Tools places the (average) CAVER starting point at the global origin, so
-    the recomputation anchors the sphere chain at *anchor* (default
-    ``[0, 0, 0]``): the new length is the arc length ``|anchor->sphere0| +
-    sum|sphere_i->sphere_{i+1}|`` over the kept spheres and the new curvature
-    is ``length / |anchor->last_kept|``.  This intentionally follows the same
-    global-origin convention used for ``layer_membership`` (and reproduces
-    CAVER's reported values exactly when *anchor* coincides with the tunnel's
-    own starting point).
     :param tunnel: Tunnel to truncate in place.
     :param cut_distance: distance cut at which the tunnel tail is removed.
     :param water_radius: minimum radius of the last kept sphere.
-    :param anchor: (3,) coordinates of the CAVER starting point expressed in the
-        same (transformed) frame as ``tunnel.spheres_data``; defaults to the
-        global origin used by Transport Tools.
     :return: True when the tunnel was actually shortened, False otherwise.
     """
     dists = tunnel.spheres_data[:, _COL_DISTANCE]
@@ -395,15 +384,15 @@ def truncate_tunnel(
     else:
         start = len(radii) - 1
 
-    # Bottleneck protection.  The narrowest profile sphere must survive the cut,
-    # and -- because the CAVER `bottleneck_radius` attribute is deliberately not
-    # refreshed after truncation -- so must the profile sphere that value refers
-    # to.  CAVER computes the bottleneck per-atom, so no profile radius matches
-    # it exactly; the closest one is the best available proxy (with the unset
-    # value of -1.0 the proxy collapses to `bottleneck_idx`).
+    # Bottleneck protection: `argmin(R)` is the narrowest *sampled* sphere and the
+    # true (continuous) bottleneck lies within one sampling step of it, so keeping
+    # one sphere further out brackets the real narrowest point inside the kept
+    # chain.  Deliberately positional -- searching instead for the profile radius
+    # numerically closest to `bottleneck_radius` locates nothing, since the two
+    # differ by ~0.006 A on average and the closest match can sit anywhere in the
+    # profile.
     bottleneck_idx = int(np.argmin(radii))
-    br_idx = int(np.argmin(np.abs(radii - tunnel.bottleneck_radius)))
-    protected = max(bottleneck_idx, br_idx)
+    protected = min(bottleneck_idx + 1, len(radii) - 1)
     earliest = max(start, protected + 1)  # +1 because we keep it
 
     # First sphere at or after the guarded position whose radius meets the water
@@ -418,69 +407,27 @@ def truncate_tunnel(
     if n_keep >= len(tunnel.spheres_data):
         return False
 
-    # Invariant: the cut never removes the protected bottleneck sphere(s), so the
-    # un-refreshed CAVER bottleneck_radius remains a valid property of the
-    # truncated tunnel.  Structurally guaranteed by `earliest` above; asserted to
-    # guard against future changes to the cut logic.
+    # Invariant: the cut never reaches the bottleneck, so the un-refreshed CAVER
+    # bottleneck_radius remains a valid property of the truncated tunnel.
+    # Structurally guaranteed by `earliest` above; asserted to guard against
+    # future changes to the cut logic.
     assert protected + 1 <= n_keep, (
-        "Tunnel {} of cluster {}: truncation to {} sphere(s) would remove the "
-        "protected bottleneck sphere(s) at index(es) {} -- the un-refreshed "
-        "CAVER bottleneck_radius must remain valid for the kept geometry"
-        .format(tunnel.tunnel_id, tunnel.caver_cluster_id, n_keep,
-                (bottleneck_idx, br_idx))
+        "Tunnel {} of cluster {}: truncation to {} sphere(s) would reach the "
+        "bottleneck bracketed at index {} -- the un-refreshed CAVER "
+        "bottleneck_radius must remain valid for the kept geometry"
+        .format(tunnel.tunnel_id, tunnel.caver_cluster_id, n_keep, protected)
     )
 
     tunnel.spheres_data = tunnel.spheres_data[:n_keep]
-    _refresh_length_and_curvature(tunnel, anchor)
-    _refresh_layer_membership(tunnel)
-    _refresh_filters_passed(tunnel)
+    tunnel.recompute_length_and_curvature()
+    tunnel.compute_layer_membership()
+    tunnel.apply_relevance_filters()
+    logger.debug("Truncated tunnel %d of cluster %d to %d sphere(s): length=%.6g, "
+                 "curvature=%.6g (cost=%g, throughput=%g, bottleneck_radius=%g keep "
+                 "their CAVER values).", tunnel.tunnel_id, tunnel.caver_cluster_id,
+                 n_keep, tunnel.length, tunnel.curvature, tunnel.cost,
+                 tunnel.throughput, tunnel.bottleneck_radius)
     return True
-
-
-def _refresh_length_and_curvature(tunnel, anchor: np.ndarray | None = None) -> None:
-    """Recompute ``length`` and ``curvature`` from the kept sphere coordinates.
-
-    CAVER cannot provide fresh values for the truncated geometry, so both are
-    derived from the kept spheres, anchored at the (transformed) starting point
-    in the same global-origin convention used for layer membership.
-    ``throughput``/``cost``/``bottleneck_radius`` keep their CAVER values.
-    """
-    if anchor is None:
-        anchor = np.zeros(3)
-    anchor = np.asarray(anchor, dtype=np.float64).reshape(3)
-
-    coords = tunnel.spheres_data[:, 0:3]
-    pts = np.vstack((anchor, coords))
-    segments = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-    length = float(segments.sum())
-    chord = float(np.linalg.norm(coords[-1] - anchor))
-
-    tunnel.length = length
-    tunnel.curvature = length / chord if chord > 0 else float("inf")
-    logger.debug("Refreshed length=%.6g, curvature=%.6g for tunnel %d of cluster %d "
-                 "(cost=%g, throughput=%g, bottleneck_radius=%g keep CAVER values).",
-                 tunnel.length, tunnel.curvature, tunnel.tunnel_id,
-                 tunnel.caver_cluster_id, tunnel.cost, tunnel.throughput,
-                 tunnel.bottleneck_radius)
-
-
-def _refresh_layer_membership(tunnel) -> None:
-    """Recompute layer membership for the (possibly truncated) sphere data."""
-    from transport_tools.libs.geometry import assign_layer_from_distances, einsum_dist
-
-    tunnel.layer_membership = assign_layer_from_distances(
-        einsum_dist(tunnel.spheres_data[:, 0:3], np.array([0.0, 0.0, 0.0])),
-        tunnel.parameters["layer_thickness"],
-    )[1]
-
-
-def _refresh_filters_passed(tunnel) -> None:
-    """Recompute the relevant-tunnel filter verdict from the (possibly truncated) length."""
-    tunnel.filters_passed = (
-        round(tunnel.bottleneck_radius, 6) >= tunnel.parameters["relevant_tunnel_min_radius"]
-        and round(tunnel.length, 6) >= tunnel.parameters["relevant_tunnel_min_length"]
-        and round(tunnel.curvature, 6) <= tunnel.parameters["relevant_tunnel_max_curvature"]
-    )
 
 
 # ── full workflow ──────────────────────────────────────────────────────────
@@ -496,7 +443,6 @@ def prune_tunnels(
     eff_thresh: float = 0.5,
     slope_percentile: float = 90,
     water_radius: float = 1.4,
-    anchor: np.ndarray | None = None,
 ) -> Dict[str, int]:
     """Compute cuts, verify tunnels, and truncate offensive tunnels in place.
 
@@ -520,10 +466,6 @@ def prune_tunnels(
     :param slope_percentile: percentile of cluster core-expansion slopes used as the
         inflation reference.
     :param water_radius: minimum radius of the last kept sphere.
-    :param anchor: (3,) coordinates of the CAVER starting point expressed in the same
-        (transformed) frame as ``Tunnel.spheres_data``; passed to
-        ``truncate_tunnel`` for the length/curvature recomputation.  Defaults to the
-        global origin used by Transport Tools.
     :return: statistics of the pruning pass: number of clusters, number of
         relevant tunnels, clusters with a cut, tunnels extending beyond a cut,
         offensive tunnels (by category) and tunnels actually truncated.
@@ -591,8 +533,7 @@ def prune_tunnels(
                 stats["n_curved"] += 1
             if category == "both":
                 stats["n_both"] += 1
-            if truncate_tunnel(tunnel, cut_distance, water_radius=water_radius,
-                               anchor=anchor):
+            if truncate_tunnel(tunnel, cut_distance, water_radius=water_radius):
                 stats["n_truncated"] += 1
 
     return stats

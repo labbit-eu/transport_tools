@@ -54,15 +54,15 @@ def build_tunnels():
             for datasection in (datasection0, datasection1, datasection2, datasection3)]
 
 
-def expected_length_curvature(tunnel, anchor):
-    """Independent recomputation of length/curvature from kept sphere coordinates,
-    following the module's definition (arc/chord anchored at *anchor*). Used to verify
-    the refresh without reusing the module's own implementation."""
-    anchor = np.asarray(anchor, dtype=float)
+def expected_length_curvature(tunnel):
+    """Independent recomputation of length/curvature from the kept sphere coordinates,
+    following CAVER's definition (arc length of the centerline from the first sphere,
+    over the first-to-last chord). Used to verify the refresh without reusing the
+    implementation under test."""
     coords = tunnel.spheres_data[:, 0:3]
-    segments = np.linalg.norm(np.diff(np.vstack((anchor, coords)), axis=0), axis=1)
+    segments = np.linalg.norm(np.diff(coords, axis=0), axis=1)
     length = float(segments.sum())
-    chord = float(np.linalg.norm(coords[-1] - anchor))
+    chord = float(np.linalg.norm(coords[-1] - coords[0]))
     return length, (length / chord if chord > 0 else float("inf"))
 
 
@@ -238,9 +238,8 @@ class TestTruncateTunnel(unittest.TestCase):
         # the last kept sphere meets the water-floor contract
         self.assertGreaterEqual(self.offender.spheres_data[-1, tunnel_pruning._COL_RADIUS], 1.4)
         self.assertEqual(n_after, len(self.offender.layer_membership))
-        # length and curvature are recomputed from the kept spheres, anchored at the
-        # global origin (the default = TransportTools' transformed average starting point)
-        exp_len, exp_curv = expected_length_curvature(self.offender, np.zeros(3))
+        # length and curvature are recomputed from the kept spheres in CAVER's own terms
+        exp_len, exp_curv = expected_length_curvature(self.offender)
         self.assertAlmostEqual(self.offender.length, exp_len, places=9)
         self.assertAlmostEqual(self.offender.curvature, exp_curv, places=9)
         # ...not merely the raw CAVER length column of the last kept sphere
@@ -250,26 +249,30 @@ class TestTruncateTunnel(unittest.TestCase):
                          and self.offender.length >= 5.0
                          and self.offender.curvature <= 999)
 
-    def test_length_curvature_reproduce_caver_when_anchored_at_tunnel_start(self):
-        # CAVER measures length/curvature from the tunnel's own starting point, which is
-        # the first sphere; anchoring there reproduces CAVER's reported values exactly on
-        # the (unpruned) chain
-        anchor = self.offender.spheres_data[0, 0:3].copy()
-        exp_len, exp_curv = expected_length_curvature(self.offender, anchor)
-        self.assertAlmostEqual(exp_len, 14.37838512501541, places=9)
-        self.assertAlmostEqual(exp_curv, 1.1248349566005307, places=9)
+    def test_recomputation_reproduces_caver_values_on_untouched_tunnels(self):
+        # The refresh must be expressed in the very terms CAVER reports, or a truncated
+        # tunnel stops being comparable with the untouched ones in its own cluster.  The
+        # recomputation is therefore pinned against the values parsed from CAVER: it must
+        # reproduce them exactly while the geometry is still unmodified.  Note both are
+        # measured from the FIRST SPHERE - the gap between the CAVER starting point and
+        # that sphere (the 'distance' column at index 0) belongs to neither.
+        for tunnel in self.tunnels:
+            caver_length, caver_curvature = tunnel.length, tunnel.curvature
+            tunnel.recompute_length_and_curvature()
+            self.assertAlmostEqual(tunnel.length, caver_length, places=9,
+                                   msg="length drifted for " + tunnel.snapshot)
+            self.assertAlmostEqual(tunnel.curvature, caver_curvature, places=9,
+                                   msg="curvature drifted for " + tunnel.snapshot)
+            self.assertGreater(tunnel.spheres_data[0, tunnel_pruning._COL_DISTANCE], 0)
 
-    def test_explicit_anchor_drives_recomputation(self):
-        # a non-origin anchor shifts both length and curvature
-        anchor = np.array([5.0, 0.0, 0.0])
-        self.assertTrue(tunnel_pruning.truncate_tunnel(self.offender, self.cut_distance,
-                                                       anchor=anchor))
-        exp_len, exp_curv = expected_length_curvature(self.offender, anchor)
-        self.assertAlmostEqual(self.offender.length, exp_len, places=9)
-        self.assertAlmostEqual(self.offender.curvature, exp_curv, places=9)
-        self.assertNotAlmostEqual(self.offender.length,
-                                  expected_length_curvature(self.offender, np.zeros(3))[0],
-                                  places=9)
+    def test_truncation_never_lengthens_a_tunnel(self):
+        # Removing spheres must shorten the recorded length; anything else means the
+        # refresh is measuring from somewhere other than CAVER's reference.
+        for tunnel in self.tunnels:
+            length_before = tunnel.length
+            if tunnel_pruning.truncate_tunnel(tunnel, self.cut_distance):
+                self.assertLess(tunnel.length, length_before,
+                                msg="truncation lengthened " + tunnel.snapshot)
 
     def test_cost_throughput_bottleneck_keep_caver_values(self):
         # not recomputable from sphere data -> must survive truncation unchanged
@@ -281,32 +284,27 @@ class TestTruncateTunnel(unittest.TestCase):
         self.assertEqual(self.offender.bottleneck_radius, bottleneck0)
 
     def test_filters_passed_reflects_refreshed_length(self):
-        # anchored at the tunnel's own start (where pruning genuinely shortens the
-        # CAVER length), a minimum length above the pruned length must turn the
-        # (refreshed) relevant-tunnel verdict off
-        def anchor_of(t):
-            return t.spheres_data[0, 0:3].copy()
-
+        # a minimum length above the pruned length must turn the (refreshed)
+        # relevant-tunnel verdict off
         probe = build_single_tunnel(datasection2)
-        tunnel_pruning.truncate_tunnel(probe, self.cut_distance, anchor=anchor_of(probe))
+        caver_length = probe.length
+        tunnel_pruning.truncate_tunnel(probe, self.cut_distance)
         pruned_length = probe.length
-        self.assertLess(pruned_length, 14.37838512501541)  # shorter than the CAVER value
+        self.assertLess(pruned_length, caver_length)  # shorter than the CAVER value
 
         accept = build_single_tunnel(datasection2)
-        tunnel_pruning.truncate_tunnel(accept, self.cut_distance, anchor=anchor_of(accept))
+        tunnel_pruning.truncate_tunnel(accept, self.cut_distance)
         self.assertTrue(accept.filters_passed)
 
         reject = build_single_tunnel(datasection2, {"relevant_tunnel_min_length": pruned_length + 0.5})
-        tunnel_pruning.truncate_tunnel(reject, self.cut_distance, anchor=anchor_of(reject))
+        tunnel_pruning.truncate_tunnel(reject, self.cut_distance)
         self.assertFalse(reject.filters_passed)
 
     def test_cut_index_uses_first_sphere_at_or_after_cut(self):
         # Distance column is NOT monotonic (descent between index 1 and 2): the first
         # sphere with distance >= cut is index 0, so `searchsorted` (undefined on
         # unsorted input) would return index 4 and over-truncate, whereas the guarded
-        # `argmax(dists >= cut)` must anchor at 0.  Radii are all above the water floor
-        # (1.4) and the bottleneck is at index 0, so the guarded cut keeps exactly two
-        # spheres (the bottleneck and the first floor-passing sphere after it).
+        # `argmax(dists >= cut)` must start at 0.
         dists = [1.274, 0.540, 0.082, 0.033, 1.627, 1.826]
         radii = [1.5] * 6
         # sanity: the profile really descends
@@ -324,34 +322,52 @@ class TestTruncateTunnel(unittest.TestCase):
 
         n_before = len(tunnel.spheres_data)
         self.assertTrue(tunnel_pruning.truncate_tunnel(tunnel, cut_distance))
-        # radii are all above the water floor (1.4) and the bottleneck is at index 0,
-        # so the guarded cut keeps exactly two spheres: the protected bottleneck and
-        # the first floor-passing sphere at/after the guarded position (index 1)
-        self.assertEqual(2, len(tunnel.spheres_data))
+        # radii are all equal so the bottleneck lands at index 0; the guard brackets it
+        # at index 1 and the cut keeps through the first floor-passing sphere at/after
+        # index 2 -> [0..2].  Had `searchsorted` been used, the cut would have started
+        # at index 4 and kept the whole tunnel instead.
+        self.assertEqual(3, len(tunnel.spheres_data))
         self.assertGreaterEqual(tunnel.spheres_data[-1, tunnel_pruning._COL_RADIUS], 1.4)
         self.assertLess(len(tunnel.spheres_data), n_before)
 
-    def test_bottleneck_protection_covers_caver_bottleneck_sphere(self):
-        # The guarded position protects not only the argmin of the profile R column
-        # but also the profile sphere closest to the CAVER bottleneck_radius (which
-        # is kept un-refreshed after truncation).  Here the cut would pass just
-        # after the narrowest profile sphere (idx 5) -- cutting the CAVER bottleneck
-        # sphere (idx 8, R=1.2 == BR) -- so the guard must advance to keep it.
+    def test_bottleneck_is_bracketed_by_the_guard(self):
+        # `bottleneck_radius` is not refreshed after truncation, so the kept chain must
+        # still contain the point it refers to.  CAVER locates the bottleneck on the
+        # continuous axis while the profile only samples it, so the true minimum sits
+        # BETWEEN spheres: the guard keeps one sphere past argmin(R) to bracket it.
         dists = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
-        radii = [1.4, 1.4, 1.4, 1.4, 1.4, 1.0, 1.5, 1.5, 1.2, 1.6, 1.7, 1.8]
+        radii = [1.5, 1.5, 1.5, 1.5, 1.5, 1.0, 1.5, 1.5, 1.5, 1.6, 1.7, 1.8]
         tunnel = build_synthetic_tunnel(dists, radii, seed=11.0)
-        tunnel.bottleneck_radius = 1.2  # CAVER value -> closest profile sphere is idx 8
+        # the CAVER value is below every sampled radius, as it is for 7465 of the 8151
+        # md1 tunnels -- it is not one of the profile radii
+        tunnel.bottleneck_radius = 0.97
         cut_distance = 2.5  # first reached at idx 4
 
         self.assertTrue(tunnel_pruning.truncate_tunnel(tunnel, cut_distance,
                                                        water_radius=1.4))
-        # guard = max(cut idx 4, bottleneck idx 5 + 1, BR sphere idx 8 + 1) = 9;
-        # the floor is met at idx 9, so [0..9] is kept -- the CAVER bottleneck
-        # sphere (8) and the narrowest profile sphere (5) both survive, and the
-        # argmin-only guard (which would keep only [0..6]) is demonstrably not used
-        self.assertEqual(10, len(tunnel.spheres_data))
-        self.assertEqual(1.2, float(tunnel.spheres_data[8, tunnel_pruning._COL_RADIUS]))
+        # guard = max(cut idx 4, argmin(R) idx 5 bracketed to 6, +1) = 7; idx 7 meets the
+        # floor, so [0..7] is kept -- the narrowest sphere (5) and its outward neighbour
+        # (6), between which the true bottleneck lies, both survive
+        self.assertEqual(8, len(tunnel.spheres_data))
+        self.assertEqual(1.0, float(tunnel.spheres_data[5, tunnel_pruning._COL_RADIUS]))
         self.assertGreaterEqual(tunnel.spheres_data[-1, tunnel_pruning._COL_RADIUS], 1.4)
+
+    def test_guard_ignores_a_far_sphere_matching_the_bottleneck_radius(self):
+        # Regression: guarding on the profile radius numerically closest to
+        # `bottleneck_radius` is not a position at all.  Here a far tail sphere (idx 10)
+        # is 0.0001 wide of the CAVER value while the real bottleneck is at idx 5 -- the
+        # same coincidence that, on md1, moved the guard 45 spheres out and left the
+        # tunnel unprunable.  The guard must key off argmin(R), not the value match.
+        dists = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
+        radii = [1.5, 1.5, 1.5, 1.5, 1.5, 1.0, 1.5, 1.5, 1.5, 1.6, 1.0001, 1.8]
+        tunnel = build_synthetic_tunnel(dists, radii, seed=13.0)
+        tunnel.bottleneck_radius = 1.0002  # closest profile radius is the tail sphere 10
+        self.assertEqual(10, int(np.argmin(np.abs(np.asarray(radii) - tunnel.bottleneck_radius))))
+        self.assertEqual(5, int(np.argmin(radii)))
+
+        self.assertTrue(tunnel_pruning.truncate_tunnel(tunnel, 2.5, water_radius=1.4))
+        # guarded off argmin(R)=5 -> keeps [0..7], not the [0..11] the value match forces
+        self.assertEqual(8, len(tunnel.spheres_data))
 
     def test_far_cut_beyond_tunnel_max_is_no_op(self):
         # with a cut beyond the tunnel's max distance the guarded position clamps to the
