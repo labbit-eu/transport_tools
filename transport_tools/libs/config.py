@@ -334,7 +334,7 @@ class AnalysisConfig:
             "prune_tunnels_survival_perc_high": 0.9,  # upper percentile of per-tunnel max distances for valid cut region
             "prune_tunnels_core_fraction_low": 0.3,  # start of the tunnel core region as fraction of the distance range
             "prune_tunnels_core_fraction_high": 0.6,  # end of the tunnel core region as fraction of the distance range
-            "prune_tunnels_min_joint_threshold": 0.01,  # noise floor of the joint score in 'first' mode (0 disables)
+            "prune_tunnels_min_joint_threshold": 0.01,  # absolute noise floor of the joint score in 'first' mode, on top of the adaptive core-derived threshold (0 disables)
             "prune_tunnels_eff_thresh": 0.5,  # path-efficiency threshold below which a post-cut segment is 'curved'
             "prune_tunnels_slope_percentile": 90,  # percentile of cluster core-expansion slopes used as inflation reference
             "prune_tunnels_water_radius": 1.4  # minimum radius [A] of the last kept sphere (water transport floor)

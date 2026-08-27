@@ -43,21 +43,25 @@ reference) and are the only tunnels that may be truncated.  Tunnels that fail
 the filter are left entirely untouched and do not influence the cut, so a
 cluster with fewer than two relevant tunnels has no consensus cut.
 
-    Pruning is applied in-place to the passed ``Tunnel`` objects: their
-    ``spheres_data`` is truncated, and the derived ``length``, ``curvature``,
-    ``layer_membership`` and ``filters_passed`` attributes are refreshed so that
-    all downstream stages (3+ of TransportTools) see the pruned tunnel geometry.
-    ``cost``/``throughput``/``bottleneck_radius`` are not recomputable from the
-    sphere data and keep their CAVER values (logged limitation).
+Pruning is applied in-place to the passed ``Tunnel`` objects: their
+``spheres_data`` is truncated, and the derived ``length``, ``curvature``,
+``layer_membership`` and ``filters_passed`` attributes are refreshed so that
+all downstream stages (3+ of TransportTools) see the pruned tunnel geometry.
+``cost``/``throughput``/``bottleneck_radius`` are not recomputable from the
+sphere data and keep their CAVER values (logged limitation).
 
 Sphere data columns of ``Tunnel.spheres_data``: ``[x, y, z, distance, R, length]``.
+Note that the ``length`` column is not the tunnel length but CAVER's resampling
+parameter along the axis (a constant ~0.5 A step offset by ``distance[0]``); the
+tunnel length is the arc length of the sphere centerline, see
+``Tunnel.recompute_length_and_curvature()``.
 """
 
 from __future__ import annotations
 
 __version__ = '0.9.8'
-__author__ = 'Igor Marchlewski'
-__mail__ = 'igomar@amu.edu.pl'
+__author__ = 'Jan Brezovsky'
+__mail__ = 'janbre@amu.edu.pl'
 
 import numpy as np
 from logging import getLogger
@@ -77,16 +81,16 @@ _COL_LENGTH = 5
 # ── small helpers ──────────────────────────────────────────────────────────
 
 
-def _group_by_cluster(tunnels: list) -> Dict[int, list]:
+def _group_by_cluster(tunnels: List[Tunnel]) -> Dict[int, List[Tunnel]]:
     """Group Tunnel objects by their CAVER cluster id, preserving order."""
-    groups: Dict[int, list] = {}
+    groups: Dict[int, List[Tunnel]] = {}
     for tunnel in tunnels:
         groups.setdefault(tunnel.caver_cluster_id, []).append(tunnel)
     return groups
 
 
 def _bin_spheres(
-    cluster_tunnels: list, bin_size: float = 0.5
+    cluster_tunnels: List[Tunnel], bin_size: float = 0.5
 ) -> Tuple[List[List[float]], List[float]]:
     """Bin sphere radii by distance.  Returns (binned_radii, survival_fraction)."""
     items: List[Tuple[float, float, Tuple[str, int, int]]] = []
@@ -148,7 +152,7 @@ def _slope_r_over_l(lengths: np.ndarray, radii: np.ndarray, min_points: int = 3)
 
 
 def compute_per_cluster_cut(
-    tunnels: list,
+    tunnels: List[Tunnel],
     bin_size: float = 0.5,
     surv_perc_range: Tuple[float, float] = (0.1, 0.9),
     core_range: Tuple[float, float] = (0.3, 0.6),
@@ -162,13 +166,19 @@ def compute_per_cluster_cut(
         relevant (``filters_passed``) ones; the function itself works on the
         population it is given.
     :param bin_size: width of distance bins in Angstroms.
-    :param surv_perc_range: percentile range of per-tunnel maximum distances defining the
-        valid region for cut selection.
+    :param surv_perc_range: percentile range of the per-tunnel maximum distances, bounding
+        the region in which a cut may be selected.  Equivalently a survival range: the
+        default ``(0.1, 0.9)`` spans the distances at which 90% and 10% of the cluster's
+        tunnels still reach, excluding both the core every tunnel covers and the sparse
+        tail only the longest few reach.
     :param core_range: fraction of the distance range defining the tunnel core region.
     :param mode: cut selection mode: ``"first"`` (lowest-distance bin passing the joint
         threshold) or ``"peak"`` (bin with the maximal joint score).
-    :param min_joint_threshold: minimum joint-score value for a bin to be considered in
-        ``mode="first"``.  Acts as a noise floor.  Set to 0 to disable.
+    :param min_joint_threshold: absolute noise floor of the joint score in ``mode="first"``.
+        Applied on top of the adaptive threshold (twice the 90th percentile of the positive
+        joint scores inside the core region), which is what normally selects the cut; this
+        floor only suppresses clusters whose core is so quiet that the adaptive threshold
+        degenerates.  Set to 0 to disable.
     :return: {cluster_id: (cut_distance, core_radius, core_q3)} where core_q3 is the
         75th percentile of per-bin median radii in the core region.
     """
@@ -255,7 +265,7 @@ def compute_per_cluster_cut(
 
 
 def verify_postcut(
-    tunnels: list,
+    tunnels: List[Tunnel],
     cut_distance: float,
     eff_thresh: float = 0.5,
     slope_percentile: float = 90,
@@ -434,7 +444,7 @@ def truncate_tunnel(tunnel: Tunnel, cut_distance: float, water_radius: float = 1
 
 
 def prune_tunnels(
-    tunnels: list,
+    tunnels: List[Tunnel],
     mode: str = "first",
     bin_size: float = 0.5,
     surv_perc_range: Tuple[float, float] = (0.1, 0.9),
@@ -458,10 +468,11 @@ def prune_tunnels(
     :param tunnels: Tunnel objects of a single MD simulation.
     :param mode: cut selection mode, ``"first"`` or ``"peak"``.
     :param bin_size: width of distance bins in Angstroms.
-    :param surv_perc_range: percentile range of per-tunnel maximum distances defining the
-        valid region for cut selection.
+    :param surv_perc_range: percentile range of the per-tunnel maximum distances (equivalently
+        a survival range) bounding the region in which a cut may be selected.
     :param core_range: fraction of the distance range defining the tunnel core region.
-    :param min_joint_threshold: noise floor of the joint score in ``"first"`` mode (0 disables).
+    :param min_joint_threshold: absolute noise floor of the joint score in ``"first"`` mode,
+        applied on top of the adaptive core-derived threshold (0 disables).
     :param eff_thresh: path-efficiency threshold below which a post-cut segment is curved.
     :param slope_percentile: percentile of cluster core-expansion slopes used as the
         inflation reference.
