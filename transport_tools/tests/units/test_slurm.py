@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+# Copyright (C) 2021 The TransportTools Authors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -704,6 +704,17 @@ class TestTunnelNetworksShardStageFingerprint(unittest.TestCase):
             "caver_traj_offset": 1,
             "process_bottleneck_residues": False,
             "visualize_transformed_tunnels": False,
+            "prune_tunnels": False,
+            "prune_tunnels_mode": "first",
+            "prune_tunnels_bin_size": 0.5,
+            "prune_tunnels_survival_perc_low": 0.1,
+            "prune_tunnels_survival_perc_high": 0.9,
+            "prune_tunnels_core_fraction_low": 0.3,
+            "prune_tunnels_core_fraction_high": 0.6,
+            "prune_tunnels_min_joint_threshold": 0.01,
+            "prune_tunnels_eff_thresh": 0.5,
+            "prune_tunnels_slope_percentile": 90,
+            "prune_tunnels_water_radius": 1.4,
         }
         params.update(overrides)
         return params

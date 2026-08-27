@@ -73,6 +73,10 @@ If you encounter any problems with installation, or the use of *TransportTools* 
 
 Documentation can be found on [github.com](https://github.com/labbit-eu/transport_tools).
 
+## Authors
+
+*TransportTools* is developed by Jan Brezovsky with the help of the contributors listed in [AUTHORS.md](AUTHORS.md).
+
 ## References
 * [Brezovsky et al, 2022: TransportTools: a library for high-throughput analyses of internal voids in biomolecules and ligand transport through them. Bioinformatics 38: 1752-1753](https://doi.org/10.1093/bioinformatics/btab872)
 * [Sequeiros-Borja et al, 2023: Divide-and-conquer approach to study protein tunnels in long molecular dynamics simulations, MethodsX 10C: 101968](https://www.sciencedirect.com/science/article/pii/S2215016122003429)

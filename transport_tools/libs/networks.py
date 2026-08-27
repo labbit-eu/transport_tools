@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+# Copyright (C) 2021 The TransportTools Authors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -598,6 +598,49 @@ class Tunnel:
             self.bottleneck_xyz = transform_mat.dot(self.bottleneck_xyz)[0:3]
         self.bottleneck_residues = [res.strip() for res in bottleneck_data[4:]]
 
+    def compute_layer_membership(self):
+        """
+        Assign each sphere of this tunnel to a spherical layer around the general starting point at the
+        origin. Must be recomputed whenever spheres_data changes (e.g. after tunnel pruning).
+        """
+
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
+
+        self.layer_membership = assign_layer_from_distances(einsum_dist(self.spheres_data[:, 0:3],
+                                                                        np.array([0., 0., 0.])),
+                                                            self.parameters["layer_thickness"])[1]
+
+    def apply_relevance_filters(self):
+        """
+        Evaluate whether this tunnel is RELEVANT, i.e. wide, long and straight enough to be layered.
+        Must be re-evaluated whenever the underlying properties change (e.g. after tunnel pruning).
+        """
+
+        self.filters_passed = round(self.bottleneck_radius, 6) >= self.parameters["relevant_tunnel_min_radius"] \
+            and round(self.length, 6) >= self.parameters["relevant_tunnel_min_length"] \
+            and round(self.curvature, 6) <= self.parameters["relevant_tunnel_max_curvature"]
+
+    def recompute_length_and_curvature(self):
+        """
+        Derive length and curvature from the sphere coordinates, following CAVER's own definitions:
+        the length is the arc length of the sphere centerline starting at the first sphere, and the
+        curvature is that length divided by the straight distance between the first and last sphere.
+        Note that CAVER measures neither from the tunnel starting point - the gap between it and the
+        first sphere (reported in the 'distance' column) is excluded from both.
+
+        Reproduces the values parsed from CAVER for an unmodified tunnel, and is used to refresh them
+        once the geometry changes and CAVER can no longer supply them (e.g. after tunnel pruning).
+        """
+
+        if self.spheres_data is None:
+            raise ValueError(f"Tunnel sphere data must be provided before useage for tunnel {self.tunnel_id} of cluster {self.caver_cluster_id}")
+
+        coords = self.spheres_data[:, 0:3]
+        self.length = float(np.linalg.norm(np.diff(coords, axis=0), axis=1).sum())
+        chord = float(np.linalg.norm(coords[-1] - coords[0]))
+        self.curvature = self.length / chord if chord > 0 else float("inf")
+
     def fill_data(self, data_section: List[str]):
         """
         Processes seven lines of data from tunnel_profiles.csv produced by CAVER to create Tunnel object
@@ -620,10 +663,7 @@ class Tunnel:
                 self.length = float(array[10])
             dataset[property_name] = array[13:]
 
-        if round(self.bottleneck_radius, 6) >= self.parameters["relevant_tunnel_min_radius"] and \
-                round(self.length, 6) >= self.parameters["relevant_tunnel_min_length"] and \
-                round(self.curvature, 6) <= self.parameters["relevant_tunnel_max_curvature"]:
-            self.filters_passed = True
+        self.apply_relevance_filters()
 
         #  here we transform the data to fit the reference structure
         try:
@@ -646,9 +686,7 @@ class Tunnel:
                                "\n".format(self.parameters["caver_relative_profile_file"], self.parameters["md_label"],
                                            self.caver_cluster_id, self.snapshot))
 
-        self.layer_membership = assign_layer_from_distances(einsum_dist(self.spheres_data[:, 0:3],
-                                                                        np.array([0., 0., 0.])),
-                                                            self.parameters["layer_thickness"])[1]
+        self.compute_layer_membership()
 
     def get_closest_sphere2coords(self, xyz: np.ndarray) ->  Tuple[float, np.ndarray] | Tuple[None, None]:
         """
@@ -1118,6 +1156,52 @@ class TunnelNetwork(Network):
 
         if self.parameters["process_bottleneck_residues"]:
             self._read_bottleneck_data()
+
+        if self.parameters["prune_tunnels"]:
+            self._prune_tunnels()
+
+    def _prune_tunnels(self):
+        """
+        Prune offensive tunnel tails (segments extending into empty solvent space)
+        in-place, per CAVER cluster, before the network is saved for downstream stages.
+        Only relevant tunnels (``filters_passed``) take part: they define the
+        consensus cut and are the only tunnels that may be shortened (when flagged
+        as inflating and/or curved); non-passing tunnels are left untouched.  For
+        truncated tunnels the derived length, curvature, layer membership and
+        relevant-tunnel filter verdicts are refreshed.
+        """
+
+        from transport_tools.libs import tunnel_pruning
+
+        tunnels = [
+            tunnel
+            for entity in self.orig_entities
+            if isinstance(entity, TunnelCluster)
+            for tunnel in entity.tunnels.values()
+        ]
+        if not tunnels:
+            logger.debug("No tunnels to prune in network of '%s'.", self.md_label)
+            return
+
+        stats = tunnel_pruning.prune_tunnels(
+            tunnels,
+            mode=self.parameters["prune_tunnels_mode"],
+            bin_size=self.parameters["prune_tunnels_bin_size"],
+            surv_perc_range=(self.parameters["prune_tunnels_survival_perc_low"],
+                             self.parameters["prune_tunnels_survival_perc_high"]),
+            core_range=(self.parameters["prune_tunnels_core_fraction_low"],
+                        self.parameters["prune_tunnels_core_fraction_high"]),
+            min_joint_threshold=self.parameters["prune_tunnels_min_joint_threshold"],
+            eff_thresh=self.parameters["prune_tunnels_eff_thresh"],
+            slope_percentile=self.parameters["prune_tunnels_slope_percentile"],
+            water_radius=self.parameters["prune_tunnels_water_radius"],
+        )
+        logger.info("Tunnel pruning in '%s': %d cluster(s), %d with cut, "
+                    "%d extending, %d offensive (%d inflating, %d curved, %d both), "
+                    "%d truncated.",
+                    self.md_label, stats["n_clusters"], stats["n_clusters_with_cut"],
+                    stats["n_extending"], stats["n_offensive"], stats["n_inflated"],
+                    stats["n_curved"], stats["n_both"], stats["n_truncated"])
 
     def _validate_snapshot_sampling(self):
         """

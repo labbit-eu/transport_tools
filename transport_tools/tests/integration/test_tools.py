@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+# Copyright (C) 2021 The TransportTools Authors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -110,6 +110,100 @@ class TestTransportProcesses(unittest.TestCase):
         compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "network_data", "caver", "md1"),
                               os.path.join(self.out_path, "visualization", "sources", "network_data", "caver", "md1"), self)
         save_checkpoint(mol_system, self._get_dumpfile(2), overwrite=True)
+
+    @staticmethod
+    def _load_tunnel_clusters(network_data_path: str, md_label: str = "md1") -> dict:
+        """Load a stage-2 tunnel-network dump and index its tunnels by (cluster_id, snapshot_id)."""
+        import pickle
+
+        with open(os.path.join(network_data_path, "{}_caver.dump".format(md_label)), "rb") as in_stream:
+            clusters = pickle.load(in_stream)
+
+        return {(cluster.cluster_id, snap_id): tunnel
+                for cluster in clusters for snap_id, tunnel in cluster.tunnels.items()}
+
+    def test_02process_tunnel_networks_pruned(self):
+        """Stage 2 with 'prune_tunnels' enabled, golden-compared against its own fixtures and
+        checked against the unpruned baseline written by test_02process_tunnel_networks. The
+        stage-2 output paths are redirected to a variant folder so the default (unpruned) chain
+        feeding test_03+ is untouched; no checkpoint is saved. Mirrors
+        _check_super_cluster_clustering_variant for stage 5."""
+        from numpy import allclose, diff
+        from numpy.linalg import norm
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(1))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        baseline_path = os.path.join(self.out_path, "_internal", "network_data", "caver")
+        if not os.path.isfile(os.path.join(baseline_path, "md1_caver.dump")):
+            self.skipTest("unpruned stage-2 baseline not available")
+
+        variant_root = os.path.join(self.out_path, "_pruning_variant")
+        variant_data = os.path.join(variant_root, "network_data", "caver")
+        variant_vis = os.path.join(variant_root, "visualization", "caver")
+        mol_system.parameters["orig_caver_network_data_path"] = variant_data
+        mol_system.parameters["orig_caver_vis_path"] = variant_vis
+        mol_system.parameters["prune_tunnels"] = True
+        mol_system.process_tunnel_networks()
+
+        # The invariants below run before the golden comparison on purpose: they hold
+        # independently of the fixtures, so a regression cannot be blessed by regenerating them.
+        baseline = self._load_tunnel_clusters(baseline_path)
+        pruned = self._load_tunnel_clusters(variant_data)
+        self.assertEqual(set(baseline.keys()), set(pruned.keys()),
+                         "pruning must not add or drop tunnels, only shorten them")
+
+        water_floor = mol_system.parameters["prune_tunnels_water_radius"]
+        truncated = 0
+        for key, before in baseline.items():
+            after = pruned[key]
+            if len(after.spheres_data) == len(before.spheres_data):
+                # untouched tunnels must come through byte-identical
+                self.assertTrue(allclose(after.spheres_data, before.spheres_data),
+                                "untouched tunnel {} was modified".format(key))
+                self.assertEqual(after.length, before.length, "untouched tunnel {}".format(key))
+                self.assertEqual(after.curvature, before.curvature, "untouched tunnel {}".format(key))
+                continue
+
+            truncated += 1
+            msg = "truncated tunnel {}".format(key)
+            # only a tail is removed - the kept spheres are the original leading ones
+            self.assertLess(len(after.spheres_data), len(before.spheres_data), msg)
+            self.assertTrue(allclose(after.spheres_data,
+                                     before.spheres_data[:len(after.spheres_data)]), msg)
+            # only relevant tunnels may be truncated
+            self.assertTrue(before.filters_passed, msg)
+            # the last kept sphere honours the water-radius floor
+            self.assertGreaterEqual(after.spheres_data[-1, 4], water_floor, msg)
+            # the bottleneck survives, so the un-refreshed CAVER value stays valid
+            self.assertEqual(after.bottleneck_radius, before.bottleneck_radius, msg)
+            self.assertAlmostEqual(float(after.spheres_data[:, 4].min()),
+                                   float(before.spheres_data[:, 4].min()), places=9, msg=msg)
+            # length/curvature are refreshed in CAVER's terms and a shortened tunnel is shorter
+            coords = after.spheres_data[:, 0:3]
+            self.assertAlmostEqual(after.length, float(norm(diff(coords, axis=0), axis=1).sum()),
+                                   places=9, msg=msg)
+            self.assertAlmostEqual(after.curvature, after.length / float(norm(coords[-1] - coords[0])),
+                                   places=9, msg=msg)
+            self.assertLess(after.length, before.length, msg)
+            # layer membership is refreshed alongside the geometry
+            self.assertEqual(len(after.layer_membership), len(after.spheres_data), msg)
+            # CAVER values that cannot be derived from sphere data are left alone
+            self.assertEqual(after.cost, before.cost, msg)
+            self.assertEqual(after.throughput, before.throughput, msg)
+            # the relevant-tunnel verdict is re-evaluated against the refreshed geometry
+            self.assertEqual(after.filters_passed,
+                             round(after.bottleneck_radius, 6) >= mol_system.parameters["relevant_tunnel_min_radius"]
+                             and round(after.length, 6) >= mol_system.parameters["relevant_tunnel_min_length"]
+                             and round(after.curvature, 6) <= mol_system.parameters["relevant_tunnel_max_curvature"],
+                             msg)
+
+        self.assertGreater(truncated, 0, "pruning did not shorten any tunnel of the test data")
+
+        compare_test_folders(os.path.join(self.saved_data, "tunnel_pruning", "md1"),
+                              os.path.join(variant_vis, "md1"), self)
 
     def test_02process_tunnel_networks_slurm(self):
         """Same checks as test_02process_tunnel_networks, but is computed via the SLURM

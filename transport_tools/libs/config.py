@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+# Copyright (C) 2021 The TransportTools Authors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -150,6 +150,10 @@ class AnalysisConfig:
             "snapshot_id_position": 1,  # location of IDs in snapshot filenames from CAVER split by snapshot_delimiter
             "snapshot_delimiter": ".",  # delimiter used for splitting snapshot filenames from CAVER to get IDs
             "process_bottleneck_residues": False,  # read file bottlenecks.csv
+
+            # Pruning of tunnel profiles extending into empty solvent space (per CAVER cluster, per MD)
+            "prune_tunnels": False,  # truncate offensive tunnel tails (inflating/curved) at stage 2
+            "prune_tunnels_mode": "first",  # cut selection mode: 'first' (lowest-distance threshold bin) or 'peak' (max joint score)
 
             # Clustering of tunnel clusters into superclusters
             "relevant_tunnel_cluster_min_size": 1, #filters too small cluster, applies to tunnel network processing, clusters with fewer RELEVANT tunnels are not layered at all
@@ -322,7 +326,18 @@ class AnalysisConfig:
             # When on (default), transport-event paths are written as one bundled CGO per (supercluster, scope)
             # holding only the subsampled events, instead of one CGO file per event. Set False for the legacy
             # one-file-per-event layout.
-            "bundle_events_visualization": True
+            "bundle_events_visualization": True,
+
+            # Tuning of tunnel-profile pruning (used when 'prune_tunnels = True')
+            "prune_tunnels_bin_size": 0.5,  # width of distance bins [A] for the joint-transition score
+            "prune_tunnels_survival_perc_low": 0.1,  # lower percentile of per-tunnel max distances for valid cut region
+            "prune_tunnels_survival_perc_high": 0.9,  # upper percentile of per-tunnel max distances for valid cut region
+            "prune_tunnels_core_fraction_low": 0.3,  # start of the tunnel core region as fraction of the distance range
+            "prune_tunnels_core_fraction_high": 0.6,  # end of the tunnel core region as fraction of the distance range
+            "prune_tunnels_min_joint_threshold": 0.01,  # absolute noise floor of the joint score in 'first' mode, on top of the adaptive core-derived threshold (0 disables)
+            "prune_tunnels_eff_thresh": 0.5,  # path-efficiency threshold below which a post-cut segment is 'curved'
+            "prune_tunnels_slope_percentile": 90,  # percentile of cluster core-expansion slopes used as inflation reference
+            "prune_tunnels_water_radius": 1.4  # minimum radius [A] of the last kept sphere (water transport floor)
         }
         self.advanced_settings_defaults = self.advanced_settings.copy()
 
@@ -413,6 +428,7 @@ class AnalysisConfig:
             "legacy_pymol_support",
             "aquaduct_allow_empty_folders",
             "slurm_keep_shard_results",
+            "prune_tunnels",
         ]
 
         self.integer_params = [
@@ -471,7 +487,16 @@ class AnalysisConfig:
             "tunnel_properties_quantile",
             "directional_cutoff",
             "aqauduct_ligand_effective_radius",
-            "slurm_mem_gb"
+            "slurm_mem_gb",
+            "prune_tunnels_bin_size",
+            "prune_tunnels_survival_perc_low",
+            "prune_tunnels_survival_perc_high",
+            "prune_tunnels_core_fraction_low",
+            "prune_tunnels_core_fraction_high",
+            "prune_tunnels_min_joint_threshold",
+            "prune_tunnels_eff_thresh",
+            "prune_tunnels_slope_percentile",
+            "prune_tunnels_water_radius"
         ]
 
         # parameters whose value is a list of strings, one per (non-empty) line in the INI file
@@ -1034,6 +1059,30 @@ class AnalysisConfig:
         self._test_parameter_sanity("relevant_tunnel_min_radius", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_min_length", 0, sys.maxsize)
         self._test_parameter_sanity("relevant_tunnel_max_curvature", 1, sys.maxsize)
+
+        # tunnel-profile pruning knobs are only meaningful when pruning is enabled
+        if self.parameters["prune_tunnels"]:
+            valid_prune_modes = ("first", "peak")
+            if self.parameters["prune_tunnels_mode"] not in valid_prune_modes:
+                raise ValueError("\nUnsupported value '{}' for 'prune_tunnels_mode' parameter.\n Valid options are "
+                                 "'{}'.".format(self.parameters["prune_tunnels_mode"], valid_prune_modes))
+            self._test_parameter_sanity("prune_tunnels_bin_size", 0.1, sys.maxsize)
+            self._test_parameter_sanity("prune_tunnels_survival_perc_low", 0, 1)
+            self._test_parameter_sanity("prune_tunnels_survival_perc_high", 0, 1)
+            if self.parameters["prune_tunnels_survival_perc_low"] >= \
+                    self.parameters["prune_tunnels_survival_perc_high"]:
+                raise ValueError("\nParameter 'prune_tunnels_survival_perc_low' must be smaller than "
+                                 "'prune_tunnels_survival_perc_high'.")
+            self._test_parameter_sanity("prune_tunnels_core_fraction_low", 0, 1)
+            self._test_parameter_sanity("prune_tunnels_core_fraction_high", 0, 1)
+            if self.parameters["prune_tunnels_core_fraction_low"] >= \
+                    self.parameters["prune_tunnels_core_fraction_high"]:
+                raise ValueError("\nParameter 'prune_tunnels_core_fraction_low' must be smaller than "
+                                 "'prune_tunnels_core_fraction_high'.")
+            self._test_parameter_sanity("prune_tunnels_min_joint_threshold", 0, sys.maxsize)
+            self._test_parameter_sanity("prune_tunnels_eff_thresh", 0, 1)
+            self._test_parameter_sanity("prune_tunnels_slope_percentile", 1, 100)
+            self._test_parameter_sanity("prune_tunnels_water_radius", 0, sys.maxsize)
         self._test_parameter_sanity("clustering_cutoff", 0, sys.maxsize)
         self._test_parameter_sanity("event_min_distance", 0, sys.maxsize)
         self._test_parameter_sanity("event_assignment_cutoff", 0, 1)
@@ -1748,6 +1797,7 @@ class AnalysisConfig:
             "aquaduct_results_path": "# AQUA-DUCT results",
             "trajectory_path": "# Source MD trajectories",
             "snapshots_per_simulation": "# Parsing of tunnel clusters from CAVER results",
+            "prune_tunnels": "# Pruning of tunnel profiles extending into empty solvent space",
             "relevant_tunnel_cluster_min_size": "# Filtreing of tunnels and clusters before layering",
             "clustering_method": "# Clustering of tunnel clusters into superclusters - global and agglomerative settings",
             "hdbscan_min_cluster_size": "# HDBscan clustering settings",
@@ -1761,7 +1811,8 @@ class AnalysisConfig:
             "save_super_cluster_profiles_csvs": "# Optional data generation",
             "visualize_super_cluster_volumes": "# Optional visualization",
             "random_seed": "# Calculations",
-            "visualize_exact_matching_outcomes": "# Finer control of outputs & logging"
+            "visualize_exact_matching_outcomes": "# Finer control of outputs & logging",
+            "prune_tunnels_bin_size": "# Tuning of tunnel-profile pruning (used when 'prune_tunnels = True')"
         }
 
         with open(filepath, "w") as out_stream:

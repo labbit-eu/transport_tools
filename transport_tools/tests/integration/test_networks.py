@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # TransportTools, a library for massive analyses of internal voids in biomolecules and ligand transport through them
-# Copyright (C) 2022  Jan Brezovsky <janbre@amu.edu.pl>
+# Copyright (C) 2021 The TransportTools Authors
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
