@@ -527,6 +527,32 @@ class TestLayeredRepresentation(unittest.TestCase):
         self.assertDictEqual(test_layered_repre_entity_points2clusters6,
                              self.merged_repre._assign_entity_points2clusters())
 
+    def test__merge_duplicate_clusters_leaves_no_duplicates(self):
+        """
+        Merging duplicated nodes of a layer must consume all the merged nodes. The node the merged one is
+        built from used to survive the merge, holding a second copy of the points that are already inside
+        the merged node, i.e., a node that _assign_entity_points2clusters() can never map any point to.
+        """
+
+        for repre in [self.repre1, self.repre2, self.repre3, self.repre4, self.repre5, self.merged_repre]:
+            for layer_id, layer in repre.layers.items():
+                points_of_nodes = dict()
+                for cls_id, cluster in layer.clusters.items():
+                    points_mat = cluster.matrix.get_whole_matrix()
+                    points_of_nodes[cls_id] = frozenset(zip(points_mat[:, 6].astype(int).tolist(),
+                                                            points_mat[:, 5].tolist()))
+
+                stored_points = sum(len(points) for points in points_of_nodes.values())
+                self.assertEqual(len(set().union(*points_of_nodes.values())), stored_points,
+                                 "layer {} of {} stores some points more than once".format(layer_id,
+                                                                                            repre.entity_label))
+                for cls_id, points in points_of_nodes.items():
+                    for other_id, other_points in points_of_nodes.items():
+                        if cls_id != other_id:
+                            self.assertFalse(points <= other_points,
+                                             "node {}_{} of {} is fully contained in the node {}_{}"
+                                             "".format(layer_id, cls_id, repre.entity_label, layer_id, other_id))
+
     def test_find_representative_paths(self):
         from transport_tools.tests.units.data.data_geometry import test_layered_repre_str1, test_layered_repre_str2, \
             test_layered_repre_str3, test_layered_repre_str4, test_layered_repre_str5, test_layered_repre_str6
@@ -541,6 +567,191 @@ class TestLayeredRepresentation(unittest.TestCase):
         self.assertEqual(test_layered_repre_str5, str(self.repre5.find_representative_paths(self.transform_mat, None)))
         self.assertEqual(test_layered_repre_str6, str(self.merged_repre.find_representative_paths(self.transform_mat,
                                                                                                   self.sp)))
+
+
+class TestGlobalLayerReassignment(unittest.TestCase):
+    """
+    Tests of the adjustment of node layering for the global starting point placed at the system origin.
+
+    A node built from points spread over a spherical shell has its average radially inside that shell
+    (||<p>|| <= <||p||>), so deriving the layer of such a node from its average instead of from its points
+    relabels wide nodes close to the starting point one layer down. Every path crossing a relabeled node
+    then skips a layer and is discarded by _validate_path(), hence a node shared by all tunnels of a
+    cluster empties its whole pathset ("Cluster X of Y cannot be layered").
+    """
+
+    params = {
+        "tunnel_properties_quantile": 0.9,
+        "output_path": "",
+        "layered_caver_vis_path": "",
+        "layered_aquaduct_vis_path": "",
+        "orig_caver_vis_path": "",
+        "orig_aquaduct_vis_path": "",
+        "layer_thickness": 1.5,
+        "md_label": "e10s1_e9s3p0f1600",
+        "sp_radius": 0.5,
+        "caver_foldername": "caver",
+        "random_seed": 4
+    }
+    sp = np.array([[0., 0., 0.]])
+
+    # points at these distances from the starting point visit the layers 0, 1, 1, 2, 2, 3, 3 and 4;
+    # the layer 2 spans distances from 3 A to 4 A only, so the average of the wide node formed there
+    # by the whole fan ends up below 3 A, i.e., in the layer 1
+    fan_radii = np.array([0.6, 1.6, 2.4, 3.4, 3.8, 5.4, 5.8, 6.6])
+
+    @staticmethod
+    def _fan_of_tunnels(num_tunnels: int = 120, half_angle: float = 60.,
+                        radii: np.ndarray | None = None) -> np.ndarray:
+        """
+        Points of a fan of straight tunnels radiating from the starting point placed at the origin, i.e.,
+        data whose layering is continuous along every tunnel, while the shells swept by the whole fan are
+        wide enough for their nodes to have the average in the neighboring shell
+        :param num_tunnels: number of tunnels forming the fan
+        :param half_angle: angle (in degrees) by which the outermost tunnels deviate from the fan axis
+        :param radii: distances of the tunnel points from the starting point
+        :return: points data in the format produced by Tunnel.get_points_data()
+        """
+
+        if radii is None:
+            radii = TestGlobalLayerReassignment.fan_radii
+
+        points = list()
+        for angle in np.linspace(-np.radians(half_angle), np.radians(half_angle), num_tunnels):
+            direction = np.array([np.sin(angle), 0., np.cos(angle)])
+            for point_id, radius in enumerate(radii):
+                xyz = direction * radius
+                # the last point of each tunnel is its end point, marked by the inverted point ID
+                order = -float(point_id) if point_id == radii.size - 1 else float(point_id)
+                points.append([xyz[0], xyz[1], xyz[2], float(radius), 1.7, order])
+
+        return np.array(points)
+
+    def _layering(self) -> dict:
+        """
+        Current distribution of nodes among the layers, in the order in which they are stored
+        """
+
+        return {layer_id: list(layer.clusters.keys()) for layer_id, layer in self.repre.layers.items()}
+
+    def _busiest_inner_node(self) -> tuple:
+        """
+        Node with the most points among those that have nodes in both adjacent layers
+        """
+
+        last_layer = max(self.repre.layers.keys())
+
+        return max(((layer_id, cls_id) for layer_id, layer in self.repre.layers.items()
+                    if 0 < layer_id < last_layer for cls_id in layer.clusters),
+                   key=lambda node: self.repre.layers[node[0]].clusters[node[1]].num_points)
+
+    def setUp(self):
+        from transport_tools.libs.geometry import LayeredRepresentationOfTunnels
+
+        self.maxDiff = None
+        self.repre = LayeredRepresentationOfTunnels(self.params, "Cluster_1")
+        self.repre.points_mat = self._fan_of_tunnels()
+        self.repre.split_points_to_layers()
+
+    def test__layer_supported_by_points(self):
+        from transport_tools.libs.geometry import ClusterInLayer, assign_layer_from_distances, einsum_dist
+
+        # an arc of points spread over a wide angle inside the layer 2, i.e., 3 A to 4 A from the origin
+        angles = np.linspace(-np.radians(60.), np.radians(60.), 200)
+        radii = np.linspace(3.05, 3.95, 200)
+        coords = np.array([np.sin(angles) * radii, np.zeros(angles.size), np.cos(angles) * radii]).T
+        distances = np.linalg.norm(coords, axis=1)
+        points = np.concatenate((coords, distances.reshape(-1, 1), np.full((angles.size, 1), 1.7),
+                                 np.arange(angles.size).reshape(-1, 1), np.zeros((angles.size, 1))), axis=1)
+        cluster = ClusterInLayer(points, self.params["layer_thickness"],
+                                 self.params["tunnel_properties_quantile"], cls_id=0, layer_id=2)
+
+        # all points of such a node are in the layer 2, yet its average is closer to the starting point
+        # than any of them and thus falls into the layer 1
+        self.assertListEqual([2], np.unique(assign_layer_from_distances(
+            distances, self.params["layer_thickness"])[1]).astype(int).tolist())
+        distance2origin = float(np.ravel(einsum_dist(cluster.average, self.sp))[0])
+        self.assertLess(distance2origin, distances.min())
+        self.assertEqual(1, int(assign_layer_from_distances(np.array([distance2origin]),
+                                                            self.params["layer_thickness"])[1].item()))
+
+        self.assertEqual(2, self.repre._layer_supported_by_points(cluster, self.sp))
+
+    def test__reassign_clusters2global_layers(self):
+        from transport_tools.libs.geometry import assign_layer_from_distances, einsum_dist
+
+        misplaced_averages = 0
+        for layer_id, layer in self.repre.layers.items():
+            for cluster in layer.clusters.values():
+                distance2origin = float(np.ravel(einsum_dist(cluster.average, self.sp))[0])
+                misplaced_averages += layer_id != int(assign_layer_from_distances(
+                    np.array([distance2origin]), self.params["layer_thickness"])[1].item())
+                # points of a node never leave the layer in which the node is stored, hence they can
+                # never support its reassignment
+                self.assertEqual(layer_id, self.repre._layer_supported_by_points(cluster, self.sp))
+
+        self.assertGreater(misplaced_averages, 0)  # the tested data must contain misplaced averages
+        original_layering = self._layering()
+        self.assertListEqual([], self.repre._reassign_clusters2global_layers(self.sp))
+        self.assertDictEqual(original_layering, self._layering())
+
+    def test_find_representative_paths_of_wide_nodes(self):
+        from transport_tools.libs.utils import node_labels_split
+
+        # every node of the layer 2 of this fan has its average in the layer 1, which used to relabel
+        # them all and leave the cluster without a single continuous path
+        layered_path_set = self.repre.find_representative_paths(np.identity(4), self.sp)
+
+        self.assertFalse(layered_path_set.is_empty())
+        self.assertEqual(len(self.repre.layers), len({node_labels_split(node)[0]
+                                                      for path in layered_path_set.node_paths
+                                                      for node in path if node != "SP"}))
+
+    def test__undo_reassignment2global_layers(self):
+        from transport_tools.libs.geometry import Layer4Tunnels
+
+        original_layering = self._layering()
+        original_point2cluster_map = self.repre._assign_entity_points2clusters()
+        layer_id = self._busiest_inner_node()[0]
+        cls_id = min(self.repre.layers[layer_id].clusters.keys())  # not the last node of its layer
+        moved_cluster = self.repre.layers[layer_id].pop_cluster(cls_id)
+        new_layer_id = max(self.repre.layers.keys()) + 1  # a layer created solely to host the moved node
+        self.repre.layers[new_layer_id] = Layer4Tunnels(new_layer_id, self.repre.layer_thickness,
+                                                        self.params, self.repre.entity_label,
+                                                        self.params["md_label"])
+        self.repre.layers[new_layer_id].add_cluster(moved_cluster)
+        self.assertNotEqual(original_layering, self._layering())
+
+        self.repre._undo_reassignment2global_layers([(moved_cluster, layer_id, cls_id)])
+
+        self.assertDictEqual(original_layering, self._layering())
+        self.assertEqual(layer_id, moved_cluster.layer_id)
+        self.assertEqual(cls_id, moved_cluster.cls_id)
+        self.assertIs(moved_cluster, self.repre.layers[layer_id].clusters[cls_id])
+        # restoring the nodes must restore the point to node mapping exactly
+        self.assertDictEqual(original_point2cluster_map, self.repre._assign_entity_points2clusters())
+
+    def test_find_representative_paths_survives_reassignment(self):
+        layer_id, cls_id = self._busiest_inner_node()
+
+        def _misplace_busiest_node(_starting_point_coords):
+            """Reassignment relabeling a node shared by all tunnels of this cluster one layer down"""
+            moved_cluster = self.repre.layers[layer_id].pop_cluster(cls_id)
+            self.repre.layers[layer_id - 1].add_cluster(moved_cluster)
+            return [(moved_cluster, layer_id, cls_id)]
+
+        # such a reassignment leaves no tunnel of this cluster continuous ...
+        moved_clusters = _misplace_busiest_node(self.sp)
+        self.assertDictEqual({}, self.repre._get_putative_paths())
+        self.repre._undo_reassignment2global_layers(moved_clusters)
+
+        # ... which must never cost us the whole tunnel cluster
+        original_layering = self._layering()
+        self.repre._reassign_clusters2global_layers = _misplace_busiest_node  # type: ignore[method-assign]
+        layered_path_set = self.repre.find_representative_paths(np.identity(4), self.sp)
+
+        self.assertFalse(layered_path_set.is_empty())
+        self.assertDictEqual(original_layering, self._layering())
 
 
 class TestHelpers(unittest.TestCase):
@@ -588,6 +799,26 @@ class TestHelpers(unittest.TestCase):
         self.assertRaises(ValueError, get_layer_id_from_distance, distances, 0)
         for thickness, out_val in zip(layer_thicknesses, test_helpers_layer_ids):
             self.assertTrue(np.allclose(get_layer_id_from_distance(distances, thickness), out_val, atol=1e-3))
+
+    def test_get_layer_id_from_distance_bands(self):
+        """
+        Every layer must span exactly layer_thickness, from N * layer_thickness (exclusive) to
+        (N + 1) * layer_thickness (inclusive). Quantizing the distances to whole Angstroms before the
+        division used to make the bands oscillate around the requested thickness, e.g., alternating
+        1 A and 2 A wide bands at the default thickness of 1.5 A.
+        """
+
+        from transport_tools.libs.geometry import get_layer_id_from_distance
+
+        eps = 1e-9
+        for thickness in [0.5, 1., 1.5, 2., 2.5, 4.75]:  # exactly representable, hence safe to probe at the bounds
+            for layer in range(10):
+                lower_bound = layer * thickness
+                upper_bound = (layer + 1) * thickness
+                probes = np.array([lower_bound + eps, (lower_bound + upper_bound) / 2, upper_bound])
+                self.assertListEqual([layer] * 3, get_layer_id_from_distance(probes, thickness).astype(int).tolist())
+                self.assertEqual(layer + 1, int(get_layer_id_from_distance(np.array([upper_bound + eps]),
+                                                                            thickness)[0]))
 
     def test_cart2spherical(self):
         from transport_tools.libs.geometry import cart2spherical

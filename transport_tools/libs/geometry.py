@@ -1733,6 +1733,9 @@ class LayeredRepresentation:
                         for merge_id in ids2merge[1:]:
                             tmp_cluster.merge_with_cluster(clusters[merge_id])
                             del self.layers[layer_id].clusters[merge_id]
+                        # the points of the first cluster are already inside tmp_cluster, keeping it here
+                        # would store them twice and leave a node that no point can ever be mapped to
+                        del self.layers[layer_id].clusters[ids2merge[0]]
                         tmp_cluster.compute_averages()
 
                         # new cluster is representative and is not substituted by > the number of merged duplicates
@@ -1950,36 +1953,87 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
         else:
             return coarse_grained_path
 
-    def find_representative_paths(self, transform_mat: np.ndarray, starting_point_coords: np.ndarray,
-                                  visualize: bool = False) -> LayeredPathSet:
+    def _layer_supported_by_points(self, cluster: ClusterInLayer, starting_point_coords: np.ndarray) -> int:
         """
-        Find representative paths leading from starting point to terminal clusters (nodes)
-        :param transform_mat: transformation matrix to transform output pathset
+        Determine to which layer a node belongs according to the points it is built from.
+
+        split_points_to_layers() bins every point by its distance to the starting point and clusters the
+        points strictly within a single bin; neither _merge_duplicate_clusters() nor
+        ClusterInLayer.resolve_avg_failures() ever mixes the bins. The layer of a node is therefore a
+        property of the points it represents and must be derived from them. The node average is not a
+        substitute for them: the average of points spread over a spherical shell lies radially inside that
+        shell (||<p>|| <= <||p||>), hence for wide nodes close to the starting point it systematically ends
+        up one layer below every single point it represents.
+        :param cluster: evaluated node
         :param starting_point_coords: coordinates of average starting point for this simulation
-        :param visualize: should the layered representation be prepared for visualization
-        :return: set of representative paths
+        :return: ID of the layer supported by the majority of points of this node
         """
 
-        # adjust layering for global starting point placed at system origin
+        distances2origin = einsum_dist(cluster.get_coords(), starting_point_coords)
+        point_layers = assign_layer_from_distances(distances2origin,
+                                                   self.parameters["layer_thickness"])[1].astype(int)
+
+        return int(np.bincount(point_layers).argmax())
+
+    def _reassign_clusters2global_layers(self, starting_point_coords: np.ndarray) \
+            -> List[Tuple[ClusterInLayer, int, int]]:
+        """
+        Adjust layering for global starting point placed at system origin, moving nodes whose points
+        belong to a different layer than the one they are currently stored in.
+        :param starting_point_coords: coordinates of average starting point for this simulation
+        :return: moved nodes with the layer and cluster IDs they were moved from
+        """
+
         clusters2reassign = list()
         for layer in self.layers.values():
             for cluster in layer.clusters.values():
                 if cluster.average is None:
                     raise ValueError(f"Cluster {cluster.cls_id} in layer {cluster.layer_id} has not computed averages")
-                distance2origin = einsum_dist(cluster.average, starting_point_coords)
-                global_layer = int(assign_layer_from_distances(np.array([distance2origin]),
-                                                                self.parameters["layer_thickness"])[1].item())
-                if cluster.layer_id != global_layer and len(self.layers[cluster.layer_id].clusters.keys()) > 1:
-                    # mismatch, need to move cluster to different layer, which we can do without emptying whole layer
+                global_layer = self._layer_supported_by_points(cluster, starting_point_coords)
+                if cluster.layer_id != global_layer:
                     clusters2reassign.append((cluster.get_node_label(), global_layer))
 
+        moved_clusters: List[Tuple[ClusterInLayer, int, int]] = list()
         for cluster_label, new_layer in clusters2reassign:
             layer_id, cls_id = node_labels_split(cluster_label)
+            if len(self.layers[layer_id].clusters.keys()) <= 1:
+                # moving this node would empty its source layer, disconnecting the paths crossing it;
+                # tested here rather than above so that earlier moves out of this layer are accounted for
+                continue
             moved_cluster = self.layers[layer_id].pop_cluster(cls_id)
             if new_layer not in self.layers.keys():
                 self.layers[new_layer] = Layer4Tunnels(new_layer, self.layer_thickness, self.parameters,
                                                        self.entity_label, self.md_label)
             self.layers[new_layer].add_cluster(moved_cluster)
+            moved_clusters.append((moved_cluster, layer_id, cls_id))
+
+        return moved_clusters
+
+    def _undo_reassignment2global_layers(self, moved_clusters: List[Tuple[ClusterInLayer, int, int]]):
+        """
+        Return nodes moved by _reassign_clusters2global_layers() to the layers they came from
+        :param moved_clusters: moved nodes with the layer and cluster IDs they were moved from
+        """
+
+        for moved_cluster, layer_id, cls_id in reversed(moved_clusters):
+            self.layers[moved_cluster.layer_id].pop_cluster(moved_cluster.cls_id)
+            if not self.layers[moved_cluster.layer_id].clusters:  # layer created solely to host this node
+                del self.layers[moved_cluster.layer_id]
+            moved_cluster.layer_id = layer_id
+            moved_cluster.cls_id = cls_id
+            restored_clusters = self.layers[layer_id].clusters
+            restored_clusters[cls_id] = moved_cluster
+            # nodes of a layer are always created with increasing IDs, and _assign_entity_points2clusters()
+            # relies on that ordering, so the returning node cannot be left at the end of the layer
+            self.layers[layer_id].clusters = {node_id: restored_clusters[node_id]
+                                              for node_id in sorted(restored_clusters.keys())}
+
+    def _get_putative_paths(self) -> Dict[int, List[str]]:
+        """
+        Coarse-grain each original tunnel to a node path, keeping only the continuous ones that reach an
+        actual tunnel end point
+        :return: valid node paths per original tunnel
+        """
 
         # make inverse mapping of pointsID to Clusters to which they belong
         point2cluster_map = self._assign_entity_points2clusters()
@@ -1997,11 +2051,32 @@ class LayeredRepresentationOfTunnels(LayeredRepresentation):
 
             putative_paths[tunnel_id] = direct_path
 
-        del point2cluster_map
+        return putative_paths
+
+    def find_representative_paths(self, transform_mat: np.ndarray, starting_point_coords: np.ndarray,
+                                  visualize: bool = False) -> LayeredPathSet:
+        """
+        Find representative paths leading from starting point to terminal clusters (nodes)
+        :param transform_mat: transformation matrix to transform output pathset
+        :param starting_point_coords: coordinates of average starting point for this simulation
+        :param visualize: should the layered representation be prepared for visualization
+        :return: set of representative paths
+        """
+
+        # adjust layering for global starting point placed at system origin
+        moved_clusters = self._reassign_clusters2global_layers(starting_point_coords)
 
         # create LayeredPathsSet object and filter paths that are part of other paths
-        layered_path_set = self._get_unique_pathset(putative_paths, starting_point_coords)
-        del putative_paths
+        layered_path_set = self._get_unique_pathset(self._get_putative_paths(), starting_point_coords)
+
+        if layered_path_set.is_empty() and moved_clusters:
+            # relabeling a node shifts it with respect to the neighboring nodes on the paths crossing it,
+            # so _validate_path() can see the resulting layer gaps and discard every tunnel of this cluster;
+            # the cluster is then lost entirely, which no mere adjustment of its layering may cause
+            logger.debug("Reverting the reassignment of {} node(s) to global layers, which left {} of {} "
+                         "without any layered path".format(len(moved_clusters), self.entity_label, self.md_label))
+            self._undo_reassignment2global_layers(moved_clusters)
+            layered_path_set = self._get_unique_pathset(self._get_putative_paths(), starting_point_coords)
 
         if not layered_path_set.is_empty():
             # get minimal set of paths that cover all nodes and lead to all terminal nodes
@@ -2254,7 +2329,13 @@ def assign_layer_from_distances(distances: np.ndarray, layer_thickness: float) -
 
 def get_layer_id_from_distance(distances: np.ndarray, layer_thickness: float) -> np.ndarray:
     """
-    Calculate layers for points based on their distances form starting point and the layer thickness
+    Calculate layers for points based on their distances form starting point and the layer thickness.
+
+    The layer N spans the distances from N * layer_thickness (exclusive) to (N + 1) * layer_thickness
+    (inclusive), hence every layer is exactly layer_thickness wide. The distances must not be quantized
+    to whole Angstroms before the division, which used to make the actual width of the layers oscillate
+    around the requested layer_thickness for all its non-integer values, e.g., alternating 1 A and 2 A
+    bands for the default thickness of 1.5 A.
     :param distances: distance of points from starting point
     :param layer_thickness: layer thickness
     :return: layerIDs
@@ -2263,7 +2344,7 @@ def get_layer_id_from_distance(distances: np.ndarray, layer_thickness: float) ->
     if layer_thickness <= 0:
         raise ValueError("Layer thickness has to be positive number")
 
-    return np.ceil(np.ceil(distances) / layer_thickness) - 1
+    return np.ceil(distances / layer_thickness) - 1
 
 
 def read_starting_points(tunnel_origin_file: str) -> np.ndarray:
