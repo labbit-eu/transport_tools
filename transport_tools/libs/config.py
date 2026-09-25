@@ -196,7 +196,7 @@ class AnalysisConfig:
             "compute_backend": "local",  # global default backend: 'local' (multiprocessing) or 'slurm' (SLURM array jobs via submitit). Applied to every parallelized stage unless overridden by a stage-specific knob below.
             "stage02_backend": None,  # stage-2 (process_tunnel_networks) backend override; None => use compute_backend
             "stage03_backend": None,  # stage-3 (create_layered_description4tunnel_networks) backend override; None => use compute_backend
-            "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend
+            "stage04_backend": None,  # stage-4 (compute_tunnel_clusters_distances) backend override; None => use compute_backend. Also accepts 'cuda' (local run, CuPy CUDA kernel) - validation accepts 'cuda' for compute_backend/other stages too, but only stage-4's dispatch (compute_tunnel_clusters_distances) actually understands it; elsewhere it is silently treated as 'local'
             "stage07_backend": None,  # stage-7 (process_aquaduct_networks) backend override; None => use compute_backend
             "stage08_backend": None,  # stage-8 (create_layered_description4aquaduct_networks) backend override; None => use compute_backend
             "stage09_backend": None,  # stage-9 (assign_transport_events) backend override; None => use compute_backend
@@ -947,7 +947,12 @@ class AnalysisConfig:
         # _stage_backend_keys lists every (stage_knob_name, human_label) recognised by the
         # SlurmShardStage framework. Adding a new SLURM-capable stage means adding both its
         # config knob above (default None) and a row here, with no other validation changes.
-        valid_backends = ("local", "slurm")
+        # NOTE: 'cuda' is only meaningfully handled by stage-4's dispatch
+        # (TransportProcesses.compute_tunnel_clusters_distances); it is accepted here for every
+        # backend knob (including compute_backend), but every other stage's dispatch only ever
+        # checks 'if backend == "slurm"' and otherwise runs local, so 'cuda' elsewhere is silently
+        # treated as 'local' rather than rejected.
+        valid_backends = ("local", "slurm", "cuda")
         if str(self.parameters["compute_backend"]).lower() not in valid_backends:
             raise ValueError("\nUnsupported value '{}' for 'compute_backend' parameter.\n Valid options are "
                              "'local' and 'slurm'.".format(self.parameters["compute_backend"]))

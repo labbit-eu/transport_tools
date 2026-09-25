@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from setuptools import find_packages, setup
+from setuptools import Extension, find_packages, setup
 
 install_requires = ['numpy>=2.3.5',
                     'scipy>=1.16.3',
@@ -50,6 +50,17 @@ setup(name='transport_tools',
       packages=find_packages(include=['transport_tools*']),
       python_requires='>=3.12',
       install_requires=install_requires,
+      # optional compiled CPU distance kernel for stage-4 (see transport_tools/libs/_distance_kernel.c);
+      # geometry.py falls back to the pure-Python implementation if this fails to build/import, so a
+      # missing compiler at install time is not fatal - only slower
+      ext_modules=[
+          Extension(
+              'transport_tools.libs._distance_kernel',
+              sources=['transport_tools/libs/_distance_kernel.c'],
+              libraries=['m'],
+              extra_compile_args=['-O3'],
+          )
+      ],
       # optional dependency for the 'slurm' distance backend; conda users can instead install it
       # directly with 'conda install -c conda-forge submitit'
       extras_require={'slurm': ['submitit>=1.5.0']},

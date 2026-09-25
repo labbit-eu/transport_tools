@@ -37,6 +37,7 @@ from transport_tools.libs.networks import TunnelNetwork, AquaductNetwork, SuperC
 from transport_tools.libs.geometry import LayeredPathSet, average_starting_point, read_starting_points, \
     vector_angle, \
     init_distance_worker, calc_distance_chunk, iter_pair_chunks, count_pairs_for_shard, \
+    calc_distance_batch_kernel, \
     iter_shard_pair_chunks, condensed_pair_index, subcutoff_connected_components, gather_dense_submatrix, \
     gather_condensed_subvector
 from transport_tools.libs.protein_files import TrajectoryTT, TrajectoryFactory, get_transform_matrix, \
@@ -512,6 +513,46 @@ class TransportProcesses:
                     done_calcs += chunk.shape[0]
                     progressbar(done_calcs, n_jobs, self.parameters["log_level"])
 
+        return condensed_distances
+
+    def _compute_intercluster_distances_kernel(self, cluster_specifications: List[Tuple[str, int]],
+                                               path_sets: Dict[Tuple[str, int], LayeredPathSet],
+                                               precision: int = 4) -> np.ndarray:
+        """
+        Compute all pairwise distances with the CuPy CUDA backend (calc_distance_batch_kernel);
+        selected by setting 'stage04_backend = cuda' (local runs only - see
+        compute_tunnel_clusters_distances). The actual CUDA implementation used - cupyx.jit
+        (default) or RawKernel - is chosen inside geometry._get_cuda_distance_kernels() via the
+        TRANSPORT_TOOLS_CUDA_KERNEL environment variable, not by this method.
+
+        Unlike the local CPU backend (_compute_intercluster_distances), which distributes work over
+        a multiprocessing Pool in many small chunks, all requested pairs are submitted to the GPU in
+        a single batch here - there is no chunking/progress reporting during the GPU computation.
+        :param cluster_specifications: definition of clusters
+        :param path_sets: sets of representative paths for all clusters
+        :param precision: number of decimals with which the calculated distances are reported
+        :return: condensed (upper-triangle) vector of pairwise cluster distances
+        """
+
+        num_clusters = len(cluster_specifications)
+        num_pairs = num_clusters * (num_clusters - 1) // 2
+        condensed_distances = self._allocate_condensed_distances(num_pairs)
+        if num_pairs == 0:
+            return condensed_distances
+
+        index_pairs = [pair for chunk in iter_pair_chunks(num_clusters, num_pairs) for pair in chunk]
+        logger.info("Computing {:d} cluster pairs with the CUDA kernel".format(num_pairs))
+        results = calc_distance_batch_kernel(
+            index_pairs,
+            path_sets,
+            cluster_specifications,
+            precision,
+            self.parameters["clustering_cutoff"],
+        )
+        chunk = np.asarray(results, dtype=np.float64)
+        rows = chunk[:, 0].astype(np.intp)
+        cols = chunk[:, 1].astype(np.intp)
+        condensed_distances[condensed_pair_index(rows, cols, num_clusters)] = chunk[:, 2]
         return condensed_distances
 
     def _does_super_cluster_exist(self, sc_id: int) -> bool:
@@ -1215,7 +1256,10 @@ class TransportProcesses:
 
     def compute_tunnel_clusters_distances(self):
         """
-        Compute pairwise cluster-cluster distances, and save their matrix
+        Compute pairwise cluster-cluster distances, and save their matrix. Dispatches to one of
+        three backends based on the resolved 'stage04_backend' value ('local', 'slurm', or
+        'cuda' - see AnalysisConfig._validate_parameter_values for accepted values and
+        AnalysisConfig.resolve_stage_backend for how the per-stage override/global default resolve).
         """
 
         with TimeProcess("Cluster-cluster distances calculation"):
@@ -1232,6 +1276,12 @@ class TransportProcesses:
                 logger.info("Computing distances for {:d} tunnel clusters using SLURM array "
                             "jobs:".format(len(cluster_specifications)))
                 condensed_distances = self._compute_intercluster_distances_slurm(cluster_specifications)
+            elif backend == "cuda":
+                logger.info("Computing distances for {:d} tunnel clusters using the CUDA kernel".format(
+                    len(cluster_specifications)))
+                condensed_distances = self._compute_intercluster_distances_kernel(
+                    cluster_specifications, path_sets
+                )
             else:
                 logger.info("Computing distances for {:d} tunnel clusters "
                             "using {:d} {}:".format(len(cluster_specifications), self.parameters["num_cpus"],

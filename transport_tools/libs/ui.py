@@ -61,6 +61,8 @@ def init_parser() -> ArgumentParser:
                        help="Prints short license info and exits.")
     in_parser.add_argument("--overwrite", action="store_true", dest="overwrite", required=False,
                            help="Enables cleaning of non-empty folder with outputs and overwriting of checkpoints files")
+    in_parser.add_argument("--cuda", action="store_true", dest="cuda", required=False,
+                           help="Uses the CUDA backend for stage-4 cluster-distance calculation")
 
     return in_parser
 

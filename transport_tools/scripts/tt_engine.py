@@ -67,6 +67,11 @@ if __name__ == "__main__":
         exit(0)
 
     configuration = AnalysisConfig(args.config_filename)
+    # --cuda is a shortcut for setting 'stage04_backend = cuda' in the config file; applied here,
+    # before any stage runs, so it is already in effect for every load_checkpoint(update_config=...)
+    # call downstream regardless of which stage the run starts/resumes from
+    if args.cuda:
+        configuration.set_parameter("stage04_backend", "cuda")
     start_from_stage = configuration.get_parameter("start_from_stage")
     stop_after_stage = configuration.get_parameter("stop_after_stage")
     checkpoints_path = configuration.get_parameter("checkpoints_folder")
