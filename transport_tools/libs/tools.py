@@ -2600,6 +2600,9 @@ class TransportProcesses:
             # 3) Stream the per-shard pickles back. Each result is (cls_id, md_label,
             #    LayeredPathSet); buffer per md_label and commit in original submission order
             #    so the saved layered_network.dump matches the local backend byte-for-byte.
+            #    Shards written before pool workers detached the parameters carry a private
+            #    parameters copy per pathset; drop them right after each load so that at most one
+            #    shard's copies are alive (add_layered_entity() attaches the network's own).
             buffered_layered_paths: Dict[str, Dict[int, LayeredPathSet]] = {
                 md: {} for md in self.caver_input_folders}
             empty_clusters: List[Tuple[str, int]] = list()
@@ -2608,11 +2611,13 @@ class TransportProcesses:
                 with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
                     shard_results: List[Tuple[int, str, LayeredPathSet]] = pickle.load(in_stream)
                 for cls_id, md_label, layered_path_set in shard_results:
+                    layered_path_set.detach_parameters()
                     total_received += 1
                     if layered_path_set.is_empty():
                         empty_clusters.append((md_label, cls_id))
                     else:
                         buffered_layered_paths[md_label][cls_id] = layered_path_set
+                del shard_results
 
             if total_received != items2process:
                 raise RuntimeError("SLURM tunnel-layering shards returned {} result(s) but the "
@@ -3050,6 +3055,9 @@ class TransportProcesses:
             # 3) Stream the per-shard pickles back. Each result is (event_label, md_label,
             #    LayeredPathSet); buffer per md_label and commit in original submission order
             #    so the saved aqua_layered_network.dump matches the local backend byte-for-byte.
+            #    Shards written before pool workers detached the parameters carry a private
+            #    parameters copy per pathset; drop them right after each load so that at most one
+            #    shard's copies are alive (add_layered_entity() attaches the network's own).
             buffered_layered_paths: Dict[str, Dict[str, LayeredPathSet]] = {
                 md: {} for md in self.aquaduct_input_folders}
             empty_events: List[Tuple[str, str]] = list()
@@ -3058,11 +3066,13 @@ class TransportProcesses:
                 with open(stage.shard_result_path(slurm_folder, shard_id), "rb") as in_stream:
                     shard_results: List[Tuple[str, str, LayeredPathSet]] = pickle.load(in_stream)
                 for event_id, md_label, layered_path_set in shard_results:
+                    layered_path_set.detach_parameters()
                     total_received += 1
                     if layered_path_set.is_empty():
                         empty_events.append((md_label, event_id))
                     else:
                         buffered_layered_paths[md_label][event_id] = layered_path_set
+                del shard_results
 
             if total_received != items2process:
                 raise RuntimeError("SLURM aquaduct-layering shards returned {} result(s) but the "
@@ -4265,12 +4275,15 @@ def create_layered_cluster_worker(cluster: TunnelCluster) -> Tuple[int, str, Lay
     Top-level worker that delegates to TunnelCluster.create_layered_cluster(). Lives at module
     scope (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
     surrounding TransportProcesses instance, and so that pool.imap_unordered can consume an
-    iterable of clusters directly.
+    iterable of clusters directly. The returned pathset carries no job parameters (see
+    LayeredPathSet.detach_parameters()); Network.add_layered_entity() re-attaches the network's own.
     :param cluster: the TunnelCluster being layered
-    :return: same as TunnelCluster.create_layered_cluster()
+    :return: same as TunnelCluster.create_layered_cluster(), with the pathset detached from parameters
     """
 
-    return cluster.create_layered_cluster()
+    cls_id, md_label, layered_path_set = cluster.create_layered_cluster()
+    layered_path_set.detach_parameters()
+    return cls_id, md_label, layered_path_set
 
 
 def create_layered_event_worker(event: TransportEvent) -> Tuple[str, str, LayeredPathSet]:
@@ -4278,12 +4291,15 @@ def create_layered_event_worker(event: TransportEvent) -> Tuple[str, str, Layere
     Top-level worker that delegates to TransportEvent.create_layered_event(). Lives at module
     scope (not as a bound method) so the Pool can submit it under 'spawn' without dragging the
     surrounding TransportProcesses instance, and so that pool.imap_unordered can consume an
-    iterable of events directly.
+    iterable of events directly. The returned pathset carries no job parameters (see
+    LayeredPathSet.detach_parameters()); Network.add_layered_entity() re-attaches the network's own.
     :param event: the TransportEvent being layered
-    :return: same as TransportEvent.create_layered_event()
+    :return: same as TransportEvent.create_layered_event(), with the pathset detached from parameters
     """
 
-    return event.create_layered_event()
+    event_id, md_label, layered_path_set = event.create_layered_event()
+    layered_path_set.detach_parameters()
+    return event_id, md_label, layered_path_set
 
 
 def process_aquaduct_network_worker(task: Tuple[str, dict, List[str], bool]) -> None:
