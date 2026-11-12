@@ -26,6 +26,8 @@ import pickle
 import pytest
 from transport_tools.libs.utils import set_paths_from_package_root, prep_test_config, compare_test_files, compare_test_folders
 from transport_tools.libs.networks import TunnelCluster
+from transport_tools.tests.integration.layered_checks import (assert_same_layered_entities,
+                                                              assert_single_shared_parameters, load_layered_dump)
 
 class TestTunnelNetwork(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -132,6 +134,37 @@ class TestTunnelNetwork(unittest.TestCase):
         for cluster in self.network.get_clusters4layering():
             entity_ids.append(cluster.cluster_id)
         self.assertTrue(self.network.is_layering_complete(entity_ids))
+
+    def test_layering_in_pool_workers(self):
+        # stage 3 layers clusters in spawn-pool workers: the pathsets come back without parameters and equal to
+        # the in-process layering, and the network they join stores a single configuration
+        from multiprocessing import get_context
+        from transport_tools.libs.networks import TunnelNetwork
+        from transport_tools.libs.tools import create_layered_cluster_worker
+
+        with get_context("spawn").Pool(processes=2) as pool:
+            results = pool.map(create_layered_cluster_worker, self.network.get_clusters4layering()[:8])
+
+        pool_layered = dict()
+        for cls_id, md_label, layered_path_set in results:
+            self.assertEqual("md1", md_label)
+            self.assertIsNone(layered_path_set.parameters)
+            pool_layered[cls_id] = layered_path_set
+        in_process = {cls_id: self.network.layered_entities[cls_id] for cls_id in pool_layered}
+        assert_same_layered_entities(self, in_process, pool_layered, "pool vs in-process")
+
+        pool_net = TunnelNetwork(self.parameters, "md1")
+        pool_net.layered_dump_file = os.path.join(TestTunnelNetwork.out_path, "pool_layering",
+                                                  "md1_layered_paths.dump")
+        for cls_id, layered_path_set in pool_layered.items():
+            pool_net.add_layered_entity(cls_id, layered_path_set)
+            self.assertIs(pool_net.parameters, layered_path_set.parameters)
+        pool_net.save_layered_network()
+
+        saved = load_layered_dump(pool_net.layered_dump_file)
+        assert_single_shared_parameters(self, saved, "md1")
+        self.assertEqual(pool_net.parameters, next(iter(saved.values())).parameters)
+        assert_same_layered_entities(self, in_process, saved, "saved pool results vs in-process")
 
     def test_get_clusters4layering_ids_matches_via_sidecar(self):
         # The stage-3 SLURM launcher enumerates cluster_ids via the size sidecar instead of
@@ -293,6 +326,38 @@ class TestAquaductNetwork(unittest.TestCase):
 
     def test_get_events4layering(self):
         self.assertEqual(5, len(self.network.get_events4layering()))
+
+    def test_layering_in_pool_workers(self):
+        # stage 8 layers events in spawn-pool workers: the pathsets come back without parameters and equal to
+        # the in-process layering, and the network they join stores a single configuration
+        from multiprocessing import get_context
+        from transport_tools.libs.networks import AquaductNetwork
+        from transport_tools.libs.tools import create_layered_event_worker
+
+        with get_context("spawn").Pool(processes=2) as pool:
+            results = pool.map(create_layered_event_worker, self.network.get_events4layering())
+
+        pool_layered = dict()
+        for event_id, md_label, layered_path_set in results:
+            self.assertEqual("md1", md_label)
+            self.assertIsNone(layered_path_set.parameters)
+            pool_layered[event_id] = layered_path_set
+        in_process = {event_id: self.network.layered_entities[event_id] for event_id in pool_layered}
+        self.assertEqual(sorted(self.network.layered_entities.keys()), sorted(in_process.keys()))
+        assert_same_layered_entities(self, in_process, pool_layered, "pool vs in-process")
+
+        pool_net = AquaductNetwork(self.parameters, "md1", load_only=True)
+        pool_net.layered_dump_file = os.path.join(TestAquaductNetwork.out_path, "pool_layering",
+                                                  "md1_layered_paths.dump")
+        for event_id, layered_path_set in pool_layered.items():
+            pool_net.add_layered_entity(event_id, layered_path_set)
+            self.assertIs(pool_net.parameters, layered_path_set.parameters)
+        pool_net.save_layered_network()
+
+        saved = load_layered_dump(pool_net.layered_dump_file)
+        assert_single_shared_parameters(self, saved, "md1")
+        self.assertEqual(pool_net.parameters, next(iter(saved.values())).parameters)
+        assert_same_layered_entities(self, in_process, saved, "saved pool results vs in-process")
 
     def test_get_events4layering_ids_matches_via_sidecar(self):
         # The stage-8 SLURM launcher enumerates event labels via the .event_ids sidecar instead
