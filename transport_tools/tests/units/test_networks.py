@@ -290,7 +290,8 @@ class TestTransportEvent(unittest.TestCase):
             "layered_aquaduct_vis_path": "",
             "orig_aquaduct_vis_path": "",
             "visualize_layered_events": False,
-            "sp_radius": 0.5
+            "sp_radius": 0.5,
+            "random_seed": 4
         }
 
         self.transform_mat = np.array([[-0.068, -0.539,  0.838,  -0.139],
