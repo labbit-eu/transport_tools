@@ -27,6 +27,9 @@ from transport_tools.libs.utils import set_paths_from_package_root, prep_test_co
 from transport_tools.libs.tools import load_checkpoint, define_filters, TransportProcesses, save_checkpoint
 from transport_tools.tests.integration.generate_event_assignment_fixtures import (
     EVENT_ASSIGNMENT_VARIANTS, variant_artifacts, trace_analysis_dir)
+from transport_tools.tests.integration.layered_checks import (
+    LAYERED_DUMP_SUFFIX, assert_layered_dumps_share_parameters, assert_same_layered_entities,
+    assert_single_shared_parameters, load_layered_dump)
 
 class TestTransportProcesses(unittest.TestCase):
     @pytest.fixture(autouse=True)
@@ -457,6 +460,7 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.create_layered_description4tunnel_networks()
+        assert_layered_dumps_share_parameters(self, os.path.join(self.out_path, "_internal", "layered_data", "caver"))
         compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "caver"),
                               os.path.join(self.out_path, "_internal", "layered_data", "caver"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1"),
@@ -470,6 +474,105 @@ class TestTransportProcesses(unittest.TestCase):
                               os.path.join(self.out_path, "visualization", "sources", "layered_data", "caver", "md1",
                                            "paths"), self)
         save_checkpoint(mol_system, self._get_dumpfile(3), overwrite=True)
+
+    def _check_layering_shards_in_process(self, checkpoint_stage: int, entity: str, backend_key: str,
+                                          compute_shard_name: str, create_layered_description_name: str):
+        """Run the SLURM launcher of stage-3/8 layering without a cluster: shards are computed in this
+        process (as test_04distance_shard_consistency does for distances) and shard 0 is rewritten in the
+        format of earlier versions, with a private parameters copy per result. The assembled layered
+        networks must equal the local-backend ones written by the preceding test exactly, store a single
+        parameters dict each, and every pathset must reach its network detached from the shard's
+        parameters. Outputs go to variant folders, at the same depth as the regular ones so that the relative
+        paths written into the visualization scripts are the same, and are removed afterwards; the chain
+        feeding the later tests is untouched."""
+        import pickle
+        import shutil
+        from unittest.mock import patch
+        from transport_tools.libs import slurm
+        from transport_tools.libs.networks import Network
+
+        try:
+            mol_system = load_checkpoint(self._get_dumpfile(checkpoint_stage))
+        except FileNotFoundError:
+            self.skipTest("previous test not finished")
+
+        local_data = os.path.join(self.out_path, "_internal", "layered_data", entity)
+        local_vis = os.path.join(self.out_path, "visualization", "sources", "layered_data", entity, "md1")
+        if not os.path.isdir(local_data):
+            self.skipTest("local-backend layered networks not available")
+
+        variant_data = os.path.join(self.out_path, "_internal", "layered_data_shards_variant", entity)
+        variant_vis = os.path.join(self.out_path, "visualization", "sources", "layered_data_shards_variant", entity)
+        variant_slurm = os.path.join(self.out_path, "_slurm_shards_variant", entity)
+        for variant_folder in (variant_data, variant_vis, variant_slurm):
+            if os.path.isdir(variant_folder):
+                shutil.rmtree(variant_folder)
+        mol_system.parameters["layered_{}_network_data_path".format(entity)] = variant_data
+        mol_system.parameters["layered_{}_vis_path".format(entity)] = variant_vis
+        mol_system.parameters[backend_key] = "slurm"
+        mol_system.parameters["slurm_num_shards"] = 2
+        mol_system.parameters["slurm_cpus_per_task"] = 2
+        mol_system.parameters["slurm_root_folder"] = variant_slurm
+        mol_system.parameters["slurm_keep_shard_results"] = True
+        mol_system.config_file = os.path.join(self.out_path, "config.ini")
+
+        def run_shards_in_process(stage, config_file, parameters):
+            slurm_folder = stage.get_slurm_folder(parameters)
+            os.makedirs(slurm_folder, exist_ok=True)
+            num_shards = stage.num_shards(parameters)
+            self.assertEqual(2, num_shards)
+            stage.prepare_state(parameters, slurm_folder)
+            for shard_id in range(num_shards):
+                getattr(mol_system, compute_shard_name)(num_shards, shard_id)
+                shard_file = stage.shard_result_path(slurm_folder, shard_id)
+                with open(shard_file, "rb") as in_stream:
+                    shard_results = pickle.load(in_stream)
+                self.assertGreater(len(shard_results), 0)
+                for _, _, layered_path_set in shard_results:
+                    self.assertIsNone(layered_path_set.parameters, "shard results must carry no parameters")
+                if shard_id == 0:
+                    for _, md_label, layered_path_set in shard_results:
+                        layered_path_set.parameters = dict(parameters, md_label=md_label)
+                    with open(shard_file, "wb") as out_stream:
+                        pickle.dump(shard_results, out_stream, protocol=parameters["pickle_protocol"])
+            return num_shards, []
+
+        arrived_detached = list()
+        add_layered_entity = Network.add_layered_entity
+
+        def add_layered_entity_spy(network, entity_id, layered_pathset):
+            arrived_detached.append(layered_pathset.parameters is None)
+            add_layered_entity(network, entity_id, layered_pathset)
+
+        with patch.object(slurm, "run_stage_on_slurm", run_shards_in_process), \
+                patch.object(Network, "add_layered_entity", add_layered_entity_spy):
+            getattr(mol_system, create_layered_description_name)()
+
+        self.assertGreater(len(arrived_detached), 0)
+        self.assertTrue(all(arrived_detached), "the launcher must drop the parameters copies of loaded shards")
+
+        dump_files = sorted(f for f in os.listdir(local_data) if f.endswith(LAYERED_DUMP_SUFFIX))
+        self.assertEqual(dump_files, sorted(f for f in os.listdir(variant_data) if f.endswith(LAYERED_DUMP_SUFFIX)))
+        for dump_file in dump_files:
+            md_label = dump_file[:-len(LAYERED_DUMP_SUFFIX)]
+            variant = load_layered_dump(os.path.join(variant_data, dump_file))
+            assert_same_layered_entities(self, load_layered_dump(os.path.join(local_data, dump_file)), variant,
+                                         md_label)
+            assert_single_shared_parameters(self, variant, md_label, dump_file)
+        for sub_folder in ("", "nodes", "paths"):
+            compare_test_folders(os.path.join(local_vis, sub_folder), os.path.join(variant_vis, "md1", sub_folder),
+                                 self)
+
+        for variant_folder in (variant_data, variant_vis, variant_slurm):
+            shutil.rmtree(variant_folder)
+        for variant_parent in (os.path.dirname(variant_data), os.path.dirname(variant_vis),
+                               os.path.dirname(variant_slurm)):
+            if not os.listdir(variant_parent):
+                os.rmdir(variant_parent)
+
+    def test_03create_layered_description4tunnel_networks_shards_in_process(self):
+        self._check_layering_shards_in_process(2, "caver", "stage03_backend", "compute_tunnel_layering_shard",
+                                               "create_layered_description4tunnel_networks")
 
     def test_03create_layered_description4tunnel_networks_slurm(self):
         """Same checks as test_03create_layered..., but stage-3 layering is computed via the SLURM
@@ -525,6 +628,7 @@ class TestTransportProcesses(unittest.TestCase):
                 shutil.rmtree(_stale_dir)
 
         mol_system.create_layered_description4tunnel_networks()
+        assert_layered_dumps_share_parameters(self, os.path.join(self.out_path, "_internal", "layered_data", "caver"))
         compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "caver"),
                               os.path.join(self.out_path, "_internal", "layered_data", "caver"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "caver", "md1"),
@@ -1374,6 +1478,8 @@ class TestTransportProcesses(unittest.TestCase):
             self.skipTest("previous test not finished")
 
         mol_system.create_layered_description4aquaduct_networks()
+        assert_layered_dumps_share_parameters(self, os.path.join(self.out_path, "_internal", "layered_data",
+                                                                 "aquaduct"))
         compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "aquaduct"),
                               os.path.join(self.out_path, "_internal", "layered_data", "aquaduct"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",
@@ -1390,6 +1496,10 @@ class TestTransportProcesses(unittest.TestCase):
                                            "paths"), self)
 
         save_checkpoint(mol_system, self._get_dumpfile(10), overwrite=True)
+
+    def test_10create_layered_description4aquaduct_networks_shards_in_process(self):
+        self._check_layering_shards_in_process(9, "aquaduct", "stage08_backend", "compute_aquaduct_layering_shard",
+                                               "create_layered_description4aquaduct_networks")
 
     def test_10create_layered_description4aquaduct_networks_slurm(self):
         """Same checks as test_10create_layered_description4aquaduct_networks, but stage-8
@@ -1445,6 +1555,8 @@ class TestTransportProcesses(unittest.TestCase):
                 shutil.rmtree(_stale_dir)
 
         mol_system.create_layered_description4aquaduct_networks()
+        assert_layered_dumps_share_parameters(self, os.path.join(self.out_path, "_internal", "layered_data",
+                                                                 "aquaduct"))
         compare_test_folders(os.path.join(self.saved_data, "_internal", "layered_data", "aquaduct"),
                               os.path.join(self.out_path, "_internal", "layered_data", "aquaduct"), self)
         compare_test_folders(os.path.join(self.saved_data, "visualization", "sources", "layered_data", "aquaduct",

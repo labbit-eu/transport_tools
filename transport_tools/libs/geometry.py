@@ -373,6 +373,19 @@ class LayeredPathSet:
 
         return len(self.node_paths) == 0
 
+    def detach_parameters(self):
+        """
+        Drop the reference to the job parameters before this pathset travels on its own (a pool result, a SLURM
+        shard pickle). Pickled one by one, every pathset would otherwise carry, and on unpickling own, a private
+        copy of the whole configuration (~0.5 MB in memory with expanded comparative groups), multiplying memory
+        and storage by the number of layered entities. Network.add_layered_entity() attaches the receiving
+        network's parameters again. Safe to call on an already-detached pathset.
+        """
+
+        # set to None rather than deleting the attribute, so that re-attaching keeps the attribute layout
+        # (and the pickled layout of the saved networks) the same as for pathsets that never travelled
+        self.parameters = None  # type: ignore[assignment]
+
     def transform_coordinates(self, transform_mat: np.ndarray):
         """
         Transform nodes coordinates forming this pathset according to the transformation matrix

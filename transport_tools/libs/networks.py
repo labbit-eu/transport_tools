@@ -93,6 +93,10 @@ class Network:
         :param layered_pathset:  layered entity to add
         """
 
+        # layered entities share their network's parameters, like entities built in this process; pathsets
+        # layered in pool workers arrive without them (see LayeredPathSet.detach_parameters()), so that
+        # save_layered_network() stores a single copy of the configuration per dump
+        layered_pathset.parameters = self.parameters
         self.layered_entities[entity_id] = layered_pathset
 
     def is_layering_complete(self, entity_ids: List[int | str]) -> bool:
